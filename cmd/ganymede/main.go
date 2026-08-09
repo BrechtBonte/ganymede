@@ -10,12 +10,14 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/BrechtBonte/ganymede/internal/config"
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
 	"github.com/BrechtBonte/ganymede/internal/ghostty"
 	"github.com/BrechtBonte/ganymede/internal/hooks"
 	"github.com/BrechtBonte/ganymede/internal/reconciler"
 	"github.com/BrechtBonte/ganymede/internal/registry"
 	"github.com/BrechtBonte/ganymede/internal/state"
+	"github.com/BrechtBonte/ganymede/internal/ticket"
 	"github.com/BrechtBonte/ganymede/internal/tmuxconf"
 	"github.com/BrechtBonte/ganymede/internal/topology"
 	tea "github.com/charmbracelet/bubbletea"
@@ -161,8 +163,28 @@ func runDashboard() error {
 
 	// The harness is both hands the Dashboard has on tmux: it steers the
 	// working client, and it carries the counts to that client's status line.
-	_, err = tea.NewProgram(dashboard.New(working, harness, harness, model.Seen), tea.WithAltScreen()).Run()
+	_, err = tea.NewProgram(dashboard.New(working, harness, harness, model.Seen, known()), tea.WithAltScreen()).Run()
 	return err
+}
+
+// known is which ticket each Session is about: what the branches and worktree
+// names say, with whatever you have corrected by hand over the top.
+//
+// A state file that cannot be read costs the corrections in it and nothing
+// else. Every ticket the harness can work out for itself still shows, and the
+// Dashboard — whose job is telling you what is running — is not held up over a
+// sidecar file.
+func known() dashboard.Tickets {
+	sidecar, err := config.DefaultSidecar()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: tickets set by hand cannot be kept: %v\n", err)
+		return &ticket.Tickets{}
+	}
+	overrides, err := ticket.Load(sidecar)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: tickets set by hand cannot be read: %v\n", err)
+	}
+	return &ticket.Tickets{Overrides: overrides}
 }
 
 // install puts both halves in place, and reports either one failing. Asked for
