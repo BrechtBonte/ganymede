@@ -51,7 +51,7 @@ func (k *known) Open(key ticket.Key) error {
 // knowing is a Dashboard sized for the sidepanel, showing sessions and knowing
 // what each of them is about.
 func knowing(tickets dashboard.Tickets, sessions ...session.Session) tea.Model {
-	var model tea.Model = dashboard.New(nil, &jumps{}, nil, nil, tickets)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: &jumps{}, Tickets: tickets})
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions(sessions))
 	return model
@@ -361,7 +361,7 @@ func TestSettingAnEmptyTicketClearsTheCorrection(t *testing.T) {
 func TestTheKeysBelongToTheInputWhileItIsOpen(t *testing.T) {
 	about := &known{of: map[string]ticket.Key{"/repos/service-billing": "FIRE-2841"}}
 	jumper := &jumps{}
-	var model tea.Model = dashboard.New(nil, jumper, nil, nil, about)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper, Tickets: about})
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions([]session.Session{
 		live("max-paging-numbers", "/repos/service-billing", session.Working),

@@ -65,5 +65,5 @@ func Checkout(dir string) string {
 	if toplevel, ok := gitDir(dir, "--show-toplevel"); ok {
 		return toplevel
 	}
-	return absolute(dir)
+	return Absolute(dir)
 }

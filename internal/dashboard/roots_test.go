@@ -72,7 +72,7 @@ func strayed(t *testing.T, root, branch string) {
 // opened is a Dashboard sized for the sidepanel, showing nothing yet.
 func opened(t *testing.T) tea.Model {
 	t.Helper()
-	var model tea.Model = dashboard.New(nil, &jumps{}, nil, nil, nil)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: &jumps{}})
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	return model
 }
@@ -345,6 +345,21 @@ func TestSelectedBoxNamesTheMainRootState(t *testing.T) {
 
 	if box := detail(model); !strings.Contains(box, string(repo.InUse)) {
 		t.Errorf("SELECTED = %q, want it to say the Main root is %q", box, repo.InUse)
+	}
+}
+
+// A repo on the rail with nothing running in it at all is the plainest Free
+// there is: you were working there yesterday, the Sessions have ended, and the
+// root is yours to check a PR out in.
+func TestRepoHeaderMarksAMainRootWithNoSessionsFree(t *testing.T) {
+	root := mainRoot(t, "service-billing")
+	state := remembering(t)
+	worked(t, state, root, time.Now())
+
+	model := dashboardOn(dashboard.Harness{Jumper: &jumps{}, Activity: state})
+
+	if line := headerOf(t, model, root); !strings.Contains(line, repo.Free.Glyph()) {
+		t.Errorf("header = %q, want the mark of a free root", line)
 	}
 }
 

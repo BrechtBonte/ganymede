@@ -40,7 +40,7 @@ func Root(dir string) string {
 	if toplevel, ok := gitDir(dir, "--show-toplevel"); ok {
 		return toplevel
 	}
-	return absolute(dir)
+	return Absolute(dir)
 }
 
 func gitDir(dir string, args ...string) (string, bool) {
@@ -64,12 +64,17 @@ func git(dir string, args ...string) (string, bool) {
 	return answer, true
 }
 
-// absolute is the one name for a directory, so that two Sessions reaching the
+// Absolute is the one name for a directory, so that two Sessions reaching the
 // same place by different paths still group together. Symlinks are resolved
 // because git resolves them, and a root only half the Sessions agree on would
 // draw the repo twice. A directory that is no longer there cannot be resolved
 // and is taken as written.
-func absolute(dir string) string {
+//
+// It is exported because everything that names a directory has to name it the
+// same way — discovery, the topology and this package all compare their
+// answers with one another, and three spellings of "where is this really"
+// would be three chances for one repo to appear as two.
+func Absolute(dir string) string {
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		return resolved
 	}

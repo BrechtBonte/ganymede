@@ -42,7 +42,11 @@ type Harness struct {
 
 // Ensure brings the topology up, reusing whatever is already running.
 func (h Harness) Ensure() error {
-	working, err := WorkingSessionName(h.WorkingDir)
+	// The same name the picker would reach this repo by, so that opening a
+	// repo and bringing the harness up in it land on one Session rather than
+	// two — and so that a repo sharing its name with another is told apart
+	// wherever it is opened from.
+	working, err := h.sessionFor(h.WorkingDir)
 	if err != nil {
 		return err
 	}
