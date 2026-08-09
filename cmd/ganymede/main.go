@@ -10,16 +10,18 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/BrechtBonte/ganymede/internal/config"
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
 	"github.com/BrechtBonte/ganymede/internal/ghostty"
 	"github.com/BrechtBonte/ganymede/internal/hooks"
 	"github.com/BrechtBonte/ganymede/internal/inventory"
 	"github.com/BrechtBonte/ganymede/internal/reconciler"
 	"github.com/BrechtBonte/ganymede/internal/registry"
-	"github.com/BrechtBonte/ganymede/internal/sidecar"
 	"github.com/BrechtBonte/ganymede/internal/state"
+	"github.com/BrechtBonte/ganymede/internal/ticket"
 	"github.com/BrechtBonte/ganymede/internal/tmuxconf"
 	"github.com/BrechtBonte/ganymede/internal/topology"
+	"github.com/BrechtBonte/ganymede/internal/workingset"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -161,36 +163,70 @@ func runDashboard() error {
 	model := state.New()
 	working := model.Watch(ctx, watch, checked, reported)
 
+	// The harness is every hand the Dashboard has on tmux: it steers the
+	// working client to a Session or to a repo, and it carries the counts to
+	// that client's status line.
+	hands := dashboard.Harness{
+		Jumper: harness, Opener: harness, Strip: harness,
+		Seen: model.Seen, Tickets: known(),
+	}
 	// Where the harness looks for repos, and what it remembers about the ones
-	// it has been in. Neither is worth refusing to open the Dashboard over: a
-	// picker with nothing behind it costs you the repos you are not already
-	// working in, and a harness state it cannot read costs the working set its
-	// memory. Both are less than a Dashboard that will not start.
-	//
-	// The harness is every hand the Dashboard has on tmux besides: it steers
-	// the working client to a Session or to a repo, and it carries the counts
-	// to that client's status line.
-	hands := dashboard.Harness{Jumper: harness, Opener: harness, Strip: harness, Seen: model.Seen}
+	// it has been in. Neither is worth holding the Dashboard up over: a picker
+	// with nothing behind it costs you the repos you are not already working
+	// in, and a state file it cannot read costs the working set its memory of
+	// the quiet ones.
 	if scan, err := inventory.Default(); err != nil {
 		fmt.Fprintf(os.Stderr, "ganymede: the repo picker has nothing to offer: %v\n", err)
 	} else {
 		hands.Inventory = scan
 	}
-	// A harness state that could not be read still comes back usable — it just
-	// remembers nothing, and refuses to write over the file it could not
-	// understand. Saying so here is worth little, since the Dashboard is about
-	// to take the screen; it says so again on the row, every time it tries to
-	// record where you have been.
-	remembered, err := sidecar.Default()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ganymede: %v\n", err)
-	}
-	if remembered != nil {
+	if remembered, err := whereYouHaveBeen(); remembered != nil {
 		hands.Activity = remembered
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ganymede: %v\n", err)
+		}
 	}
 
 	_, err = tea.NewProgram(dashboard.New(working, hands), tea.WithAltScreen()).Run()
 	return err
+}
+
+// whereYouHaveBeen is the harness's memory of which repos you have been working
+// in, which is what the working set holds on to after a repo's Sessions end.
+//
+// Like the tickets, a state file that cannot be read costs what is in it and
+// nothing else: the Dashboard still shows everything running, and the repos it
+// would otherwise have kept on for the week are a keystroke away in the picker.
+func whereYouHaveBeen() (*workingset.Activity, error) {
+	sidecar, err := config.DefaultSidecar()
+	if err != nil {
+		return nil, fmt.Errorf("the working set will not survive a restart: %w", err)
+	}
+	activity, err := workingset.Load(sidecar)
+	if err != nil {
+		return activity, fmt.Errorf("the repos you were working in cannot be read: %w", err)
+	}
+	return activity, nil
+}
+
+// known is which ticket each Session is about: what the branches and worktree
+// names say, with whatever you have corrected by hand over the top.
+//
+// A state file that cannot be read costs the corrections in it and nothing
+// else. Every ticket the harness can work out for itself still shows, and the
+// Dashboard — whose job is telling you what is running — is not held up over a
+// sidecar file.
+func known() dashboard.Tickets {
+	sidecar, err := config.DefaultSidecar()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: tickets set by hand cannot be kept: %v\n", err)
+		return &ticket.Tickets{}
+	}
+	overrides, err := ticket.Load(sidecar)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: tickets set by hand cannot be read: %v\n", err)
+	}
+	return &ticket.Tickets{Overrides: overrides}
 }
 
 // install puts both halves in place, and reports either one failing. Asked for

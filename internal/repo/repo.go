@@ -37,15 +37,24 @@ func Root(dir string) string {
 }
 
 func gitDir(dir string, args ...string) (string, bool) {
-	out, err := exec.Command("git", append([]string{"-C", dir, "rev-parse"}, args...)...).Output()
+	return git(dir, append([]string{"rev-parse"}, args...)...)
+}
+
+// git asks git a question about the checkout at dir, and reports whether it
+// answered. Everything this package asks is a question with a one-line answer,
+// and every way of not having one — dir is not a checkout, is not there at all,
+// or the question does not apply to it — comes back the same way, because the
+// callers do the same thing with all of them.
+func git(dir string, args ...string) (string, bool) {
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
 	if err != nil {
 		return "", false
 	}
-	path := strings.TrimSpace(string(out))
-	if path == "" {
+	answer := strings.TrimSpace(string(out))
+	if answer == "" {
 		return "", false
 	}
-	return path, true
+	return answer, true
 }
 
 // Absolute is the one name for a directory, so that two Sessions reaching the

@@ -315,23 +315,15 @@ func TestEnterJumpsToTheSelectedSession(t *testing.T) {
 	}
 }
 
-// A repo's header row is not a Session. Enter on it takes you to the repo —
-// never into one of the Sessions under it, which would be the Dashboard
-// choosing on your behalf which of them you meant.
-func TestEnterOnARepoHeaderTakesYouToTheRepoRatherThanASession(t *testing.T) {
+// A repo's header row is not a Session; Enter on it has nowhere to go.
+func TestEnterOnARepoHeaderJumpsNowhere(t *testing.T) {
 	jumper := &jumps{}
-	opener := &opens{}
-	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper, Opener: opener})
-	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
-	model, _ = model.Update(dashboard.Sessions([]session.Session{live("ganymede-78", "/repos/ganymede", session.Idle)}))
+	model := sidepanel(jumper, live("ganymede-78", "/repos/ganymede", session.Idle))
 
 	model = press(model, tea.KeyEnter)
 
 	if len(jumper.pids) != 0 {
 		t.Errorf("jumped to %v from a repo's header row", jumper.pids)
-	}
-	if len(opener.dirs) != 1 || opener.dirs[0] != "/repos/ganymede" {
-		t.Errorf("Enter on the repo's header opened %v, want /repos/ganymede", opener.dirs)
 	}
 }
 

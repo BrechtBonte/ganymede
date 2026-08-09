@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BrechtBonte/ganymede/internal/config"
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
 	"github.com/BrechtBonte/ganymede/internal/session"
-	"github.com/BrechtBonte/ganymede/internal/sidecar"
 	"github.com/BrechtBonte/ganymede/internal/topology"
 	"github.com/BrechtBonte/ganymede/internal/workingset"
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,13 +39,29 @@ func (s stock) Repos() ([]string, error) { return s.repos, s.err }
 // remembering is the real harness state, on a file the test owns: what the
 // working set is made of has to survive a restart, and a stand-in that only
 // held a map would never show that.
-func remembering(t *testing.T) *sidecar.State {
+func remembering(t *testing.T) *workingset.Activity {
 	t.Helper()
-	state, err := sidecar.Load(filepath.Join(t.TempDir(), "state.json"))
+	return reading(t, config.Sidecar{Path: filepath.Join(t.TempDir(), "state.json")})
+}
+
+// reading is the activity kept in one particular state file, so that a test
+// can put the Dashboard down and pick it up again over the same one.
+func reading(t *testing.T, state config.Sidecar) *workingset.Activity {
+	t.Helper()
+	activity, err := workingset.Load(state)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	return state
+	return activity
+}
+
+// worked records that you were in root at at, failing the test if the harness
+// could not write it down.
+func worked(t *testing.T, activity *workingset.Activity, root string, at time.Time) {
+	t.Helper()
+	if err := activity.Touch(root, at); err != nil {
+		t.Fatalf("Touch(%q): %v", root, err)
+	}
 }
 
 // dashboardOn is a Dashboard sized for the sidepanel, wired to harness and
@@ -81,7 +97,7 @@ func picking(t *testing.T, model tea.Model) tea.Model {
 // and a list of live Sessions.
 func TestRepoWorkedInRecentlyIsOnTheDashboardWithNoSessions(t *testing.T) {
 	state := remembering(t)
-	state.Touch("/repos/service-billing", time.Now().Add(-2*time.Hour))
+	worked(t, state, "/repos/service-billing", time.Now().Add(-2*time.Hour))
 
 	view := tree(dashboardOn(dashboard.Harness{Activity: state}))
 
@@ -95,7 +111,7 @@ func TestRepoWorkedInRecentlyIsOnTheDashboardWithNoSessions(t *testing.T) {
 // picker.
 func TestRepoNotWorkedInSinceTheWindowIsNotOnTheDashboard(t *testing.T) {
 	state := remembering(t)
-	state.Touch("/repos/archived", time.Now().Add(-workingset.Window-time.Hour))
+	worked(t, state, "/repos/archived", time.Now().Add(-workingset.Window-time.Hour))
 
 	view := tree(dashboardOn(dashboard.Harness{Activity: state}))
 
@@ -108,7 +124,7 @@ func TestRepoNotWorkedInSinceTheWindowIsNotOnTheDashboard(t *testing.T) {
 // remembers, because that is where you are working now.
 func TestRepoWithALiveSessionIsOnTheDashboardHoweverOldItsActivity(t *testing.T) {
 	state := remembering(t)
-	state.Touch("/repos/service-billing", time.Now().Add(-30*24*time.Hour))
+	worked(t, state, "/repos/service-billing", time.Now().Add(-30*24*time.Hour))
 
 	view := tree(dashboardOn(dashboard.Harness{Activity: state},
 		live("service-billing-a1", "/repos/service-billing", session.Idle)))
@@ -123,7 +139,7 @@ func TestRepoWithALiveSessionIsOnTheDashboardHoweverOldItsActivity(t *testing.T)
 func TestQuietReposSortBelowReposWithSessions(t *testing.T) {
 	state := remembering(t)
 	// Named so that sorting by anything but urgency would put it first.
-	state.Touch("/repos/aaa-quiet", time.Now())
+	worked(t, state, "/repos/aaa-quiet", time.Now())
 
 	view := tree(dashboardOn(dashboard.Harness{Activity: state},
 		live("zzz-assistant", "/repos/zzz-busy", session.Working)))
@@ -156,7 +172,7 @@ func TestReposWithLiveSessionsAreRecordedAsWorkedIn(t *testing.T) {
 func TestTheSelectionStartsOnTheMostUrgentRow(t *testing.T) {
 	state := remembering(t)
 	// Named so that any ordering but urgency would put it first.
-	state.Touch("/repos/aaa-quiet", time.Now())
+	worked(t, state, "/repos/aaa-quiet", time.Now())
 
 	model := dashboardOn(dashboard.Harness{Activity: state},
 		live("zzz-assistant", "/repos/zzz-busy", session.Blocked))
@@ -191,7 +207,7 @@ func TestTheSelectionYouMadeSurvivesTheTreeBeingRebuilt(t *testing.T) {
 // running in it, so this is the repo-shaped jump rather than the Session one.
 func TestEnterOnARepoRowOpensTheRepo(t *testing.T) {
 	state := remembering(t)
-	state.Touch("/repos/service-billing", time.Now())
+	worked(t, state, "/repos/service-billing", time.Now())
 	opener := &opens{}
 	model := dashboardOn(dashboard.Harness{Opener: opener, Activity: state})
 
@@ -282,19 +298,16 @@ func TestPickingARepoOpensItAndPutsItOnTheDashboard(t *testing.T) {
 // picked has to still be there after a restart — the only reason the sidecar
 // is a file at all.
 func TestAPickedRepoIsStillOnTheDashboardAfterARestart(t *testing.T) {
-	state := remembering(t)
+	file := config.Sidecar{Path: filepath.Join(t.TempDir(), "state.json")}
 	model := picking(t, dashboardOn(dashboard.Harness{
 		Opener:    &opens{},
-		Activity:  state,
+		Activity:  reading(t, file),
 		Inventory: stock{repos: []string{"/repos/ganymede"}},
 	}))
 	press(model, tea.KeyEnter)
 
-	reloaded, err := sidecar.Load(state.Path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	view := tree(dashboardOn(dashboard.Harness{Activity: reloaded}))
+	// A second Dashboard over the same state file — the harness started again.
+	view := tree(dashboardOn(dashboard.Harness{Activity: reading(t, file)}))
 
 	if _, ok := lineWith(view, "ganymede"); !ok {
 		t.Errorf("the picked repo did not survive the restart:\n%s", view)

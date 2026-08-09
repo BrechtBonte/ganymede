@@ -15,6 +15,7 @@ import (
 
 	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
+	"github.com/BrechtBonte/ganymede/internal/ticket"
 	"github.com/BrechtBonte/ganymede/internal/topology"
 	"github.com/BrechtBonte/ganymede/internal/workingset"
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,8 +23,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Sessions is a fresh account of the Sessions, as the state model reports
-// them.
+// Sessions is a fresh account of the working set, as the state model reports
+// it.
 type Sessions []session.Session
 
 // watchEnded says the state model has stopped reporting. The Dashboard keeps
@@ -56,8 +57,7 @@ type Inventory interface {
 // this on restart would have no working set worth the name.
 type Activity interface {
 	Active() map[string]time.Time
-	Touch(root string, at time.Time)
-	Save() error
+	Touch(root string, at time.Time) error
 }
 
 // Seen is how the Dashboard says a Session has been put in front of you, which
@@ -72,6 +72,21 @@ type Strip interface {
 	Show(waiting session.Attention) error
 }
 
+// Tickets is everything the harness does with a JIRA ticket: read which one a
+// Session's checkout is about, keep the correction when you set one by hand, and
+// show it. All three are the same small idea — an ID and a link, no JIRA API —
+// so the Dashboard asks one thing for all of them.
+type Tickets interface {
+	// Of is the ticket the Session working in dir under Main root root is
+	// about, and the empty Key when it is about none.
+	Of(dir, root string) ticket.Key
+	// Set records the ticket by hand, or clears the correction when key is
+	// empty and lets the checkout speak for itself again.
+	Set(dir, root string, key ticket.Key) error
+	// Open shows the ticket in the browser.
+	Open(key ticket.Key) error
+}
+
 // Harness is everything the Dashboard reaches the rest of the world through.
 // Any of them may be absent: a Dashboard missing one does less, and still
 // draws.
@@ -83,6 +98,8 @@ type Harness struct {
 	Strip Strip
 	// Seen reports a Session as looked at, which is what clears Ready.
 	Seen Seen
+	// Tickets is what each Session's work is about.
+	Tickets Tickets
 	// Inventory is what the picker offers.
 	Inventory Inventory
 	// Activity is the harness's memory of where you have been working.
@@ -96,27 +113,48 @@ type Model struct {
 	harness       Harness
 	rows          []row
 	cursor        int
-	// latest is the last account of the Sessions the state model reported,
-	// kept so the tree can be rebuilt when the working set changes underneath
-	// it — a repo picked, a repo opened — with no Session having moved.
-	latest []session.Session
+	// set is the Sessions the rows were built from, kept so that they can be
+	// built again when something other than a Session has moved — a repo
+	// picked, a repo opened, the recency window closing on the clock.
+	set []session.Session
 	// working is the working set: the Main roots the Dashboard shows.
 	working []string
 	// picker is the fuzzy repo picker, open or not.
 	picker picker
 	// roots remembers which Main root a Session's directory belongs to.
 	roots map[string]string
-	// waiting is what the Sessions on show are asking of you: the header
+	// tickets remembers what each Session's directory is about, so that the
+	// question is asked of git once rather than once a redraw. It is let go of
+	// on the tick, which is what a branch switched in a Main root waits for.
+	tickets map[string]ticket.Key
+	// waiting is what the working set on show is asking of you: the header
 	// counts it, and the strip carries it.
 	waiting session.Attention
-	// written is what the strip was last told, so that a tree rebuilt with the
-	// same Attention in it is not written out again — and shown says whether it
-	// has been told anything at all, since a Dashboard opening on a quiet
-	// morning still has to clear whatever the last one left there.
+	// written is what the strip was last told, so that a working set rebuilt
+	// with the same Attention in it is not written out again — and shown says
+	// whether it has been told anything at all, since a Dashboard opening on a
+	// quiet working set still has to clear whatever the last one left there.
 	written session.Attention
 	shown   bool
 	// notice is the last thing the Dashboard was asked to do and could not.
 	notice string
+	// setting is the ticket being typed, and nil when none is.
+	setting *setting
+}
+
+// setting is a ticket being set by hand: the checkout it is about, the name it
+// was opened over, and what has been typed for it so far.
+//
+// It holds the checkout rather than the row. The working set is rebuilt
+// underneath the input every time any Session anywhere changes state, and a
+// correction that landed on whichever row had moved into that position would be
+// worse than one that could not be made at all. The name is held for the same
+// reason: it is what the box says is being corrected, and the row it was read
+// off may be gone by the time it is read out.
+type setting struct {
+	dir, root string
+	name      string
+	typed     string
 }
 
 // New returns a Dashboard drawing the Sessions that arrive on sessions and
@@ -134,23 +172,24 @@ func New(sessions <-chan []session.Session, harness Harness) Model {
 		height:   45,
 		sessions: sessions,
 		harness:  harness,
-		roots:    map[string]string{},
 	}
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(waitFor(m.sessions), ticking()) }
 
-// tick is the Dashboard asking to be drawn again with nothing new to show.
-type tick struct{}
+// Tick is the Dashboard asking to be drawn again with nothing new to show.
+type Tick struct{}
 
-// ticking keeps the wait ages honest. Nothing arrives on the watch while every
-// Session sits still, and a row that has been Blocked for an hour would go on
-// saying four minutes for as long as nothing else moved.
+// ticking keeps honest the two things that move without the watch saying
+// anything. A row that has been Blocked for an hour would go on saying four
+// minutes for as long as no Session anywhere moved — and the branch under a
+// Session is checked out and switched away from all day, while the Session
+// itself sits at its prompt and reports nothing.
 func ticking() tea.Cmd {
-	return tea.Tick(30*time.Second, func(time.Time) tea.Msg { return tick{} })
+	return tea.Tick(30*time.Second, func(time.Time) tea.Msg { return Tick{} })
 }
 
-// waitFor takes the next account of the Sessions off the watch.
+// waitFor takes the next working set off the watch.
 func waitFor(sessions <-chan []session.Session) tea.Cmd {
 	if sessions == nil {
 		return nil
@@ -172,10 +211,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.showing(msg).counted(), waitFor(m.sessions)
 	case watchEnded:
 		return m, nil
-	case tick:
-		// A repo can fall out of the working set with nothing having moved:
-		// the recency window closes on the clock, not on an event.
-		return m.rebuilt(), ticking()
+	case Tick:
+		return m.asking(), ticking()
 	case Discovered:
 		m.picker = m.picker.found(msg)
 		return m, nil
@@ -190,21 +227,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // Every repo running one is recorded as worked in on the way past. That is
 // what the recency window is measured from: a repo whose Sessions have all
 // ended stays on the Dashboard for as long as the window says, because the
-// harness saw you there while they were running.
+// harness saw you there while they were running. It happens on the tick too,
+// through asking — a Session that sits at its prompt for three days reports
+// nothing in all that time, and a window measured from the last thing it said
+// would start closing while you were still working in it.
 func (m Model) showing(sessions []session.Session) Model {
-	m.latest = sessions
+	if m.roots == nil {
+		m.roots = map[string]string{}
+	}
+	m.set = sessions
 	if m.harness.Activity != nil {
 		now := time.Now()
 		for _, s := range sessions {
 			if root := m.rootOf(s.Dir); root != "" {
-				m.harness.Activity.Touch(root, now)
+				if err := m.harness.Activity.Touch(root, now); err != nil {
+					m.notice = err.Error()
+				}
 			}
-		}
-		// Recording is cheap and saving is nearly always a no-op: the stamps
-		// are rounded before they go in, so a file saying the same thing is
-		// not written again.
-		if err := m.harness.Activity.Save(); err != nil {
-			m.notice = err.Error()
 		}
 	}
 	return m.rebuilt()
@@ -227,9 +266,12 @@ func (m Model) rebuilt() Model {
 	if m.roots == nil {
 		m.roots = map[string]string{}
 	}
+	if m.tickets == nil {
+		m.tickets = map[string]ticket.Key{}
+	}
 	m.working = m.workingSet()
-	m.rows = rowsOf(m.latest, m.working, m.rootOf)
-	m.waiting = session.AttentionIn(m.latest)
+	m.rows = rowsOf(m.set, m.working, m.rootOf, m.ticketOf)
+	m.waiting = session.AttentionIn(m.set)
 	m.cursor = 0
 	for i, r := range m.rows {
 		if r.key() == selected {
@@ -247,8 +289,8 @@ func (m Model) rebuilt() Model {
 // one until the Claim action exists. The rule already honours them, so that is
 // a field to fill rather than a rule to revisit.
 func (m Model) workingSet() []string {
-	live := make([]string, 0, len(m.latest))
-	for _, s := range m.latest {
+	live := make([]string, 0, len(m.set))
+	for _, s := range m.set {
 		if root := m.rootOf(s.Dir); root != "" {
 			live = append(live, root)
 		}
@@ -260,11 +302,25 @@ func (m Model) workingSet() []string {
 	return workingset.Membership{Live: live, Active: active}.Roots(time.Now())
 }
 
-// counted carries the Sessions' Attention out to the strip.
+// asking lets go of the answers that go stale on their own, and draws the
+// working set it already has around fresh ones.
+//
+// A ticket is the only one of those. Everything else on a row is reported to
+// the Dashboard the moment it changes — that is what the watch, the hooks and
+// the cross-check are — while the branch a Session is working on is changed by
+// you, in a shell, and nothing anywhere says so. Half a minute is a long time
+// to look at the ticket you were on before; it is a short time to have looked
+// at it for, and it costs one question per Session.
+func (m Model) asking() Model {
+	clear(m.tickets)
+	return m.showing(m.set)
+}
+
+// counted carries the working set's Attention out to the strip.
 //
 // Counts that have not moved are not written again: writing the strip redraws
-// every client on the Sessions server, the tree is rebuilt whenever anything
-// at all moves, and flickering the Session you are typing in to tell
+// every client on the Sessions server, the working set is rebuilt whenever
+// anything at all moves, and flickering the Session you are typing in to tell
 // you what it already said is worse than no strip.
 //
 // It is written here rather than handed to the runtime, which would run it in
@@ -309,14 +365,36 @@ func (m Model) rootOf(dir string) string {
 	return root
 }
 
+// ticketOf is which ticket a Session's checkout is about, remembering what it
+// answered — for the same reason as the root, and unlike a root only until the
+// next tick: a branch is checked out and switched away from all day, and the
+// answer is only as good as the last time anybody asked.
+func (m Model) ticketOf(dir, root string) ticket.Key {
+	if about, asked := m.tickets[dir]; asked {
+		return about
+	}
+	if m.harness.Tickets == nil {
+		return ""
+	}
+	about := m.harness.Tickets.Of(dir, root)
+	m.tickets[dir] = about
+	return about
+}
+
 func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Whatever the Dashboard last could not do has been read by now.
 	m.notice = ""
 
-	// The picker is a mode: while it is up every key belongs to it, because
-	// the keys it needs are the printable ones every other action is bound to.
-	// Ctrl+C is the exception, since quitting must never be behind a mode.
-	if m.picker.open && msg.Type != tea.KeyCtrlC {
+	// An open input owns the keyboard. Every letter on the Dashboard is a key
+	// that does something, and neither a ticket nor a repo can be typed on a
+	// keyboard where half its letters jump, open a browser or end a Session.
+	// Ctrl+C is the exception to both, since quitting must never be behind a
+	// mode.
+	switch {
+	case msg.Type == tea.KeyCtrlC:
+	case m.setting != nil:
+		return m.typed(msg), nil
+	case m.picker.open:
 		return m.picking(msg)
 	}
 
@@ -343,11 +421,124 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		m = m.jump()
 	case tea.KeyRunes:
-		if string(msg.Runes) == "g" {
+		switch string(msg.Runes) {
+		case "o":
+			m = m.open()
+		case "t":
+			m = m.setTicket()
+		case "g":
 			return m.opening()
 		}
 	}
 	return m, nil
+}
+
+// setTicket opens the inline input over the selected Session.
+//
+// It opens empty, on a Session that already has a ticket as much as on one that
+// has none. Correcting one is typing the right one, which is nine characters
+// and no thought at all; the ticket it opened on would have to be got out of
+// the way first, and there is nowhere on this keyboard for a select-all. The one
+// it is replacing stays on the rail above the box the whole time, and clearing
+// the correction is the same gesture with nothing typed.
+func (m Model) setTicket() Model {
+	if m.cursor >= len(m.rows) || m.harness.Tickets == nil {
+		return m
+	}
+	// A repo header is not a Session and has no checkout to be about a ticket.
+	if r := m.rows[m.cursor]; r.session != nil {
+		m.setting = &setting{dir: r.session.Dir, root: r.root, name: r.session.Name}
+	}
+	return m
+}
+
+// typed is a keystroke going into the open input.
+func (m Model) typed(msg tea.KeyMsg) Model {
+	switch msg.Type {
+	case tea.KeyRunes:
+		m.setting = m.setting.with(string(msg.Runes))
+	case tea.KeySpace:
+		m.setting = m.setting.with(" ")
+	case tea.KeyBackspace:
+		m.setting = m.setting.back()
+	case tea.KeyEsc:
+		// Abandoned: nothing is set, and the row goes on saying what it said.
+		m.setting = nil
+	case tea.KeyEnter:
+		m = m.keep()
+	}
+	return m
+}
+
+// with is the input with more typed into it.
+func (s *setting) with(text string) *setting {
+	typed := *s
+	typed.typed += text
+	return &typed
+}
+
+// back is the input with the last character taken off it.
+func (s *setting) back() *setting {
+	typed := *s
+	if runes := []rune(typed.typed); len(runes) > 0 {
+		typed.typed = string(runes[:len(runes)-1])
+	}
+	return &typed
+}
+
+// keep records what was typed as the selected checkout's ticket.
+//
+// What is read out of it is the first key in it, upper-cased first: a ticket
+// arrives either off your fingers, where the shift key is somebody being right
+// at your expense, or off the address bar of the tab it is open in, where the
+// key is the last thing in a URL. Both are the ticket you meant.
+//
+// Nothing typed at all clears the correction, which is the only way back to
+// letting the branch speak for itself.
+func (m Model) keep() Model {
+	typed := strings.TrimSpace(m.setting.typed)
+	key, ok := ticket.In(strings.ToUpper(typed))
+	if typed != "" && !ok {
+		// Left open, with what you typed still in it: it is a thing to correct,
+		// not a thing to type again.
+		m.notice = "not a ticket: " + typed
+		return m
+	}
+
+	if err := m.harness.Tickets.Set(m.setting.dir, m.setting.root, key); err != nil {
+		// A state file that cannot be written will not be written by trying
+		// again, so the input closes and the complaint stands in its place.
+		m.setting, m.notice = nil, err.Error()
+		return m
+	}
+	// The answer that was remembered for this directory is the old one.
+	delete(m.tickets, m.setting.dir)
+	m.setting = nil
+	return m.showing(m.set)
+}
+
+// open shows the selected Session's ticket in the browser. A row with no ticket
+// has no link, and says so rather than doing nothing at all — a key that
+// silently ignores you reads as a harness that has broken.
+func (m Model) open() Model {
+	if m.cursor >= len(m.rows) {
+		return m
+	}
+	r := m.rows[m.cursor]
+	if r.session == nil {
+		// A repo header is not a Session and is about no ticket.
+		return m
+	}
+	// A Dashboard with nothing to ask about tickets has every row about none,
+	// so this is also where it lands.
+	if r.ticket == "" {
+		m.notice = "no ticket — press t to set one"
+		return m
+	}
+	if err := m.harness.Tickets.Open(r.ticket); err != nil {
+		m.notice = err.Error()
+	}
+	return m
 }
 
 // jump puts the selected row in front of you. On a Session that is the pane it
@@ -360,7 +551,7 @@ func (m Model) jump() Model {
 	}
 	selected := m.rows[m.cursor]
 	if selected.session == nil {
-		return m.open(selected.root)
+		return m.goTo(selected.root)
 	}
 	if m.harness.Jumper == nil {
 		return m
@@ -377,13 +568,13 @@ func (m Model) jump() Model {
 	return m
 }
 
-// open takes you to a repo and puts it in the working set, which are the two
+// goTo takes you to a repo and puts it in the working set, which are the two
 // halves of the same thing: where you are working is what the Dashboard shows.
 //
 // A repo it could not take you to does neither. Recording a repo you never
 // reached would leave a row on the Dashboard as the only trace of a jump that
 // did not happen.
-func (m Model) open(root string) Model {
+func (m Model) goTo(root string) Model {
 	if m.harness.Opener == nil {
 		return m
 	}
@@ -392,13 +583,11 @@ func (m Model) open(root string) Model {
 		return m
 	}
 	if m.harness.Activity != nil {
-		m.harness.Activity.Touch(root, time.Now())
-		if err := m.harness.Activity.Save(); err != nil {
+		if err := m.harness.Activity.Touch(root, time.Now()); err != nil {
 			m.notice = err.Error()
 		}
 	}
-	m = m.rebuilt()
-	return m.selecting(root)
+	return m.rebuilt().selecting(root)
 }
 
 // selecting puts the cursor on a repo's own row, so that the repo you were
@@ -418,6 +607,9 @@ var (
 	ruleStyle  = lipgloss.NewStyle().Faint(true)
 	quietStyle = lipgloss.NewStyle().Faint(true)
 	repoStyle  = lipgloss.NewStyle().Bold(true)
+	// A ticket is a reference, not a state: it reads in the colour the
+	// validated mock gives it, which is nobody's state colour.
+	ticketColour = lipgloss.NewStyle().Foreground(lipgloss.Color("#a5d6ff"))
 	// The selected row is inverted and otherwise drawn plainly: a state colour
 	// nested inside the inversion fights with it.
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
@@ -469,8 +661,8 @@ func (m Model) header() string {
 
 // counts draws Attention as a mark and a number per tier, in the tier's own
 // colour — the same reading as the strip in the working client's status line.
-// Nothing waiting on you is drawn as nothing: a count that is always there is
-// one you stop seeing.
+// A working set asking nothing of you is drawn as nothing: a count that is
+// always there is one you stop seeing.
 func (m Model) counts() string {
 	var tiers []string
 	for _, tier := range []struct {
@@ -507,8 +699,7 @@ func (m Model) tree(space int) []string {
 }
 
 // nothingRunning says so, rather than leaving an empty frame that reads as a
-// Dashboard which has broken. It also says where the rest of them are, since
-// an empty working set is exactly when you need the picker.
+// Dashboard which has broken.
 func (m Model) nothingRunning() []string {
 	return []string{
 		quietStyle.Render(truncate("No sessions.", m.width)),
@@ -533,29 +724,75 @@ func (m Model) line(i int) string {
 	}
 
 	// Two columns of indent put a Session under its repo; then the state
-	// glyph, which is what the eye runs down; and the age at the far end,
-	// which is what the ordering within a tier is made of — the row above has
-	// been waiting on you longer, and the rail should be able to show that.
+	// glyph, which is what the eye runs down; then the ticket and the age at
+	// the far end. The age is what the ordering within a tier is made of — the
+	// row above has been waiting on you longer, and the rail should be able to
+	// show that — and the ticket is what tells two Sessions in one repo apart
+	// before their names do.
 	const indent = "  "
 	glyph := r.session.State.Glyph()
 	age := ageOf(*r.session)
-	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" ")-lipgloss.Width(age)-1)
+	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" ")-lipgloss.Width(about(r.ticket)+" "+age)-1)
 	if i == m.cursor {
-		return selectedStyle.Width(m.width).Render(spread(indent+glyph+" "+name, age, m.width))
+		return selectedStyle.Width(m.width).Render(spread(indent+glyph+" "+name, about(r.ticket)+" "+age, m.width))
 	}
-	return spread(indent+styleOf(r.session.State).Render(glyph)+" "+name, quietStyle.Render(age), m.width)
+	return spread(indent+styleOf(r.session.State).Render(glyph)+" "+name,
+		ticketStyle(r.ticket).Render(about(r.ticket))+" "+quietStyle.Render(age), m.width)
+}
+
+// about is how a ticket reads on a row. A Session about no ticket says so,
+// rather than leaving a gap that reads as a harness which has not worked it out
+// yet — and never a placeholder key, which would read as an answer.
+func about(key ticket.Key) string {
+	if key == "" {
+		return "no ticket"
+	}
+	return string(key)
+}
+
+// ticketStyle draws a ticket in its own colour, and the absence of one in the
+// quiet the sidepanel keeps for what is not asking anything of you.
+func ticketStyle(key ticket.Key) lipgloss.Style {
+	if key == "" {
+		return quietStyle
+	}
+	return ticketColour
 }
 
 // detail is the SELECTED box: what the highlighted row has no room to say.
 func (m Model) detail() []string {
 	lines := m.selected()
 	if m.notice != "" {
-		lines = append(lines, styleOf(session.Blocked).Render(truncate(m.notice, m.width)))
+		// The notice is the one thing in the box that is worth more than one
+		// line. Everything else here repeats what the rail already showed, and
+		// can be cut off at the edge without costing you anything; a complaint
+		// cut off at the edge is a complaint whose reason you never read — and
+		// the reason is the end of the sentence, every time.
+		for _, line := range strings.Split(ansi.Wrap(m.notice, m.width, ""), "\n") {
+			lines = append(lines, styleOf(session.Blocked).Render(line))
+		}
 	}
 	return lines
 }
 
 func (m Model) selected() []string {
+	if m.setting != nil {
+		// The box is the input for as long as one is open. It says what is
+		// being corrected rather than what is selected, because the two come
+		// apart: the working set is rebuilt under the input every time any
+		// Session anywhere moves, and the row you opened it over can end and
+		// take the selection with it. The correction is about the checkout,
+		// which is still there.
+		return []string{
+			elide(m.setting.name, m.width),
+			// The cursor is drawn rather than placed: the Dashboard shares a
+			// terminal with the working client, and the one real cursor
+			// belongs over there.
+			ticketColour.Render(tail("ticket › "+m.setting.typed+"▌", m.width)),
+			quietStyle.Render(shorten(m.setting.dir, m.width)),
+			quietStyle.Render(truncate("⏎ set · esc cancel", m.width)),
+		}
+	}
 	if m.cursor >= len(m.rows) {
 		return []string{quietStyle.Render("—")}
 	}
@@ -581,6 +818,7 @@ func (m Model) selected() []string {
 	lines := []string{
 		state.Render(r.session.State.Glyph()) + " " + truncate(standing, m.width-2),
 		elide(r.session.Name, m.width),
+		ticketStyle(r.ticket).Render(truncate(about(r.ticket), m.width)),
 	}
 	if r.session.Reason != "" {
 		// Blocked is always displayed with its reason.
@@ -592,8 +830,19 @@ func (m Model) selected() []string {
 	}
 	return append(lines,
 		quietStyle.Render(shorten(r.session.Dir, m.width)),
-		quietStyle.Render(truncate("⏎ jump", m.width)),
+		quietStyle.Render(truncate(offering(r), m.width)),
 	)
+}
+
+// offering is what the selected row can be asked to do. A Session about no
+// ticket is not offered a link to open, since there is none — but it is always
+// offered the key that gives it one.
+func offering(r row) string {
+	keys := []string{"⏎ jump", "t ticket"}
+	if r.ticket != "" {
+		keys = append(keys, "o open")
+	}
+	return strings.Join(keys, " · ")
 }
 
 // spread puts left at one end of a line width columns wide and right at the
@@ -668,15 +917,21 @@ func elide(name string, width int) string {
 // shorten fits a path into width by keeping its tail, which is the end that
 // says which checkout you are looking at.
 func shorten(path string, width int) string {
-	path = underHome(path)
+	return tail(underHome(path), width)
+}
+
+// tail fits a line into width by cutting from the front. It is for the lines
+// whose end is the part worth reading: a path, and an input, where the end is
+// where you are typing.
+func tail(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	if over := ansi.StringWidth(path) - width; over >= 0 {
+	if over := ansi.StringWidth(s) - width; over >= 0 {
 		// One column of the budget goes to saying something was cut off.
-		return ansi.TruncateLeft(path, over+1, "…")
+		return ansi.TruncateLeft(s, over+1, "…")
 	}
-	return path
+	return s
 }
 
 // underHome writes a path under the home directory the way you would say it.

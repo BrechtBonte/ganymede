@@ -82,7 +82,7 @@ func (m Model) picking(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if chosen == "" {
 			return m, nil
 		}
-		return m.open(chosen), nil
+		return m.goTo(chosen), nil
 	case tea.KeyUp:
 		if m.picker.cursor > 0 {
 			m.picker.cursor--
