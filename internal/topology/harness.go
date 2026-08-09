@@ -38,6 +38,11 @@ type Harness struct {
 	// clients side by side.
 	DockSocket string
 	DockConf   string
+	// Worktree is the command a spawned Worktree session runs, given the name
+	// a spawn dialog derived and the first prompt when there is one. nil
+	// means WorktreeCommand — a test substitutes something else so Spawn need
+	// not run claude at all.
+	Worktree func(name, prompt string) []string
 }
 
 // Ensure brings the topology up, reusing whatever is already running.
@@ -166,6 +171,20 @@ func shellQuote(arg string) string {
 	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
 }
 
+// broughtUp is the repo at dir's own Session, brought up at its Main root if
+// nothing is running there yet — the bring-up Open and Spawn both need before
+// they can do anything to that Session's tmux session.
+func (h Harness) broughtUp(dir string) (string, error) {
+	name, err := h.sessionFor(dir)
+	if err != nil {
+		return "", err
+	}
+	if err := h.ensureSession(name, dir, nil); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
 // ensureSession creates a detached session unless it already exists.
 func (h Harness) ensureSession(name, dir string, command []string) error {
 	if h.sessions().run("has-session", "-t", "="+name) == nil {
@@ -226,5 +245,6 @@ func Default(workingDir string) (Harness, error) {
 		WorkingDir: workingDir,
 		DockSocket: "ganymede-dock",
 		DockConf:   filepath.Join(config.Home(home), "ganymede", "dock.conf"),
+		Worktree:   WorktreeCommand,
 	}, nil
 }
