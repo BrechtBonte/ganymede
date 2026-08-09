@@ -78,6 +78,9 @@ type Model struct {
 	set []session.Session
 	// roots remembers which Main root a Session's directory belongs to.
 	roots map[string]string
+	// checkouts remembers which checkout a Session has its hands on, which is
+	// what says whether it is holding its repo's Main root.
+	checkouts map[string]string
 	// tickets remembers what each Session's directory is about, so that the
 	// question is asked of git once rather than once a redraw. It is let go of
 	// on the tick, which is what a branch switched in a Main root waits for.
@@ -183,11 +186,14 @@ func (m Model) showing(sessions []session.Session) Model {
 	if m.roots == nil {
 		m.roots = map[string]string{}
 	}
+	if m.checkouts == nil {
+		m.checkouts = map[string]string{}
+	}
 	if m.tickets == nil {
 		m.tickets = map[string]ticket.Key{}
 	}
 	m.set = sessions
-	m.rows = rowsOf(sessions, m.rootOf, m.ticketOf)
+	m.rows = rowsOf(sessions, answers{root: m.rootOf, checkout: m.checkoutOf, ticket: m.ticketOf})
 	m.waiting = session.AttentionIn(sessions)
 	m.cursor = 0
 	for i, r := range m.rows {
@@ -251,6 +257,19 @@ func (m Model) rootOf(dir string) string {
 	root := repo.Root(dir)
 	m.roots[dir] = root
 	return root
+}
+
+// checkoutOf is repo.Checkout, remembering what it answered — for the same
+// reason as the root, and as permanently: a Session's directory is a worktree
+// or it is not, and it does not become the other one while the Session is
+// running in it.
+func (m Model) checkoutOf(dir string) string {
+	if checkout, known := m.checkouts[dir]; known {
+		return checkout
+	}
+	checkout := repo.Checkout(dir)
+	m.checkouts[dir] = checkout
+	return checkout
 }
 
 // ticketOf is which ticket a Session's checkout is about, remembering what it
@@ -551,11 +570,7 @@ func (m Model) nothingRunning() []string {
 func (m Model) line(i int) string {
 	r := m.rows[i]
 	if r.session == nil {
-		name := truncate(r.label(), m.width)
-		if i == m.cursor {
-			return selectedStyle.Width(m.width).Render(name)
-		}
-		return repoStyle.Render(name)
+		return m.repoLine(r, i == m.cursor)
 	}
 
 	// Two columns of indent put a Session under its repo; then the state
@@ -573,6 +588,30 @@ func (m Model) line(i int) string {
 	}
 	return spread(indent+styleOf(r.session.State).Render(glyph)+" "+name,
 		ticketStyle(r.ticket).Render(about(r.ticket))+" "+quietStyle.Render(age), m.width)
+}
+
+// repoLine draws a repo's header row: its name, and at the far end the mark of
+// what its Main root is doing. The mark is the answer to the question the rail
+// is asked most often about a repo — whether a PR can be checked out in it —
+// and it sits in the same column on every header row, so that running an eye
+// down the rail reads as a list of roots you can and cannot have.
+func (m Model) repoLine(r row, selected bool) string {
+	glyph := r.state.Glyph()
+	if selected {
+		return selectedStyle.Width(m.width).Render(spread(r.label(), glyph, m.width))
+	}
+	return spread(repoStyle.Render(r.label()), rootStyle(r.state).Render(glyph), m.width)
+}
+
+// rootStyle is how a Main root's state is drawn: a root with an agent in it
+// reads in the agents' own colour, because an agent is what has it, and a free
+// one in the quiet the sidepanel keeps for everything that is not asking
+// anything of you.
+func rootStyle(state repo.State) lipgloss.Style {
+	if state == repo.InUse {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(session.Working.Colour()))
+	}
+	return quietStyle
 }
 
 // about is how a ticket reads on a row. A Session about no ticket says so,
@@ -634,8 +673,12 @@ func (m Model) selected() []string {
 
 	r := m.rows[m.cursor]
 	if r.session == nil {
+		// The mark on the row in words: whether a PR can be checked out here is
+		// the question a repo is on the rail to answer, and the box is where the
+		// answer is spelled rather than drawn.
 		return []string{
 			repoStyle.Render(truncate(r.label(), m.width)),
+			rootStyle(r.state).Render(r.state.Glyph()) + " " + truncate("root: "+string(r.state), m.width-2),
 			quietStyle.Render(shorten(r.root, m.width)),
 		}
 	}

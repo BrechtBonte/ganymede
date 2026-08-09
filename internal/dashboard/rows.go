@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/ticket"
 )
@@ -19,6 +20,23 @@ type row struct {
 	session *session.Session
 	// ticket is what the Session is about, and empty when it is about none.
 	ticket ticket.Key
+	// state is what the Main root is doing, on a repo's header row.
+	state repo.State
+}
+
+// answers is what laying the tree out has to ask about a directory or a root.
+// They are gathered here so that a row is built out of answers rather than out
+// of a handful of arguments, and so that the Dashboard can be the one
+// remembering them.
+type answers struct {
+	// root is the Main root a Session's directory belongs to.
+	root func(dir string) string
+	// checkout is the checkout a Session has its hands on, which is what
+	// separates a Session holding a Main root from one working in a worktree
+	// inside it.
+	checkout func(dir string) string
+	// ticket is what a Session's checkout is about.
+	ticket func(dir, root string) ticket.Key
 }
 
 // label is what the row is called.
@@ -44,15 +62,16 @@ func (r row) key() string {
 }
 
 // rowsOf lays the working set out as the repo tree: every Session under the
-// Main root rootOf gives its directory — a Worktree session under the repo it
+// Main root ask.root gives its directory — a Worktree session under the repo it
 // came from, and a Session outside every scan root under its own directory,
 // because the registry's cwd is ground truth. Repos are grouped by root rather
 // than by name, so two checkouts that happen to share a name stay apart. Each
-// Session row carries the ticket ticketOf says it is about.
-func rowsOf(sessions []session.Session, rootOf func(dir string) string, ticketOf func(dir, root string) ticket.Key) []row {
+// Session row carries the ticket it is about, and each repo's header row the
+// state of its Main root.
+func rowsOf(sessions []session.Session, ask answers) []row {
 	byRoot := map[string][]session.Session{}
 	for _, s := range sessions {
-		root := rootOf(s.Dir)
+		root := ask.root(s.Dir)
 		byRoot[root] = append(byRoot[root], s)
 	}
 
@@ -71,13 +90,25 @@ func rowsOf(sessions []session.Session, rootOf func(dir string) string, ticketOf
 
 	rows := make([]row, 0, len(sessions)+len(roots))
 	for _, root := range roots {
-		rows = append(rows, row{root: root})
+		rows = append(rows, row{root: root, state: stateOf(root, byRoot[root], ask)})
 		for i := range byRoot[root] {
 			running := &byRoot[root][i]
-			rows = append(rows, row{root: root, session: running, ticket: ticketOf(running.Dir, root)})
+			rows = append(rows, row{root: root, session: running, ticket: ask.ticket(running.Dir, root)})
 		}
 	}
 	return rows
+}
+
+// stateOf is what the Main root root is doing, given the Sessions grouped under
+// it. They are the live ones by construction — the working set is what the
+// registry, the hooks and the cross-check between them say is running — so
+// whether any of them is holding the root is the whole question.
+func stateOf(root string, group []session.Session, ask answers) repo.State {
+	working := make([]string, 0, len(group))
+	for _, s := range group {
+		working = append(working, ask.checkout(s.Dir))
+	}
+	return repo.StateOf(root, working)
 }
 
 // tier ranks a Session by how much it is asking of you. Blocked outranks
