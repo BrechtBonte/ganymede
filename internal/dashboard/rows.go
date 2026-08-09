@@ -43,17 +43,29 @@ func (r row) key() string {
 	return "session\x00" + strconv.Itoa(r.session.PID)
 }
 
-// rowsOf lays the working set out as the repo tree: every Session under the
-// Main root rootOf gives its directory — a Worktree session under the repo it
-// came from, and a Session outside every scan root under its own directory,
-// because the registry's cwd is ground truth. Repos are grouped by root rather
-// than by name, so two checkouts that happen to share a name stay apart. Each
-// Session row carries the ticket ticketOf says it is about.
-func rowsOf(sessions []session.Session, rootOf func(dir string) string, ticketOf func(dir, root string) ticket.Key) []row {
+// rowsOf lays the working set out as the repo tree: a header row per repo in
+// working, with every Session indented under the Main root rootOf gives its
+// directory — a Worktree session under the repo it came from, and a Session
+// outside every scan root under its own directory, because the registry's cwd
+// is ground truth. Repos are grouped by root rather than by name, so two
+// checkouts that happen to share a name stay apart. Each Session row carries
+// the ticket ticketOf says it is about.
+//
+// A repo in the working set with nothing running in it still gets its header:
+// that is the difference between the Dashboard and a list of live Sessions —
+// it shows where you are working, and you are not always mid-turn. A Session
+// in a repo the working set left out keeps its row all the same, since a
+// Session nothing on the Dashboard mentions is worse than a repo too many.
+func rowsOf(sessions []session.Session, working []string, rootOf func(dir string) string, ticketOf func(dir, root string) ticket.Key) []row {
 	byRoot := map[string][]session.Session{}
 	for _, s := range sessions {
 		root := rootOf(s.Dir)
 		byRoot[root] = append(byRoot[root], s)
+	}
+	for _, root := range working {
+		if _, drawn := byRoot[root]; !drawn {
+			byRoot[root] = nil
+		}
 	}
 
 	roots := make([]string, 0, len(byRoot))
@@ -62,8 +74,7 @@ func rowsOf(sessions []session.Session, rootOf func(dir string) string, ticketOf
 		roots = append(roots, root)
 	}
 	slices.SortFunc(roots, func(a, b string) int {
-		// A repo is as urgent as the most urgent Session in it.
-		if d := moreUrgent(byRoot[a][0], byRoot[b][0]); d != 0 {
+		if d := louder(byRoot[a], byRoot[b]); d != 0 {
 			return d
 		}
 		return strings.Compare(a, b)
@@ -78,6 +89,22 @@ func rowsOf(sessions []session.Session, rootOf func(dir string) string, ticketOf
 		}
 	}
 	return rows
+}
+
+// louder orders two repos by what each is asking of you: a repo is as urgent
+// as the most urgent Session in it, and a repo with nothing running in it is
+// quieter than any of them. It is on the Dashboard because you were there, not
+// because it wants something.
+func louder(a, b []session.Session) int {
+	switch {
+	case len(a) == 0 && len(b) == 0:
+		return 0
+	case len(a) == 0:
+		return 1
+	case len(b) == 0:
+		return -1
+	}
+	return moreUrgent(a[0], b[0])
 }
 
 // tier ranks a Session by how much it is asking of you. Blocked outranks
