@@ -3,9 +3,11 @@
 // which Sessions exist and what each of them is doing.
 //
 // The registry is undocumented. This package was built against Claude Code
-// 2.1.220 and is written to survive the shape moving underneath it: a file it
-// cannot read costs only its own Session, and a status it does not recognise
-// reads as Idle rather than dropping the row.
+// 2.1.220, re-verified unchanged against 2.1.226, and is written to survive
+// the shape moving underneath it: a file it cannot read costs only its own
+// Session, and a status it does not recognise reads as Idle rather than
+// dropping the row. What it cannot do is notice that the shape has moved,
+// which is what the reconciler is for.
 package registry
 
 import (
@@ -106,12 +108,16 @@ func readSession(path string) (session.Session, bool) {
 	if err := json.Unmarshal(body, &r); err != nil || r.PID == 0 {
 		return session.Session{}, false
 	}
+	// A status this reader does not know is taken as the Idle it falls back to.
+	// This is the account the Dashboard runs on when nothing contradicts it, so
+	// claiming the least and keeping the row is all there is to do with one.
+	state, _ := session.StateOf(r.Status)
 	return session.Session{
 		PID:    r.PID,
 		ID:     r.SessionID,
 		Dir:    r.CWD,
 		Name:   r.Name,
-		State:  stateOf(r.Status),
+		State:  state,
 		Reason: reasonOf(r.WaitingFor),
 		Since:  since(r.StatusUpdatedAt),
 	}, true
@@ -126,22 +132,6 @@ func since(millis int64) time.Time {
 		return time.Time{}
 	}
 	return time.UnixMilli(millis)
-}
-
-// stateOf reads the registry's status. An unknown status is Idle: it is the
-// state that claims the least about a Session this harness cannot read, and it
-// keeps the row on the Dashboard rather than pretending the Session is Gone.
-func stateOf(status string) session.State {
-	switch status {
-	case "busy":
-		return session.Working
-	case "waiting":
-		return session.Blocked
-	case "shell":
-		return session.Shell
-	default:
-		return session.Idle
-	}
 }
 
 // reasonOf reads waitingFor, which has only ever been observed as a string.

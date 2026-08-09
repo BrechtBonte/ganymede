@@ -1,10 +1,12 @@
 package state_test
 
 import (
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/hooks"
+	"github.com/BrechtBonte/ganymede/internal/reconciler"
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/state"
 )
@@ -21,6 +23,7 @@ type watching struct {
 	t         *testing.T
 	model     *state.Model
 	snapshots chan []session.Session
+	checks    chan reconciler.Reconciled
 	hooks     chan hooks.Event
 	merged    <-chan []session.Session
 }
@@ -31,9 +34,10 @@ func watch(t *testing.T) *watching {
 		t:         t,
 		model:     state.New(),
 		snapshots: make(chan []session.Session),
+		checks:    make(chan reconciler.Reconciled),
 		hooks:     make(chan hooks.Event),
 	}
-	w.merged = w.model.Watch(t.Context(), w.snapshots, w.hooks)
+	w.merged = w.model.Watch(t.Context(), w.snapshots, w.checks, w.hooks)
 	return w
 }
 
@@ -41,6 +45,14 @@ func watch(t *testing.T) *watching {
 func (w *watching) registry(sessions ...session.Session) []session.Session {
 	w.t.Helper()
 	w.snapshots <- sessions
+	return w.shown()
+}
+
+// crossCheck is what `claude agents --json` reported, having been asked at a
+// moment.
+func (w *watching) crossCheck(at time.Time, sessions ...session.Session) []session.Session {
+	w.t.Helper()
+	w.checks <- reconciler.Reconciled{At: at, Sessions: sessions}
 	return w.shown()
 }
 
@@ -83,6 +95,28 @@ func only(t *testing.T, set []session.Session) session.Session {
 func running(state session.State, since time.Time) session.Session {
 	return session.Session{PID: 72144, ID: "s1", Dir: "/repos/service-billing",
 		Name: "FIRE-2841-paging", State: state, Since: since}
+}
+
+// crossChecked is that same Session as `claude agents --json` describes one:
+// what it is doing, with no word on when it entered that state or why.
+func crossChecked(state session.State) session.Session {
+	return running(state, time.Time{})
+}
+
+// missed is a Session only the cross-check knows about — one the registry
+// watch never reported at all.
+func missed(state session.State) session.Session {
+	return session.Session{PID: 88021, ID: "s2", Dir: "/repos/service-ai-assistant",
+		Name: "ai-assistant-c4", State: state}
+}
+
+// names is the working set as it reads down the Dashboard.
+func names(set []session.Session) []string {
+	found := make([]string, len(set))
+	for i, s := range set {
+		found[i] = s.Name
+	}
+	return found
 }
 
 func turnEnded(said string) hooks.Event {
@@ -336,5 +370,276 @@ func TestAHookEdgeIsLetGoOfWhenTheRegistryLosesItsClock(t *testing.T) {
 
 	if shown.State != session.Working || shown.Reason != "" {
 		t.Errorf("the Session is %s (%q), want the registry's %s", shown.State, shown.Reason, session.Working)
+	}
+}
+
+// What the reconciler is for: a Session the registry watch never reported —
+// because the files moved, or their shape did — is on the Dashboard as soon as
+// the cross-check has been made.
+func TestASessionTheRegistryNeverReportedAppearsOnTheCrossCheck(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Working, start))
+
+	shown := w.crossCheck(start.Add(time.Minute), crossChecked(session.Working), missed(session.Blocked))
+
+	if want := []string{"FIRE-2841-paging", "ai-assistant-c4"}; !slices.Equal(names(shown), want) {
+		t.Errorf("the working set holds %v, want %v", names(shown), want)
+	}
+}
+
+// The registry files are undocumented and `claude agents --json` is not, so
+// where the two describe the same Session differently, the documented one is
+// believed.
+func TestTheCrossCheckWinsWhereItDisagreesWithTheRegistry(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, start))
+
+	shown := only(t, w.crossCheck(start.Add(time.Minute), crossChecked(session.Working)))
+
+	if shown.State != session.Working {
+		t.Errorf("the Session is %s, want the cross-check's %s", shown.State, session.Working)
+	}
+}
+
+// But a registry that has moved the Session on since the cross-check ran is
+// not disagreeing with it — it is ahead of it, and the cross-check is the
+// slower of the two by design. Handing the row back to a picture taken half a
+// minute ago is the flicker this must not have.
+func TestTheRegistryKeepsARowItHasMovedSinceTheCrossCheck(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, start))
+	w.crossCheck(start.Add(time.Minute), crossChecked(session.Idle))
+
+	shown := only(t, w.registry(running(session.Working, start.Add(2*time.Minute))))
+
+	if shown.State != session.Working {
+		t.Errorf("the Session is %s, want the registry's newer %s", shown.State, session.Working)
+	}
+}
+
+// A registry record that cannot say when it last moved cannot show it is the
+// fresher of the two, and a record whose clock the harness can no longer read
+// is exactly the drift the cross-check is insurance against.
+func TestARegistryRecordWithNoClockLosesToTheCrossCheck(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, time.Time{}))
+
+	shown := only(t, w.crossCheck(start, crossChecked(session.Working)))
+
+	if shown.State != session.Working {
+		t.Errorf("the Session is %s, want the cross-check's %s", shown.State, session.Working)
+	}
+}
+
+// The cross-check runs for as long as the Dashboard is up, and almost every
+// one of them agrees with the registry. Those must change nothing at all —
+// not the state, and not the reason and wait age the cross-check has no word
+// for and would otherwise wipe.
+func TestACrossCheckThatAgreesChangesNothing(t *testing.T) {
+	w := watch(t)
+	blocked := running(session.Blocked, start)
+	blocked.Reason = "permission: Write(config.yaml)"
+	before := w.registry(blocked)
+
+	after := w.crossCheck(start.Add(time.Minute), crossChecked(session.Blocked))
+
+	if !slices.Equal(before, after) {
+		t.Errorf("the cross-check redrew\n\t%+v\nas\n\t%+v", before, after)
+	}
+}
+
+// Taking the cross-check's word for what a Session is doing means letting go
+// of the registry's account of why it was waiting, which was about the state
+// just overruled.
+func TestASessionTheCrossCheckMovesOffBlockedLosesTheReasonWithIt(t *testing.T) {
+	w := watch(t)
+	blocked := running(session.Blocked, time.Time{})
+	blocked.Reason = "permission: Write(config.yaml)"
+	w.registry(blocked)
+
+	shown := only(t, w.crossCheck(start, crossChecked(session.Working)))
+
+	if shown.Reason != "" {
+		t.Errorf("a Session that is working again still reads %q", shown.Reason)
+	}
+}
+
+// The cross-check settles what the registry says; the hooks still lie over
+// both. Blocked is always displayed with its reason, and the cross-check never
+// carries one.
+func TestTheHooksLieOverTheCrossCheck(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, time.Time{}))
+	w.hook(needsADecision("permission: Bash", start))
+
+	shown := only(t, w.crossCheck(start.Add(time.Minute), crossChecked(session.Blocked)))
+
+	if shown.State != session.Blocked {
+		t.Errorf("the Session is %s, want %s", shown.State, session.Blocked)
+	}
+	if shown.Reason != "permission: Bash" {
+		t.Errorf("the Blocked row reads %q, want the reason the hook carried", shown.Reason)
+	}
+}
+
+// Ready is the harness's own, over whichever of the two put the Session at the
+// prompt — including a Session the registry never reported at all.
+func TestASessionOnlyTheCrossCheckKnowsAboutCanStillBeReady(t *testing.T) {
+	w := watch(t)
+	w.registry()
+	w.crossCheck(start, missed(session.Idle))
+
+	shown := only(t, w.hook(hooks.Event{Kind: hooks.Finished, Session: "s2", Snippet: "done"}))
+
+	if shown.State != session.Ready {
+		t.Errorf("the Session is %s, want %s", shown.State, session.Ready)
+	}
+}
+
+// The cross-check is always the older picture of the two, so a Session it has
+// not heard of is far likelier to be one that has just started than one that
+// has gone. Taking rows off the Dashboard is the registry's to do, by the
+// liveness check the cross-check runs no better.
+func TestTheCrossCheckNeverTakesARowTheRegistryHas(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Working, start), missed(session.Idle))
+
+	shown := w.crossCheck(start.Add(time.Minute), crossChecked(session.Working))
+
+	if want := []string{"FIRE-2841-paging", "ai-assistant-c4"}; !slices.Equal(names(shown), want) {
+		t.Errorf("the working set holds %v, want %v", names(shown), want)
+	}
+}
+
+// The hooks are earlier than either of the other two, and a cross-check must
+// not deafen the harness to them. Taking the row from the registry means
+// standing where the registry stood — including being answerable to a hook
+// that fires after the cross-check was asked.
+func TestAHookEdgeStillTakesARowTheCrossCheckCorrected(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, start))
+	w.crossCheck(start.Add(time.Minute), crossChecked(session.Working))
+
+	shown := only(t, w.hook(needsADecision("permission: Bash", start.Add(2*time.Minute))))
+
+	if shown.State != session.Blocked {
+		t.Errorf("the Session is %s, want %s", shown.State, session.Blocked)
+	}
+	if shown.Reason != "permission: Bash" {
+		t.Errorf("the Blocked row reads %q, want the reason the hook carried", shown.Reason)
+	}
+}
+
+// And a Session only the cross-check ever knew about is answerable to them
+// too. It is the one kind of row that exists because something drifted, which
+// makes it the last row that should also go quiet.
+func TestASessionOnlyTheCrossCheckKnowsAboutCanBeBlockedByAHook(t *testing.T) {
+	w := watch(t)
+	w.registry()
+	w.crossCheck(start, missed(session.Idle))
+
+	shown := only(t, w.hook(hooks.Event{Kind: hooks.Blocked, Session: "s2",
+		Reason: "permission: Bash", At: start.Add(time.Minute)}))
+
+	if shown.State != session.Blocked {
+		t.Errorf("the Session is %s, want %s", shown.State, session.Blocked)
+	}
+	if shown.Reason != "permission: Bash" {
+		t.Errorf("the Blocked row reads %q, want the reason the hook carried", shown.Reason)
+	}
+}
+
+// A row the cross-check took has been in that state since the cross-check said
+// so, as far as anything here knows. No time at all would be worse than
+// under-reporting: the tree orders Attention by longest-waiting first, so a
+// Session with no clock reads as one that has been Blocked since 1970 and
+// pushes the one that has really been waiting down the list.
+func TestACorrectedRowHasBeenInItsStateSinceTheCrossCheck(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, start))
+	asked := start.Add(time.Minute)
+
+	shown := only(t, w.crossCheck(asked, crossChecked(session.Blocked)))
+
+	if !shown.Since.Equal(asked) {
+		t.Errorf("the Session has been Blocked since %v, want the moment of the cross-check %v", shown.Since, asked)
+	}
+}
+
+// Which goes for a Session the registry never reported at all, on the same
+// reasoning: it has been waiting since the harness first heard of it.
+func TestASessionOnlyTheCrossCheckKnowsAboutWaitsFromTheCrossCheck(t *testing.T) {
+	w := watch(t)
+
+	shown := only(t, w.crossCheck(start, missed(session.Blocked)))
+
+	if !shown.Since.Equal(start) {
+		t.Errorf("the Session has been Blocked since %v, want the moment of the cross-check %v", shown.Since, start)
+	}
+}
+
+// A cross-check that could not read what a Session is doing has no opinion to
+// prefer. Idle claims the least about a Session nothing can read, which is the
+// right answer for a reader with nothing to fall back on — and the wrong one
+// here, where it would blank every good row on the Dashboard the day Claude
+// Code renames a status.
+func TestACrossCheckThatCannotReadAStatusLeavesTheRowAlone(t *testing.T) {
+	w := watch(t)
+	blocked := running(session.Blocked, start)
+	blocked.Reason = "permission: Write(config.yaml)"
+	before := w.registry(blocked)
+
+	unreadable := crossChecked(session.Idle)
+	unreadable.State = ""
+	after := w.crossCheck(start.Add(time.Minute), unreadable)
+
+	if !slices.Equal(before, after) {
+		t.Errorf("a cross-check that could not read the status redrew\n\t%+v\nas\n\t%+v", before, after)
+	}
+}
+
+// But it still puts the Session on the Dashboard, where the registry never
+// reported one. Idle is the right answer here after all: there is nothing to
+// fall back on, and a row you can see and jump to beats a Session nothing
+// mentions.
+func TestASessionOnlyTheCrossCheckKnowsAboutWithNoReadableStatusIsIdle(t *testing.T) {
+	w := watch(t)
+
+	unreadable := missed(session.Idle)
+	unreadable.State = ""
+	shown := only(t, w.crossCheck(start, unreadable))
+
+	if shown.State != session.Idle {
+		t.Errorf("the Session is %s, want %s", shown.State, session.Idle)
+	}
+}
+
+// One process is one row. The Dashboard keys its rows by process, so a second
+// row for the same one could never be selected — the cursor would spring back
+// to the first every time.
+func TestTwoCrossCheckRecordsForOneProcessAreOneRow(t *testing.T) {
+	w := watch(t)
+
+	shown := w.crossCheck(start, missed(session.Idle), missed(session.Working))
+
+	if len(shown) != 1 {
+		t.Errorf("the working set holds %d rows for one process, want one: %+v", len(shown), shown)
+	}
+}
+
+// The two are matched on the process, which is the field the harness has
+// checked — it names something alive, and no two live Sessions share one —
+// while the session id comes from a file whose shape the cross-check is here
+// to insure against. A drifted id must cost a reason, not double the row.
+func TestTheTwoAreMatchedOnTheProcess(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, time.Time{}))
+
+	renamed := crossChecked(session.Working)
+	renamed.ID = "not-the-id-the-registry-gave"
+	shown := only(t, w.crossCheck(start, renamed))
+
+	if shown.State != session.Working {
+		t.Errorf("the Session is %s, want the cross-check's %s", shown.State, session.Working)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
 	"github.com/BrechtBonte/ganymede/internal/ghostty"
 	"github.com/BrechtBonte/ganymede/internal/hooks"
+	"github.com/BrechtBonte/ganymede/internal/reconciler"
 	"github.com/BrechtBonte/ganymede/internal/registry"
 	"github.com/BrechtBonte/ganymede/internal/state"
 	"github.com/BrechtBonte/ganymede/internal/tmuxconf"
@@ -94,6 +95,12 @@ func up(args []string) error {
 	if err := installHooks(); err != nil {
 		fmt.Fprintf(os.Stderr, "ganymede: the hooks are not installed, so Ready and Blocked reasons will be missing: %v\n", err)
 	}
+	// And the same for the cross-check, which is worth saying here or nowhere:
+	// the Dashboard has no way to show you that it silently went without one,
+	// and a claude it cannot run at all is exactly the day it would matter.
+	if err := crossCheck(); err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: Claude Code cannot be asked for its Sessions, so the Dashboard runs on the registry alone: %v\n", err)
+	}
 
 	harness, err := topology.Default(dir)
 	if err != nil {
@@ -111,8 +118,9 @@ func up(args []string) error {
 	return emulator.Open(harness.AttachCommand())
 }
 
-// runDashboard draws the working set — the registry's account with the hooks'
-// laid over it — and steers the working client on your behalf.
+// runDashboard draws the working set — the registry's account, corrected by
+// the reconciler's cross-check and with the hooks' laid over both — and steers
+// the working client on your behalf.
 func runDashboard() error {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -142,9 +150,14 @@ func runDashboard() error {
 	if err != nil {
 		return err
 	}
+	// The slow cross-check against the interface Claude Code documents, which
+	// is what the registry watch's undocumented one is insured by. It needs
+	// nothing from the harness and cannot fail to start: a machine whose
+	// claude will not run still has a registry to watch.
+	checked := reconciler.Reconciler{}.Watch(ctx)
 
 	model := state.New()
-	working := model.Watch(ctx, watch, reported)
+	working := model.Watch(ctx, watch, checked, reported)
 
 	_, err = tea.NewProgram(dashboard.New(working, harness, model.Seen), tea.WithAltScreen()).Run()
 	return err
@@ -165,6 +178,13 @@ func installTmux() error {
 		return err
 	}
 	return tmuxconf.Install(layout)
+}
+
+// crossCheck asks Claude Code for its Sessions once, to find out whether it
+// can be asked at all.
+func crossCheck() error {
+	_, err := reconciler.Reconciler{}.Read(context.Background())
+	return err
 }
 
 func installHooks() error {

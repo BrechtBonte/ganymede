@@ -4,7 +4,7 @@ A terminal harness for day-to-day multi-repo [Claude Code](https://code.claude.c
 
 It replaces Warp as the daily driver. It is not a general-purpose terminal: tmux owns the layout, Ghostty is just the window it lives in, and the harness itself is one Go binary.
 
-> **Status: the dashboard is live, and read-only.** It watches Claude Code's session registry and listens to hooks, and draws your real sessions grouped under their repo in every state — Working, Blocked with its reason, Ready with the message the turn ended on, Idle, Shell — appearing and disappearing as sessions start and end. `⏎` jumps the working client to the selected session, and seeing a session clears its Ready badge. Nothing else on the dashboard acts yet: no claims, no worktree spawn, no inline actions, no notifier. Everything below describes the design in full — the specification is the single source of truth for the build, see [Design documents](#design-documents). See [Getting started](#getting-started) for what runs today.
+> **Status: the dashboard is live, and read-only.** It watches Claude Code's session registry, listens to hooks, and cross-checks both against `claude agents --json` every 30 seconds, and draws your real sessions grouped under their repo in every state — Working, Blocked with its reason, Ready with the message the turn ended on, Idle, Shell — appearing and disappearing as sessions start and end. `⏎` jumps the working client to the selected session, and seeing a session clears its Ready badge. Nothing else on the dashboard acts yet: no claims, no worktree spawn, no inline actions, no notifier. Everything below describes the design in full — the specification is the single source of truth for the build, see [Design documents](#design-documents). See [Getting started](#getting-started) for what runs today.
 
 ## Getting started
 
@@ -83,7 +83,7 @@ flowchart LR
 
 - **Registry watch** is authoritative for state: `~/.claude/sessions/` holds one JSON file per session with `pid, sessionId, cwd, name, status, waitingFor, statusUpdatedAt, kind`. Pids are liveness-checked; a vanished file or dead pid means the session is **Gone**.
 - **Hooks** provide sub-second edges and rich payloads. Installed user-level in `~/.claude/settings.json` so every repo is covered. Hook commands are thin — forward stdin JSON to the receiver socket, async where no response is needed, never blocking a session.
-- **The reconciler** runs `claude agents --json` on a slow timer as the documented, schema-stable cross-check. The registry files are undocumented, so their shape must be re-verified on Claude Code upgrades.
+- **The reconciler** runs `claude agents --json` on a slow timer (30s) as the documented, schema-stable cross-check. The registry files are undocumented, so their shape must be re-verified on Claude Code upgrades. Sessions the registry watch missed are added; where the two describe the same session differently, the reconciler wins. Three things it does not do: overrule a registry record the registry has moved on *since* the cross-check was asked (that is the registry running ahead, not disagreeing); overrule anything at all when it cannot read the session's status, since a defaulted state must never outrank a read one; or remove a row, because it is always the older picture of the two. A row it added is dropped by the next cross-check once the session ends, so the reconciler is accurate to one tick — and a session only it can see may show as Blocked with no reason, since the reason lives in the registry file the watch could not read.
 - **Harness state** (its own sidecar, e.g. `~/.config/ganymede/state.json`) holds root claims and notes, manual ticket overrides, per-repo last-activity timestamps, popup-shell ownership, and Ready/seen tracking.
 
 ## State model
@@ -209,7 +209,7 @@ The glossary in `CONTEXT.md` is normative: Dashboard, Working set, Session, Main
 - macOS
 - [Ghostty](https://ghostty.org)
 - tmux — with the harness-installed config fragment: `allow-passthrough on`, `focus-events on`, the status-line strip segment, and the root-table popup binding
-- Claude Code — verified against **2.1.220**; registry shape must be re-verified on upgrades
+- Claude Code — registry shape verified against **2.1.226**, unchanged from the 2.1.220 record in the spec's §11; it must be re-verified on upgrades
 - Go toolchain, to build `ganymede`
 
 ## Build order

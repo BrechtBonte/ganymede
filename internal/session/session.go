@@ -6,8 +6,8 @@
 // as a row that has disappeared.
 //
 // Nothing in here reads a file or asks tmux anything. It is the currency the
-// registry, the hooks and the Dashboard all count in, which is why it sits
-// below every one of them.
+// registry, the hooks, the reconciler and the Dashboard all count in, which is
+// why it sits below every one of them.
 package session
 
 import "time"
@@ -31,6 +31,32 @@ const (
 	// Shell: occupied by you, in the Session's shell mode.
 	Shell State = "Shell"
 )
+
+// StateOf reads Claude Code's own word for what a Session is doing, and says
+// whether it was a word this harness knows. It is one vocabulary written in
+// two places — the status in a registry file, and the status in `claude agents
+// --json` — so it is read here, once, rather than left to drift between the
+// two things that read it.
+//
+// A status this harness does not know is Idle: it is the state that claims the
+// least about a Session it cannot read, and it keeps the row on the Dashboard
+// rather than pretending the Session is Gone. That is the right answer for a
+// reader with nothing else to go on, and the wrong one for a reader whose word
+// is about to be preferred over somebody else's — so it says which of the two
+// it just handed you.
+func StateOf(status string) (State, bool) {
+	switch status {
+	case "busy":
+		return Working, true
+	case "waiting":
+		return Blocked, true
+	case "shell":
+		return Shell, true
+	case "idle":
+		return Idle, true
+	}
+	return Idle, false
+}
 
 // Session is one live Claude Code process, shown as a row on the Dashboard.
 type Session struct {
