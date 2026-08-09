@@ -12,7 +12,9 @@ package sidecar
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -39,6 +41,16 @@ type State struct {
 	repos map[string]map[string]json.RawMessage
 	// active is when each repo was last worked in, rounded to granularity.
 	active map[string]time.Time
+	// moved says something has been recorded that the file does not say yet,
+	// so that Save on every redraw costs nothing on the redraws where nothing
+	// has happened.
+	moved bool
+	// unreadable says the file was there and could not be understood. It is
+	// the one state Save must not write over: what it holds is the harness's
+	// memory of decisions you made — and will hold root claims and their notes
+	// — so a file somebody has hand-edited into nonsense is theirs to fix, not
+	// the harness's to quietly replace with an empty one.
+	unreadable bool
 }
 
 // lastActive is the field holding a repo's last harness activity.
@@ -59,26 +71,41 @@ func Default() (*State, error) {
 
 // Load reads the harness state at path.
 //
-// A file that is not there is a harness that has not been used yet, and a file
-// that cannot be read is one somebody has hand-edited into nonsense. Neither
-// is worth refusing to open the Dashboard over: everything in here is the
-// harness's memory of what you have been doing, and the worst losing it costs
-// is a repo dropping out of the working set earlier than it should.
+// It always hands back a state the harness can go on using, and says whether
+// that state is the file's. A file that is not there is a harness that has not
+// been used yet and is no kind of failure. A file that is there and cannot be
+// read is: the Dashboard opens on an empty memory of where you have been, you
+// are told why, and Save leaves the file alone until somebody has looked at
+// it. Refusing to open at all would be the harness holding your day to ransom
+// over a file it only wanted to keep notes in; overwriting it would be the
+// harness throwing your notes away.
 func Load(path string) (*State, error) {
 	state := &State{Path: path, body: map[string]json.RawMessage{}, repos: map[string]map[string]json.RawMessage{}, active: map[string]time.Time{}}
 
 	raw, err := os.ReadFile(path)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return state, nil
+	}
+	if err != nil {
+		state.unreadable = true
+		return state, fmt.Errorf("read the harness state at %s: %w", path, err)
 	}
 	if err := json.Unmarshal(raw, &state.body); err != nil {
-		return state, nil
+		state.body, state.unreadable = map[string]json.RawMessage{}, true
+		return state, fmt.Errorf("the harness state at %s is not readable JSON: %w", path, err)
 	}
-	if err := json.Unmarshal(state.body[reposField], &state.repos); err != nil {
-		state.repos = map[string]map[string]json.RawMessage{}
-		return state, nil
+	// An absent repos field is a state file that has simply never recorded
+	// one; a malformed one is the same problem as a malformed file.
+	if raw, recorded := state.body[reposField]; recorded {
+		if err := json.Unmarshal(raw, &state.repos); err != nil {
+			state.repos, state.unreadable = map[string]map[string]json.RawMessage{}, true
+			return state, fmt.Errorf("the repos in the harness state at %s cannot be read: %w", path, err)
+		}
 	}
 	for root, entry := range state.repos {
+		// One entry the harness cannot read costs that repo its place in the
+		// working set and nothing else — the entry itself is kept whole and
+		// written back as it was.
 		var stamp time.Time
 		if err := json.Unmarshal(entry[lastActive], &stamp); err == nil {
 			state.active[root] = stamp
@@ -107,20 +134,27 @@ func (s *State) Touch(root string, at time.Time) {
 	if held, known := s.active[root]; known && !at.After(held) {
 		return
 	}
-	s.active[root] = at
+	s.active[root], s.moved = at, true
 }
 
 // Save writes the state back.
 //
-// It is safe to call on every redraw. The file is replaced only when what it
-// says has actually changed — stamps are rounded before they go in, and a
-// replacement identical to what is already there is not written — so the
-// Dashboard can call this every time it stamps a repo without touching the
-// disk every time a Session moves.
+// It is safe to call on every redraw. Nothing is read or written unless a
+// stamp has actually moved — they are rounded before they go in, so the
+// Dashboard stamping every repo with a Session in it, every time any Session
+// moves, comes to one write a minute at worst.
+//
+// A file that could not be read is refused rather than replaced. That leaves
+// the working set without its memory until somebody fixes the file, which is
+// the smaller loss: the alternative is the harness deleting what it could not
+// understand.
 func (s *State) Save() error {
-	if len(s.active) == 0 && len(s.body) == 0 {
-		// Nothing recorded and nothing read: a harness that has done nothing
-		// yet has no reason to leave a file behind.
+	if s.unreadable {
+		return fmt.Errorf("the harness state at %s could not be read, so it will not be written over", s.Path)
+	}
+	if !s.moved {
+		// Nothing has happened since the file last said what it says — which,
+		// on a harness that has done nothing at all, means no file either.
 		return nil
 	}
 
@@ -152,5 +186,6 @@ func (s *State) Save() error {
 	if err := config.Replace(s.Path, append(body, '\n')); err != nil {
 		return fmt.Errorf("save the harness state: %w", err)
 	}
+	s.moved = false
 	return nil
 }

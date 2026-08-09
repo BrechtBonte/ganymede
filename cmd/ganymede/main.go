@@ -176,10 +176,17 @@ func runDashboard() error {
 	} else {
 		hands.Inventory = scan
 	}
-	if state, err := sidecar.Default(); err != nil {
-		fmt.Fprintf(os.Stderr, "ganymede: the working set will not survive a restart: %v\n", err)
-	} else {
-		hands.Activity = state
+	// A harness state that could not be read still comes back usable — it just
+	// remembers nothing, and refuses to write over the file it could not
+	// understand. Saying so here is worth little, since the Dashboard is about
+	// to take the screen; it says so again on the row, every time it tries to
+	// record where you have been.
+	remembered, err := sidecar.Default()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: %v\n", err)
+	}
+	if remembered != nil {
+		hands.Activity = remembered
 	}
 
 	_, err = tea.NewProgram(dashboard.New(working, hands), tea.WithAltScreen()).Run()

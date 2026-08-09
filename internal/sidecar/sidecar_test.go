@@ -156,22 +156,106 @@ func TestFieldsTheHarnessDoesNotReadYetAreKept(t *testing.T) {
 }
 
 // A sidecar somebody has hand-edited into nonsense must not stop the harness
-// opening: the Dashboard's whole job is elsewhere, and the worst this file
-// going missing can cost is a repo dropping off the working set early.
-func TestSidecarThatCannotBeReadLoadsEmptyRatherThanFailing(t *testing.T) {
+// opening — the Dashboard's whole job is elsewhere — but it is worth saying
+// out loud, because nothing else can tell an empty harness from a broken one.
+func TestSidecarThatCannotBeReadIsUsableAndReported(t *testing.T) {
 	path := file(t)
 	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	state := load(t, path)
+	state, err := sidecar.Load(path)
+	if err == nil {
+		t.Error("Load() reported nothing wrong with a sidecar it could not read")
+	}
+	if state == nil {
+		t.Fatal("Load() handed back no state to go on with")
+	}
 	if got := state.Active(); len(got) != 0 {
 		t.Errorf("Active() = %v, want nothing recorded", got)
 	}
+}
+
+// And it must not be written over. What is in this file is the harness's
+// memory of decisions you made — root claims and their notes are specified to
+// live here — so a file it cannot understand is yours to fix, not the
+// harness's to replace with an empty one.
+func TestSidecarThatCannotBeReadIsNotWrittenOver(t *testing.T) {
+	path := file(t)
+	body := []byte(`{"repos":{"/repo":{"claim":{"note":"reviewing #23"` + "\n")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := sidecar.Load(path)
+
+	state.Touch("/repo", time.Date(2026, 8, 9, 14, 30, 0, 0, time.UTC))
+	if err := state.Save(); err == nil {
+		t.Error("Save() reported success over a sidecar it could not read")
+	}
+
+	kept, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(kept) != string(body) {
+		t.Errorf("the sidecar was rewritten:\ngot:  %s\nwant: %s", kept, body)
+	}
+}
+
+// A repos object the harness cannot read is the same problem as a file it
+// cannot read, and gets the same answer.
+func TestSidecarWithUnreadableReposIsNotWrittenOver(t *testing.T) {
+	path := file(t)
+	body := []byte(`{"repos":"not an object","claims":{"/repo":"mine"}}`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state, err := sidecar.Load(path)
+	if err == nil {
+		t.Error("Load() reported nothing wrong with repos it could not read")
+	}
+
+	state.Touch("/repo", time.Date(2026, 8, 9, 14, 30, 0, 0, time.UTC))
+	if err := state.Save(); err == nil {
+		t.Error("Save() reported success over repos it could not read")
+	}
+	kept, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(kept) != string(body) {
+		t.Errorf("the sidecar was rewritten:\ngot:  %s\nwant: %s", kept, body)
+	}
+}
+
+// A sidecar that is simply not there is a harness that has not been used yet,
+// which is what every first run looks like — no error, and nothing to fix.
+func TestSidecarThatIsNotThereIsNotAFailure(t *testing.T) {
+	if _, err := sidecar.Load(file(t)); err != nil {
+		t.Errorf("Load() on a sidecar that is not there: %v", err)
+	}
+}
+
+// The Dashboard calls Save every time any Session moves. Nothing recorded
+// since the last one is nothing to write, and nothing to read either.
+func TestSavingWithNothingRecordedSinceTheLastSaveTouchesNothing(t *testing.T) {
+	path := file(t)
+	state := load(t, path)
 	state.Touch("/repo", time.Date(2026, 8, 9, 14, 30, 0, 0, time.UTC))
 	save(t, state)
-	if len(load(t, path).Active()) != 1 {
-		t.Error("Save() over an unreadable sidecar did not put the harness back on its feet")
+	written, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	save(t, state)
+
+	again, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.ModTime().Equal(written.ModTime()) {
+		t.Error("Save() rewrote the sidecar with nothing recorded since the last one")
 	}
 }
 
