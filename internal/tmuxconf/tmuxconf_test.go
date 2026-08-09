@@ -273,6 +273,46 @@ func TestTheInstalledConfigAsksTmuxToReportFocus(t *testing.T) {
 	}
 }
 
+// The status line of the Session you are working in is where the ambient
+// attention strip goes, so the installed config has to keep that line and hand
+// its right-hand end to the harness.
+func TestTheInstalledConfigKeepsTheStatusLineForTheAttentionStrip(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	tmux := tmuxWithConf(t, layout.UserConf)
+
+	if got := tmux("show-options", "-A", "-g", "-v", "status"); got != "on" {
+		t.Errorf("status = %q, want the line the strip is drawn on", got)
+	}
+	if got := tmux("show-options", "-A", "-g", "-v", "status-right"); !strings.Contains(got, tmuxconf.AttentionOption) {
+		t.Errorf("status-right = %q, want the harness's %s in it", got, tmuxconf.AttentionOption)
+	}
+}
+
+// tmux places the strip and the Dashboard writes it, so a server the Dashboard
+// has never spoken to draws nothing rather than an error, and one it has draws
+// the counts as they were written.
+func TestTheStripShowsWhatTheDashboardHasWrittenAndNothingBefore(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	tmux := tmuxWithConf(t, layout.UserConf)
+
+	if got := tmux("display-message", "-p", "#{E:status-right}"); strings.TrimSpace(got) != "" {
+		t.Errorf("a Dashboard that has said nothing leaves %q on the status line", got)
+	}
+
+	tmux("set", "-g", tmuxconf.AttentionOption, "█ 2 blocked")
+
+	if got := tmux("display-message", "-p", "#{E:status-right}"); !strings.Contains(got, "█ 2 blocked") {
+		t.Errorf("status line shows %q, want what the Dashboard wrote", got)
+	}
+}
+
 // The whole path, through real tmux: a client attaches to a Session's pane,
 // tmux reports the focus, and the harness is run for that pane's own process —
 // which is what the Dashboard turns back into Sessions you have now seen.

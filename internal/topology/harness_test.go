@@ -85,7 +85,7 @@ func TestUpRunsTheDashboardInItsOwnSession(t *testing.T) {
 // the dock attached inside it.
 func attachEmulator(t *testing.T, h topology.Harness, cols, rows int) (resize func(cols, rows int)) {
 	t.Helper()
-	socket := "ganymede-test-" + strings.ReplaceAll(t.Name(), "/", "-") + "-emulator"
+	socket := emulatorSocket(t)
 	// The emulator gives the dock a clean environment; ganymede does the same
 	// for Ghostty when it is launched from inside tmux.
 	command := "env -u TMUX " + strings.Join(h.AttachCommand(), " ")
@@ -104,6 +104,12 @@ func attachEmulator(t *testing.T, h topology.Harness, cols, rows int) (resize fu
 			t.Fatalf("resize emulator: %v\n%s", err, out)
 		}
 	}
+}
+
+// emulatorSocket is the tmux server standing in for the Ghostty window.
+func emulatorSocket(t *testing.T) string {
+	t.Helper()
+	return "ganymede-test-" + strings.ReplaceAll(t.Name(), "/", "-") + "-emulator"
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }

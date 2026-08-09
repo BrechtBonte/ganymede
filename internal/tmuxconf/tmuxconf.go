@@ -63,14 +63,37 @@ set -g @ganymede-seen "%s"
 set-hook -g pane-focus-in 'run-shell -b "#{q:@ganymede-seen} seen #{pane_pid}"'
 `
 
+// AttentionOption is where the Dashboard writes the ambient attention strip.
+// tmux only places the option in the status line; everything the strip says is
+// the Dashboard's.
+const AttentionOption = "@ganymede-attention"
+
+// strip hands the right-hand end of the status line to the harness: the counts
+// of what is waiting on you, under your eye line in the Session you are working
+// in rather than only over in the sidepanel.
+//
+// The Dashboard writes the whole strip — marks, counts and colours — into an
+// option of its own, so a status line redrawn on every keystroke costs tmux
+// nothing but a lookup, and a server whose Dashboard has never written to it
+// draws an empty strip rather than an error. Setting the option is enough to
+// put it on screen: tmux redraws its clients when an option changes.
+//
+// The harness owns these two settings. A status line the user had turned off
+// is turned back on, because a strip nobody can see is not a strip, and a
+// right-hand segment of the user's own is replaced by this one.
+const strip = `
+set -g status on
+set -g status-right "#{` + AttentionOption + `}"
+`
+
 // fragment is the harness's tmux configuration for a Layout. What the harness
 // cannot work without comes first, so that a line tmux will not read costs
 // only what is under it.
 func fragment(l Layout) string {
 	if l.Command == "" {
-		return settings
+		return settings + strip
 	}
-	return settings + fmt.Sprintf(seenHook, quoteForOption(l.Command))
+	return settings + strip + fmt.Sprintf(seenHook, quoteForOption(l.Command))
 }
 
 // quoteForOption writes a path into a tmux double-quoted string. What tmux
