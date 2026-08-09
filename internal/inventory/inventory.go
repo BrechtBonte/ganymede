@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/BrechtBonte/ganymede/internal/repo"
 )
 
 // DefaultDepth is how many directories below a scan root a repository may sit
@@ -52,6 +54,11 @@ func Default() (Scan, error) {
 // the picker is quietly offering less than it should, which is worth saying.
 // Directories below a root are skipped when they cannot be read, since one
 // unreadable vendored tree is no reason to lose the whole picker.
+//
+// What was found comes back either way. A root on a mount that has gone away
+// says so, and the repos under every other root are still the ones you were
+// about to ask for — losing them as well would turn one unreachable directory
+// into a picker with nothing in it.
 func (s Scan) Repos() ([]string, error) {
 	depth := s.Depth
 	if depth <= 0 {
@@ -59,9 +66,10 @@ func (s Scan) Repos() ([]string, error) {
 	}
 
 	found := map[string]bool{}
+	var failed []error
 	for _, root := range s.roots() {
 		if err := walkRoot(root, depth, found); err != nil {
-			return nil, err
+			failed = append(failed, err)
 		}
 	}
 
@@ -70,7 +78,7 @@ func (s Scan) Repos() ([]string, error) {
 		repos = append(repos, repo)
 	}
 	slices.Sort(repos)
-	return repos, nil
+	return repos, errors.Join(failed...)
 }
 
 func (s Scan) roots() []string {
@@ -88,7 +96,10 @@ func (s Scan) roots() []string {
 func walk(dir string, depth int, found map[string]bool) error {
 	if checkout, root := checkoutAt(dir); checkout {
 		if root {
-			found[name(dir)] = true
+			// Named the way repo.Root names the same directory, or the working
+			// set would draw one repo twice — once for the Sessions running in
+			// it and once for the picker having been there.
+			found[repo.Absolute(dir)] = true
 		}
 		// Below a checkout is that checkout's own contents. A repository
 		// vendored inside another is part of the repo it sits in, and a
@@ -127,20 +138,6 @@ func checkoutAt(dir string) (checkout, root bool) {
 		return false, false
 	}
 	return true, git.IsDir()
-}
-
-// name is the one name a repository goes by: where it really is, with the
-// symlinks on the way to it followed. It has to be the name repo.Root gives
-// the same directory, or the working set would draw one repo twice — once for
-// the Sessions running in it and once for the picker having been there.
-func name(dir string) string {
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		return resolved
-	}
-	if abs, err := filepath.Abs(dir); err == nil {
-		return abs
-	}
-	return dir
 }
 
 // walkRoot is walk over a scan root, where a directory that is not there is

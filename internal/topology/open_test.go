@@ -1,6 +1,7 @@
 package topology_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,6 +77,65 @@ func TestOpenTellsTwoReposOfTheSameNameApart(t *testing.T) {
 	if got := sessionPath(t, h.Socket, session); got != second {
 		t.Errorf("the working client shows %q, started in %q, want a Session in %q",
 			session, got, second)
+	}
+}
+
+// A Session started anywhere inside a repo is that repo's Session — running
+// `ganymede up` in a subdirectory is ordinary. Opening the repo from the
+// picker, which always offers the Main root, has to reach that same Session:
+// a second one would leave your shell history and everything running in it
+// behind, in a Session that looks identical from the outside.
+func TestOpenReachesTheReposSessionStartedInASubdirectory(t *testing.T) {
+	h := jumpable(t)
+	billing := initRepo(t, filepath.Join(t.TempDir(), "service-billing"))
+	inside := filepath.Join(billing, "internal", "handlers")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmuxOn(t, h.Socket, "new-session", "-d", "-s", "service-billing", "-c", inside, paneCommand)
+	running := panePIDInSession(t, h.Socket, "service-billing")
+
+	if err := h.Open(billing); err != nil {
+		t.Fatalf("Open(%q): %v", billing, err)
+	}
+
+	if session, _ := workingClientShows(t, h); session != "service-billing" {
+		t.Errorf("the working client shows %q, want the Session already running in the repo", session)
+	}
+	if got := panePIDInSession(t, h.Socket, "service-billing"); got != running {
+		t.Errorf("the repo's Session was replaced (pane %d, was %d)", got, running)
+	}
+}
+
+// A repo whose name was taken keeps the qualified Session it was given. Handing
+// it the short name back once the repo it collided with has gone would strand
+// that Session under a name nothing will ever ask for again — with your shell
+// history and whatever you left running in it.
+func TestOpenKeepsAReposQualifiedSessionAfterTheCollisionGoes(t *testing.T) {
+	h := jumpable(t)
+	root := t.TempDir()
+	first := initRepo(t, filepath.Join(root, "acme", "api"))
+	second := initRepo(t, filepath.Join(root, "globex", "api"))
+	if err := h.Open(first); err != nil {
+		t.Fatalf("Open(%q): %v", first, err)
+	}
+	if err := h.Open(second); err != nil {
+		t.Fatalf("Open(%q): %v", second, err)
+	}
+	qualified, _ := workingClientShows(t, h)
+	if qualified == "api" {
+		t.Fatalf("the second repo took the unqualified name, so there is no collision to clear")
+	}
+
+	// The repo that held the short name goes away.
+	tmuxOn(t, h.Socket, "kill-session", "-t", "=api")
+
+	if err := h.Open(second); err != nil {
+		t.Fatalf("Open(%q): %v", second, err)
+	}
+
+	if got, _ := workingClientShows(t, h); got != qualified {
+		t.Errorf("the working client shows %q, want the repo's own Session %q", got, qualified)
 	}
 }
 

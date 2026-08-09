@@ -136,6 +136,31 @@ func TestScanRootThatIsNotThereIsEmptyRatherThanAnError(t *testing.T) {
 	want(t, found(t, inventory.Scan{Roots: []string{root, filepath.Join(root, "gone")}}), []string{repo})
 }
 
+// A scan root that is there and cannot be read is worth reporting — the picker
+// is quietly offering less than it should. It is not worth losing the repos
+// under every other root over: one unreachable directory would turn into a
+// picker with nothing in it.
+func TestScanRootThatCannotBeReadKeepsWhatTheOthersFound(t *testing.T) {
+	root := t.TempDir()
+	reachable := mainRoot(t, filepath.Join(root, "ganymede"))
+	closed := filepath.Join(t.TempDir(), "locked")
+	if err := os.MkdirAll(closed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(closed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Put it back, or the directory cannot be cleaned up with the test.
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o755) })
+
+	repos, err := inventory.Scan{Roots: []string{root, closed}}.Repos()
+
+	if err == nil {
+		t.Error("Repos() said nothing about a scan root it could not read")
+	}
+	want(t, repos, []string{reachable})
+}
+
 // Two scan roots reaching the same repository is one repository: the picker
 // would otherwise offer a choice with no difference in it.
 func TestRepositoryReachedTwiceIsOfferedOnce(t *testing.T) {

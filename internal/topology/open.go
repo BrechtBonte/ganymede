@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/BrechtBonte/ganymede/internal/repo"
 )
 
 // Open puts the repo at dir in front of you: the working client moves to that
@@ -46,28 +48,48 @@ func (h Harness) Open(dir string) error {
 // the whole inventory. Sending the working client to a same-named session
 // rooted somewhere else would be the quietest kind of wrong — you would be in
 // a repo, at a prompt, with no sign it was the other one.
+//
+// So the repo's own Session comes first, under whatever name it ended up with,
+// and only a repo that has none takes a free name. Answering with the shortest
+// free name instead would rename a repo the moment the one it collided with
+// went away — stranding the Session holding your shell history and everything
+// running in it under a name nothing will ask for again.
 func (h Harness) sessionFor(dir string) (string, error) {
 	name, err := WorkingSessionName(dir)
 	if err != nil {
 		return "", err
 	}
+	running := h.runningSessions()
+	root := repo.Root(dir)
+
 	// Qualifying walks up the path a directory at a time — "api", then
 	// "acme-api" — so the name stays as short as it can be while still saying
-	// which repo it means.
-	running := h.runningSessions()
-	for above := filepath.Dir(absolute(dir)); ; above = filepath.Dir(above) {
-		if by, taken := running[name]; !taken || sameDir(by, dir) {
+	// which repo it means. Every name this repo could ever have taken is on
+	// that walk, which is what makes it the place to look for its Session.
+	free := ""
+	for above := filepath.Dir(repo.Absolute(dir)); ; above = filepath.Dir(above) {
+		switch held, taken := running[name]; {
+		case taken && held != "" && repo.Root(held) == root:
+			// This repo's own Session. A Session started anywhere inside a
+			// repo — `ganymede up` run in a subdirectory — belongs to that
+			// repo, so the two are compared as Main roots rather than as the
+			// directories they happen to have been opened at.
 			return name, nil
+		case !taken && free == "":
+			free = name
 		}
 		if filepath.Dir(above) == above {
-			// The walk has reached the filesystem root: the whole path is in
-			// the name and something still answers to it. Sharing a Session is
-			// worse than a name nobody can read, and better than a repo the
-			// harness refuses to open at all.
-			return name, nil
+			break
 		}
 		name = addressable(filepath.Base(above)) + "-" + name
 	}
+	if free != "" {
+		return free, nil
+	}
+	// The walk reached the filesystem root with every name on it held by some
+	// other repo. Sharing a Session is worse than a name nobody can read, and
+	// better than a repo the harness refuses to open at all.
+	return name, nil
 }
 
 // runningSessions maps every tmux session on the Sessions server to the
@@ -94,23 +116,4 @@ func (h Harness) runningSessions() map[string]string {
 		running[name] = dir
 	}
 	return running
-}
-
-// sameDir reports whether two paths name the same directory, following the
-// symlinks on the way to each: tmux reports a session's path as it was given,
-// and the harness is given repo names it has resolved.
-func sameDir(a, b string) bool {
-	return a != "" && absolute(a) == absolute(b)
-}
-
-// absolute is the one name for a directory. A directory that is no longer
-// there cannot be resolved and is taken as written.
-func absolute(dir string) string {
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		return resolved
-	}
-	if abs, err := filepath.Abs(dir); err == nil {
-		return abs
-	}
-	return dir
 }
