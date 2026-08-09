@@ -167,7 +167,7 @@ func runDashboard() error {
 	// working client to a Session or to a repo, and it carries the counts to
 	// that client's status line.
 	hands := dashboard.Harness{
-		Jumper: harness, Opener: harness, Strip: harness,
+		Jumper: harness, Opener: harness, Strip: harness, Spawner: harness,
 		Seen: model.Seen, Tickets: known(),
 	}
 	// Where the harness looks for repos, and what it remembers about the ones
