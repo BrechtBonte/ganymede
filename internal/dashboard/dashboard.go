@@ -96,12 +96,6 @@ type Model struct {
 	harness       Harness
 	rows          []row
 	cursor        int
-	// chosen is the row you put the cursor on, so that the selection follows
-	// that row however far it moves as the tree is rebuilt. Until you have
-	// moved it the cursor belongs to the tree, and sits on whatever is most
-	// urgent — which is the row a Dashboard you have just glanced at should
-	// be describing.
-	chosen string
 	// latest is the last account of the Sessions the state model reported,
 	// kept so the tree can be rebuilt when the working set changes underneath
 	// it — a repo picked, a repo opened — with no Session having moved.
@@ -129,19 +123,19 @@ type Model struct {
 // acting through harness. It is sized for the sidepanel until the terminal
 // says otherwise.
 //
-// The working set is worked out here rather than waited for, so that the very
-// first frame already shows the repos you were last working in — a Dashboard
-// that opened empty and filled in once something moved would read as one that
-// had lost them.
+// The tree is left empty until the first Sessions arrive, rather than drawn
+// from the remembered repos alone. The registry is read before the watch is
+// handed over, so the first account arrives at once — and a tree drawn ahead
+// of it would put the cursor on a quiet repo and then keep it there, since the
+// selection follows the row it is on.
 func New(sessions <-chan []session.Session, harness Harness) Model {
-	m := Model{
+	return Model{
 		width:    topology.SidepanelWidth,
 		height:   45,
 		sessions: sessions,
 		harness:  harness,
 		roots:    map[string]string{},
 	}
-	return m.rebuilt()
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(waitFor(m.sessions), ticking()) }
@@ -182,7 +176,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A repo can fall out of the working set with nothing having moved:
 		// the recency window closes on the clock, not on an event.
 		return m.rebuilt(), ticking()
-	case discovered:
+	case Discovered:
 		m.picker = m.picker.found(msg)
 		return m, nil
 	case tea.KeyMsg:
@@ -202,7 +196,9 @@ func (m Model) showing(sessions []session.Session) Model {
 	if m.harness.Activity != nil {
 		now := time.Now()
 		for _, s := range sessions {
-			m.harness.Activity.Touch(m.rootOf(s.Dir), now)
+			if root := m.rootOf(s.Dir); root != "" {
+				m.harness.Activity.Touch(root, now)
+			}
 		}
 		// Recording is cheap and saving is nearly always a no-op: the stamps
 		// are rounded before they go in, so a file saying the same thing is
@@ -215,8 +211,19 @@ func (m Model) showing(sessions []session.Session) Model {
 }
 
 // rebuilt redraws the tree around the working set, leaving the selection on
-// the row you put it on however far that row has moved.
+// the row it was on however far that row has moved.
+//
+// The row, not the position. Everything the Dashboard does on Enter is done to
+// whatever the cursor is on, and the tree re-sorts itself under your hands
+// every time a Session changes state — so a cursor that stayed at an index
+// would act on a repo you had not looked at, which is the one thing a jump
+// must never do.
 func (m Model) rebuilt() Model {
+	var selected string
+	if m.cursor < len(m.rows) {
+		selected = m.rows[m.cursor].key()
+	}
+
 	if m.roots == nil {
 		m.roots = map[string]string{}
 	}
@@ -225,20 +232,10 @@ func (m Model) rebuilt() Model {
 	m.waiting = session.AttentionIn(m.latest)
 	m.cursor = 0
 	for i, r := range m.rows {
-		if r.key() == m.chosen {
+		if r.key() == selected {
 			m.cursor = i
 			break
 		}
-	}
-	return m
-}
-
-// moving is the cursor being put somewhere on purpose, which is what makes
-// that row the one to follow from here on.
-func (m Model) moving(to int) Model {
-	m.cursor = to
-	if to < len(m.rows) {
-		m.chosen = m.rows[to].key()
 	}
 	return m
 }
@@ -252,7 +249,9 @@ func (m Model) moving(to int) Model {
 func (m Model) workingSet() []string {
 	live := make([]string, 0, len(m.latest))
 	for _, s := range m.latest {
-		live = append(live, m.rootOf(s.Dir))
+		if root := m.rootOf(s.Dir); root != "" {
+			live = append(live, root)
+		}
 	}
 	var active map[string]time.Time
 	if m.harness.Activity != nil {
@@ -292,7 +291,16 @@ func (m Model) counted() Model {
 // rootOf is repo.Root, remembering what it answered. Working a root out costs
 // a git subprocess, the tree is rebuilt every time any Session changes state,
 // and a directory does not move house while the harness is up.
+//
+// A Session with no directory at all has no root. The cross-check can report
+// one — it checks the process and takes the rest as it finds it — and asking
+// repo.Root about nothing answers with the Dashboard's own working directory,
+// which would put the harness's own checkout in the working set and keep it
+// there for a week.
 func (m Model) rootOf(dir string) string {
+	if dir == "" {
+		return ""
+	}
 	if root, known := m.roots[dir]; known {
 		return root
 	}
@@ -326,11 +334,11 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case tea.KeyUp:
 		if m.cursor > 0 {
-			m = m.moving(m.cursor - 1)
+			m.cursor--
 		}
 	case tea.KeyDown:
 		if m.cursor+1 < len(m.rows) {
-			m = m.moving(m.cursor + 1)
+			m.cursor++
 		}
 	case tea.KeyEnter:
 		m = m.jump()
@@ -398,7 +406,8 @@ func (m Model) open(root string) Model {
 func (m Model) selecting(root string) Model {
 	for i, r := range m.rows {
 		if r.session == nil && r.root == root {
-			return m.moving(i)
+			m.cursor = i
+			return m
 		}
 	}
 	return m

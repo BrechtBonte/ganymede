@@ -35,10 +35,12 @@ type picker struct {
 	cursor  int
 }
 
-// discovered is what a scan of the inventory came back with.
-type discovered struct {
-	repos []string
-	err   error
+// Discovered is what a scan of the inventory came back with. A scan can fail
+// and still have found repos — one unreadable scan root among several — so
+// both fields matter whichever way it went.
+type Discovered struct {
+	Repos []string
+	Err   error
 }
 
 // scanning reads the inventory off the main loop. Discovery walks somebody's
@@ -47,7 +49,7 @@ type discovered struct {
 func scanning(in Inventory) tea.Cmd {
 	return func() tea.Msg {
 		repos, err := in.Repos()
-		return discovered{repos: repos, err: err}
+		return Discovered{Repos: repos, Err: err}
 	}
 }
 
@@ -59,6 +61,9 @@ func scanning(in Inventory) tea.Cmd {
 // nothing has read yet is a picker that says it is still looking.
 func (m Model) opening() (tea.Model, tea.Cmd) {
 	if m.harness.Inventory == nil {
+		// A key that does nothing at all reads as a Dashboard that has hung.
+		// Whatever went wrong was said on stderr, which is behind the TUI.
+		m.notice = "no repo discovery is configured"
 		return m, nil
 	}
 	m.picker = m.picker.opened()
@@ -120,15 +125,35 @@ func (p picker) asking(query string) picker {
 
 // found takes in a scan. It arrives whether or not the picker is still up —
 // keeping it either way is what makes the next opening instant.
-func (p picker) found(msg discovered) picker {
+//
+// A scan that failed still hands over whatever it did find: one scan root on a
+// mount that has gone away is no reason to lose the repos under the others.
+// Only a failure that found nothing at all leaves the last inventory standing,
+// since an empty picker looks exactly like a machine with no repos on it.
+//
+// The cursor keeps the repo it was on rather than the row it was on. A scan
+// lands on its own schedule, and a repo cloned since the last one can sort
+// above the line you were reading — Enter has to open the repo you were
+// looking at, not whatever moved into its place.
+func (p picker) found(msg Discovered) picker {
+	under := p.chosen()
 	p.scanned = true
-	if msg.err != nil {
-		p.failed = msg.err.Error()
-		return p
+	p.failed = ""
+	if msg.Err != nil {
+		p.failed = msg.Err.Error()
 	}
-	p.failed, p.repos = "", msg.repos
+	if msg.Repos != nil || msg.Err == nil {
+		p.repos = msg.Repos
+	}
+
 	p.matches = ranked(p.repos, p.query)
-	p.cursor = min(p.cursor, max(0, len(p.matches)-1))
+	p.cursor = 0
+	for i, repo := range p.matches {
+		if repo == under {
+			p.cursor = i
+			break
+		}
+	}
 	return p
 }
 
@@ -152,7 +177,10 @@ func (m Model) pickerView() string {
 		quietStyle.Render("› ") + truncate(m.picker.query, m.width-2),
 		rule,
 	}
-	lines = append(lines, m.picker.offered(m.width, m.height-len(lines))...)
+	// A sidepanel with no room for the matches gives up the matches, not the
+	// whole Dashboard: the panel can be dragged to any height at all, and a
+	// negative amount of room is not something to hand to a slice.
+	lines = append(lines, m.picker.offered(m.width, max(0, m.height-len(lines)))...)
 	if len(lines) > m.height {
 		lines = lines[:m.height]
 	}
@@ -160,8 +188,14 @@ func (m Model) pickerView() string {
 }
 
 // offered is the repos the query reaches, or why there are none.
+//
+// Repos come first, whatever the last scan had to say. A scan that failed with
+// an inventory already in hand is a transient thing — a mount that went away,
+// a permissions blip — and hiding a perfectly good picker behind it would cost
+// you the repos for as long as the harness is up.
 func (p picker) offered(width, space int) []string {
 	switch {
+	case len(p.matches) > 0:
 	case p.failed != "":
 		// The picker is the only way to the repos the Dashboard is not
 		// showing, so an inventory that could not be read is worth the whole
@@ -170,7 +204,7 @@ func (p picker) offered(width, space int) []string {
 		return clip(wrap(p.failed, width), space)
 	case !p.scanned:
 		return clip([]string{quietStyle.Render(truncate("Scanning…", width))}, space)
-	case len(p.matches) == 0:
+	default:
 		return clip([]string{quietStyle.Render(truncate("No repo matches.", width))}, space)
 	}
 
@@ -191,6 +225,10 @@ func (p picker) offered(width, space int) []string {
 // two repos of the same name apart, which is the only reason it is there.
 func (p picker) row(i, width int) string {
 	name, filed := labelOf(p.matches[i])
+	// The name gets the panel first. It is what you typed at and what tells
+	// the rows apart; the directory is there to break a tie, and a long one
+	// must not be allowed to take every column and elide the name to nothing.
+	filed = truncate(filed, width/3)
 	// A name too long for the panel says so: the repos with the longest names
 	// are the ones whose names differ only at the end.
 	name = elide(name, width-lipgloss.Width(filed)-1)
@@ -220,17 +258,24 @@ type offer struct {
 
 // ranked narrows repos to the ones query reaches, best answer first.
 //
-// A repo whose own name matches is what you meant. One that matches only
-// somewhere up its path is a fallback worth offering — you may well know a
-// repo by the organisation it belongs to — and never worth offering first.
+// A repo whose own name matches is what you meant. One that matches by the
+// directory it is filed under is a fallback worth offering — you may well know
+// a repo by the organisation it belongs to — and never worth offering first.
+//
+// The fallback is the directory, not the whole path. Every repo under the scan
+// roots shares the path to them, so matching against the absolute path would
+// let any query whose letters turn up in "/Users/somebody/Projects" reach the
+// entire inventory — which is the narrowing the picker exists for, gone. What
+// can be matched is what the row shows.
 func ranked(repos []string, query string) []string {
 	offers := make([]offer, 0, len(repos))
 	for _, repo := range repos {
-		if score, ok := matched(query, filepath.Base(repo)); ok {
+		name, filed := labelOf(repo)
+		if score, ok := matched(query, name); ok {
 			offers = append(offers, offer{repo: repo, named: true, score: score})
 			continue
 		}
-		if score, ok := matched(query, repo); ok {
+		if score, ok := matched(query, filed+"/"+name); ok {
 			offers = append(offers, offer{repo: repo, score: score})
 		}
 	}

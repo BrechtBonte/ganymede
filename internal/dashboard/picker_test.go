@@ -151,11 +151,8 @@ func TestReposWithLiveSessionsAreRecordedAsWorkedIn(t *testing.T) {
 	}
 }
 
-// The Dashboard draws the repos it remembers before a single Session has been
-// reported, so that it opens on the working set rather than filling in a
-// moment later. The cursor must not be left behind on one of those quiet
-// repos: a Dashboard you have just glanced at should be describing whatever is
-// most urgent.
+// A Dashboard you have just glanced at should be describing whatever is most
+// urgent, not whichever remembered repo happens to sort first.
 func TestTheSelectionStartsOnTheMostUrgentRow(t *testing.T) {
 	state := remembering(t)
 	// Named so that any ordering but urgency would put it first.
@@ -363,6 +360,126 @@ func TestARepoThatCannotBeOpenedSaysSo(t *testing.T) {
 
 	if !strings.Contains(drawn(model), "no window is showing the harness") {
 		t.Errorf("the Dashboard does not say why it could not take you there:\n%s", drawn(model))
+	}
+}
+
+// Everything Enter does is done to whatever the cursor is on, and the tree
+// re-sorts itself under your hands every time a Session changes state. A
+// cursor that stayed at a position rather than on a row would open a repo you
+// had never looked at — the one thing a jump must never do.
+func TestTheSelectionHoldsItsRowEvenBeforeYouHaveMovedIt(t *testing.T) {
+	state := remembering(t)
+	opener := &opens{}
+	model := dashboardOn(dashboard.Harness{Opener: opener, Activity: state},
+		live("acme-a1", "/repos/acme", session.Blocked))
+	if _, ok := lineWith(detail(model), "acme"); !ok {
+		t.Fatalf("the cursor does not start on the only repo:\n%s", drawn(model))
+	}
+
+	// A Session that has been Blocked longer arrives in another repo, which
+	// sorts that repo above the one the cursor is on.
+	older := session.Session{PID: 99, ID: "b", Dir: "/repos/aaa-globex", Name: "globex-b2",
+		State: session.Blocked, Since: epoch.Add(-time.Hour)}
+	model, _ = model.Update(dashboard.Sessions([]session.Session{
+		live("acme-a1", "/repos/acme", session.Blocked), older,
+	}))
+	model = press(model, tea.KeyEnter)
+
+	if len(opener.dirs) != 1 || opener.dirs[0] != "/repos/acme" {
+		t.Errorf("Enter opened %v, want the repo the cursor was left on (/repos/acme)", opener.dirs)
+	}
+}
+
+// The scan lands on its own schedule. A repo cloned since the last one can
+// sort above the line you are reading, so the cursor has to keep the repo it
+// is on rather than the row.
+func TestARescanKeepsThePickerOnTheRepoYouWereLookingAt(t *testing.T) {
+	opener := &opens{}
+	inventory := stock{repos: []string{"/repos/aaa", "/repos/bbb"}}
+	model := picking(t, dashboardOn(dashboard.Harness{Opener: opener, Inventory: inventory}))
+	model = press(model, tea.KeyDown)
+
+	// A repo discovered since, sorting above the highlighted one.
+	model, _ = model.Update(dashboard.Discovered{Repos: []string{"/repos/aaa", "/repos/abb", "/repos/bbb"}})
+	model = press(model, tea.KeyEnter)
+
+	if len(opener.dirs) != 1 || opener.dirs[0] != "/repos/bbb" {
+		t.Errorf("picking opened %v, want the repo the cursor was on (/repos/bbb)", opener.dirs)
+	}
+}
+
+// Every repo under the scan roots shares the path to them. Matching a query
+// against the whole path would let any letters that turn up in the home
+// directory reach the entire inventory, which is the narrowing the picker is
+// for.
+func TestThePathTheReposShareDoesNotMatchEverything(t *testing.T) {
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Inventory: stock{repos: []string{
+			"/Users/brecht/Projects/acme/api",
+			"/Users/brecht/Projects/globex/web",
+		}},
+	}))
+
+	view := strings.ToLower(drawn(typing(model, "brt")))
+
+	for _, repo := range []string{"api", "web"} {
+		if _, ok := lineWith(view, repo); ok {
+			t.Errorf("a query matching only the shared path reached %q:\n%s", repo, view)
+		}
+	}
+}
+
+// A scan can fail transiently — a scan root on a mount that has gone away.
+// Hiding a perfectly good inventory behind that would cost you the repos for
+// as long as the harness is up.
+func TestAFailedRescanStillOffersTheReposAlreadyFound(t *testing.T) {
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Inventory: stock{repos: []string{"/repos/ganymede"}},
+	}))
+
+	model, _ = model.Update(dashboard.Discovered{Err: errors.New("scan /mnt/work: input/output error")})
+
+	if _, ok := lineWith(drawn(model), "ganymede"); !ok {
+		t.Errorf("a failed rescan hid the inventory it already had:\n%s", drawn(model))
+	}
+}
+
+// The sidepanel can be dragged to any height at all, including one with no
+// room for the picker's matches. That gives up the matches, not the Dashboard.
+func TestThePickerSurvivesASidepanelWithNoRoomForIt(t *testing.T) {
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{
+		Inventory: stock{repos: []string{"/repos/ganymede", "/repos/service-billing"}},
+	})
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 3})
+	model = picking(t, model)
+
+	// The assertion is that this returns at all.
+	if lines := strings.Split(model.View(), "\n"); len(lines) > 3 {
+		t.Errorf("the picker drew %d lines into a 3-row sidepanel", len(lines))
+	}
+}
+
+// The cross-check reports Sessions the registry never did, and checks only the
+// process — so one can arrive with no directory at all. Asking where that
+// belongs answers with the Dashboard's own checkout, which would put the
+// harness itself in the working set and keep it there for a week.
+func TestASessionWithNoDirectoryIsNotRecordedAsARepo(t *testing.T) {
+	state := remembering(t)
+
+	dashboardOn(dashboard.Harness{Activity: state},
+		session.Session{PID: 4242, ID: "a", Name: "unplaceable", State: session.Idle})
+
+	if got := state.Active(); len(got) != 0 {
+		t.Errorf("a Session with no directory was recorded as a repo: %v", got)
+	}
+}
+
+// A key that does nothing at all reads as a Dashboard that has hung.
+func TestGWithNoDiscoveryConfiguredSaysSo(t *testing.T) {
+	model, _ := dashboardOn(dashboard.Harness{}).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+
+	if !strings.Contains(strings.ToLower(drawn(model)), "discovery") {
+		t.Errorf("g with no inventory behind it said nothing:\n%s", drawn(model))
 	}
 }
 
