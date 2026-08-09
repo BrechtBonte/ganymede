@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/BrechtBonte/ganymede/internal/session"
+	"github.com/BrechtBonte/ganymede/internal/ticket"
 )
 
 // row is one line of the repo tree: a repo's header, or one of its Sessions
@@ -16,6 +17,8 @@ type row struct {
 	root string
 	// session is the Session the row draws, and nil on a repo's header row.
 	session *session.Session
+	// ticket is what the Session is about, and empty when it is about none.
+	ticket ticket.Key
 }
 
 // label is what the row is called.
@@ -44,8 +47,9 @@ func (r row) key() string {
 // Main root rootOf gives its directory — a Worktree session under the repo it
 // came from, and a Session outside every scan root under its own directory,
 // because the registry's cwd is ground truth. Repos are grouped by root rather
-// than by name, so two checkouts that happen to share a name stay apart.
-func rowsOf(sessions []session.Session, rootOf func(dir string) string) []row {
+// than by name, so two checkouts that happen to share a name stay apart. Each
+// Session row carries the ticket ticketOf says it is about.
+func rowsOf(sessions []session.Session, rootOf func(dir string) string, ticketOf func(dir, root string) ticket.Key) []row {
 	byRoot := map[string][]session.Session{}
 	for _, s := range sessions {
 		root := rootOf(s.Dir)
@@ -69,7 +73,8 @@ func rowsOf(sessions []session.Session, rootOf func(dir string) string) []row {
 	for _, root := range roots {
 		rows = append(rows, row{root: root})
 		for i := range byRoot[root] {
-			rows = append(rows, row{root: root, session: &byRoot[root][i]})
+			running := &byRoot[root][i]
+			rows = append(rows, row{root: root, session: running, ticket: ticketOf(running.Dir, root)})
 		}
 	}
 	return rows

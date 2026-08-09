@@ -28,7 +28,7 @@ func (j *jumps) Jump(pid int) error {
 
 // sidepanel is a Dashboard sized for the sidepanel, showing sessions.
 func sidepanel(jumper dashboard.Jumper, sessions ...session.Session) tea.Model {
-	var model tea.Model = dashboard.New(nil, jumper, nil, nil)
+	var model tea.Model = dashboard.New(nil, jumper, nil, nil, nil)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions(sessions))
 	return model
@@ -48,7 +48,7 @@ func (s *strips) Show(waiting session.Attention) error {
 
 // showing runs one working set after another past a Dashboard wired to strip.
 func showing(strip dashboard.Strip, sets ...[]session.Session) tea.Model {
-	var model tea.Model = dashboard.New(nil, &jumps{}, strip, nil)
+	var model tea.Model = dashboard.New(nil, &jumps{}, strip, nil, nil)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	for _, set := range sets {
 		model, _ = model.Update(dashboard.Sessions(set))
@@ -390,7 +390,7 @@ func TestTheDetailBoxSurvivesAWorkingSetTallerThanTheSidepanel(t *testing.T) {
 	for _, name := range []string{"a1", "b2", "c3", "d4", "e5", "f6", "g7", "h8", "i9", "j10", "k11", "l12"} {
 		many = append(many, live("session-"+name, "/repos/repo-"+name, session.Idle))
 	}
-	var model tea.Model = dashboard.New(nil, &jumps{}, nil, nil)
+	var model tea.Model = dashboard.New(nil, &jumps{}, nil, nil, nil)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 12})
 	model, _ = model.Update(dashboard.Sessions(many))
 
@@ -703,7 +703,7 @@ func detail(model tea.Model) string {
 func TestJumpingToASessionReportsItSeen(t *testing.T) {
 	seen := &seeing{}
 	ready := live("ganymede-78", "/repos/ganymede", session.Ready)
-	var model tea.Model = dashboard.New(nil, &jumps{}, nil, seen.Seen)
+	var model tea.Model = dashboard.New(nil, &jumps{}, nil, seen.Seen, nil)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions{ready})
 
@@ -719,7 +719,7 @@ func TestJumpingToASessionReportsItSeen(t *testing.T) {
 // has not been seen and its badge has to stay.
 func TestAJumpThatCouldNotBeMadeLeavesTheBadgeAlone(t *testing.T) {
 	seen := &seeing{}
-	var model tea.Model = dashboard.New(nil, &jumps{err: errors.New("no tmux pane is running process 4242")}, nil, seen.Seen)
+	var model tea.Model = dashboard.New(nil, &jumps{err: errors.New("no tmux pane is running process 4242")}, nil, seen.Seen, nil)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions{live("ganymede-78", "/repos/ganymede", session.Ready)})
 
