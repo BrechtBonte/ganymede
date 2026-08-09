@@ -3,12 +3,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
 	"github.com/BrechtBonte/ganymede/internal/ghostty"
+	"github.com/BrechtBonte/ganymede/internal/registry"
 	"github.com/BrechtBonte/ganymede/internal/tmuxconf"
 	"github.com/BrechtBonte/ganymede/internal/topology"
 	tea "github.com/charmbracelet/bubbletea"
@@ -86,8 +88,31 @@ func up(args []string) error {
 	return emulator.Open(harness.AttachCommand())
 }
 
+// runDashboard draws the working set the session registry reports, and steers
+// the working client on your behalf.
 func runDashboard() error {
-	_, err := tea.NewProgram(dashboard.New(), tea.WithAltScreen()).Run()
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("locate the current directory: %w", err)
+	}
+	harness, err := topology.Default(dir)
+	if err != nil {
+		return err
+	}
+	sessions, err := registry.Default()
+	if err != nil {
+		return err
+	}
+
+	// The watch is the Dashboard's: it ends when the Dashboard does.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watch, err := sessions.Watch(ctx)
+	if err != nil {
+		return err
+	}
+
+	_, err = tea.NewProgram(dashboard.New(watch, harness), tea.WithAltScreen()).Run()
 	return err
 }
 

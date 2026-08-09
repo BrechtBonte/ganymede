@@ -4,7 +4,7 @@ A terminal harness for day-to-day multi-repo [Claude Code](https://code.claude.c
 
 It replaces Warp as the daily driver. It is not a general-purpose terminal: tmux owns the layout, Ghostty is just the window it lives in, and the harness itself is one Go binary.
 
-> **Status: skeleton.** The harness binary and the docked sidepanel exist; the dashboard is still a placeholder that shows no sessions. Everything below describes the design in full — the specification is the single source of truth for the build, see [Design documents](#design-documents). See [Getting started](#getting-started) for what runs today.
+> **Status: the dashboard is live, and read-only.** It watches Claude Code's session registry and draws your real sessions, grouped under their repo, in the states the registry can tell apart — Working, Blocked, Idle, Shell — appearing and disappearing as sessions start and end. `⏎` jumps the working client to the selected session. Nothing else on the dashboard acts yet: no claims, no worktree spawn, no inline actions, no notifier. Everything below describes the design in full — the specification is the single source of truth for the build, see [Design documents](#design-documents). See [Getting started](#getting-started) for what runs today.
 
 ## Getting started
 
@@ -22,6 +22,8 @@ go build -o bin/ganymede ./cmd/ganymede
 | `ganymede install` | Install the tmux configuration only |
 
 Inside the window, `Alt+g` moves between the sidepanel and the working client. The dock — the outer tmux server framing the two — runs with no prefix key, so `C-b` and everything else belongs to the session you are working in.
+
+In the sidepanel, `↑` and `↓` move the selection and `⏎` jumps the working client to the selected session — including sessions in repos you never opened the harness from, since the registry's `cwd` is what puts a row on the list.
 
 What the harness writes: a config fragment at `~/.config/ganymede/tmux.conf`, sourced from a marked block in your `tmux.conf`, and the dock's own config at `~/.config/ganymede/dock.conf`.
 
