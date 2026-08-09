@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/BrechtBonte/ganymede/internal/config"
 )
 
 // The markers delimit the harness's block in the user's tmux.conf, so a
@@ -44,24 +46,14 @@ func DefaultLayout() (Layout, error) {
 	}
 
 	userConf := filepath.Join(home, ".tmux.conf")
-	if xdg := filepath.Join(ConfigHome(home), "tmux", "tmux.conf"); exists(xdg) {
+	if xdg := filepath.Join(config.Home(home), "tmux", "tmux.conf"); exists(xdg) {
 		userConf = xdg
 	}
 
 	return Layout{
-		Fragment: filepath.Join(ConfigHome(home), "ganymede", "tmux.conf"),
+		Fragment: filepath.Join(config.Home(home), "ganymede", "tmux.conf"),
 		UserConf: userConf,
 	}, nil
-}
-
-// ConfigHome is the XDG config directory. Go's os.UserConfigDir points at
-// ~/Library/Application Support on macOS, which is not where tmux or the
-// harness keep their configuration.
-func ConfigHome(home string) string {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return dir
-	}
-	return filepath.Join(home, ".config")
 }
 
 func exists(path string) bool {
@@ -71,17 +63,14 @@ func exists(path string) bool {
 
 // Install writes the fragment and makes UserConf source it.
 func Install(l Layout) error {
-	if err := os.MkdirAll(filepath.Dir(l.Fragment), 0o755); err != nil {
-		return fmt.Errorf("create fragment directory: %w", err)
-	}
-	if err := writeFile(l.Fragment, []byte(fragmentBody)); err != nil {
+	if err := config.Replace(l.Fragment, []byte(fragmentBody)); err != nil {
 		return fmt.Errorf("write fragment: %w", err)
 	}
 	existing, err := os.ReadFile(l.UserConf)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read %s: %w", l.UserConf, err)
 	}
-	if err := writeFile(l.UserConf, []byte(withBlock(string(existing), l.Fragment))); err != nil {
+	if err := config.Replace(l.UserConf, []byte(withBlock(string(existing), l.Fragment))); err != nil {
 		return err
 	}
 	return nil
@@ -133,31 +122,6 @@ func join(lines []string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-// writeFile replaces path atomically, so an interrupted install cannot leave
-// the user with a half-written config.
-func writeFile(path string, body []byte) error {
-	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".ganymede-*")
-	if err != nil {
-		return fmt.Errorf("create temporary file beside %s: %w", path, err)
-	}
-	defer os.Remove(temp.Name())
-
-	if _, err := temp.Write(body); err != nil {
-		temp.Close()
-		return fmt.Errorf("write %s: %w", temp.Name(), err)
-	}
-	if err := temp.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", temp.Name(), err)
-	}
-	if err := os.Chmod(temp.Name(), 0o644); err != nil {
-		return fmt.Errorf("set permissions on %s: %w", temp.Name(), err)
-	}
-	if err := os.Rename(temp.Name(), path); err != nil {
-		return fmt.Errorf("replace %s: %w", path, err)
-	}
-	return nil
-}
-
 // dockBody configures the dock server. The dock is only a frame: it holds the
 // sidepanel and the working client side by side and otherwise stays out of the
 // way, so its prefix is disabled and every key reaches the client inside the
@@ -191,11 +155,8 @@ const FocusKey = "M-g"
 
 // WriteDockConf writes the dock server's configuration.
 func WriteDockConf(path string, sidepanelWidth int) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create dock config directory: %w", err)
-	}
 	body := fmt.Sprintf(dockBody, FocusKey, FocusKey, sidepanelWidth, sidepanelWidth, sidepanelWidth)
-	if err := writeFile(path, []byte(body)); err != nil {
+	if err := config.Replace(path, []byte(body)); err != nil {
 		return fmt.Errorf("write dock config: %w", err)
 	}
 	return nil

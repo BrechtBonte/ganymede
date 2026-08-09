@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BrechtBonte/ganymede/internal/config"
 	"github.com/BrechtBonte/ganymede/internal/tmuxconf"
 )
 
@@ -210,6 +211,6 @@ func Default(workingDir string) (Harness, error) {
 		Dashboard:  []string{self, "dashboard"},
 		WorkingDir: workingDir,
 		DockSocket: "ganymede-dock",
-		DockConf:   filepath.Join(tmuxconf.ConfigHome(home), "ganymede", "dock.conf"),
+		DockConf:   filepath.Join(config.Home(home), "ganymede", "dock.conf"),
 	}, nil
 }
