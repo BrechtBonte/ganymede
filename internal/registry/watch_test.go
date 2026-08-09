@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/registry"
+	"github.com/BrechtBonte/ganymede/internal/session"
 )
 
 // watching starts a watch that ends with the test.
-func watching(t *testing.T, r registry.Registry) <-chan []registry.Session {
+func watching(t *testing.T, r registry.Registry) <-chan []session.Session {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -25,7 +26,7 @@ func watching(t *testing.T, r registry.Registry) <-chan []registry.Session {
 
 // awaiting waits for a working set matching want, failing the test if the
 // watch never reports one.
-func awaiting(t *testing.T, snapshots <-chan []registry.Session, description string, want func([]registry.Session) bool) {
+func awaiting(t *testing.T, snapshots <-chan []session.Session, description string, want func([]session.Session) bool) {
 	t.Helper()
 	deadline := time.After(5 * time.Second)
 	for {
@@ -44,8 +45,8 @@ func awaiting(t *testing.T, snapshots <-chan []registry.Session, description str
 }
 
 // holding matches a working set of exactly these Session names.
-func holding(names ...string) func([]registry.Session) bool {
-	return func(sessions []registry.Session) bool {
+func holding(names ...string) func([]session.Session) bool {
+	return func(sessions []session.Session) bool {
 		if len(sessions) != len(names) {
 			return false
 		}

@@ -4,7 +4,7 @@ A terminal harness for day-to-day multi-repo [Claude Code](https://code.claude.c
 
 It replaces Warp as the daily driver. It is not a general-purpose terminal: tmux owns the layout, Ghostty is just the window it lives in, and the harness itself is one Go binary.
 
-> **Status: the dashboard is live, and read-only.** It watches Claude Code's session registry and draws your real sessions, grouped under their repo, in the states the registry can tell apart — Working, Blocked, Idle, Shell — appearing and disappearing as sessions start and end. `⏎` jumps the working client to the selected session. Nothing else on the dashboard acts yet: no claims, no worktree spawn, no inline actions, no notifier. Everything below describes the design in full — the specification is the single source of truth for the build, see [Design documents](#design-documents). See [Getting started](#getting-started) for what runs today.
+> **Status: the dashboard is live, and read-only.** It watches Claude Code's session registry and listens to hooks, and draws your real sessions grouped under their repo in every state — Working, Blocked with its reason, Ready with the message the turn ended on, Idle, Shell — appearing and disappearing as sessions start and end. `⏎` jumps the working client to the selected session, and seeing a session clears its Ready badge. Nothing else on the dashboard acts yet: no claims, no worktree spawn, no inline actions, no notifier. Everything below describes the design in full — the specification is the single source of truth for the build, see [Design documents](#design-documents). See [Getting started](#getting-started) for what runs today.
 
 ## Getting started
 
@@ -13,19 +13,23 @@ go build -o bin/ganymede ./cmd/ganymede
 ./bin/ganymede up
 ```
 
-`ganymede up` installs the tmux configuration, brings up the sessions, and opens a Ghostty window with the dashboard docked on the left of the repo you ran it in. It is safe to re-run: it reuses whatever is already up.
+`ganymede up` installs the tmux configuration and the Claude Code hooks, brings up the sessions, and opens a Ghostty window with the dashboard docked on the left of the repo you ran it in. It is safe to re-run: it reuses whatever is already up, and installs over itself rather than beside itself.
 
 | Command | Does |
 |---|---|
 | `ganymede up [directory]` | Open the harness for the repo at *directory* (default: the current one) |
 | `ganymede dashboard` | Run the dashboard in the current terminal — what the sidepanel runs for you |
-| `ganymede install` | Install the tmux configuration only |
+| `ganymede install` | Install the tmux configuration and the hooks only |
+| `ganymede hook` | Report a hook payload on stdin — Claude Code runs this for you |
+| `ganymede seen <pid>` | Report the sessions inside a process as seen — tmux runs this for you |
 
 Inside the window, `Alt+g` moves between the sidepanel and the working client. The dock — the outer tmux server framing the two — runs with no prefix key, so `C-b` and everything else belongs to the session you are working in.
 
 In the sidepanel, `↑` and `↓` move the selection and `⏎` jumps the working client to the selected session — including sessions in repos you never opened the harness from, since the registry's `cwd` is what puts a row on the list.
 
-What the harness writes: a config fragment at `~/.config/ganymede/tmux.conf`, sourced from a marked block in your `tmux.conf`, and the dock's own config at `~/.config/ganymede/dock.conf`.
+What the harness writes: a config fragment at `~/.config/ganymede/tmux.conf`, sourced from a marked block in your `tmux.conf`; the dock's own config at `~/.config/ganymede/dock.conf`; its event socket at `~/.config/ganymede/events.sock`, owned by one dashboard at a time — a second `ganymede dashboard` refuses to start rather than take it; and its own hook entries in `~/.claude/settings.json`, which are replaced rather than repeated on every install and leave the rest of that file, permissions included, untouched.
+
+Two things in that fragment are the harness's to own: tmux's global `pane-focus-in` hook, which is how seeing a session clears its Ready badge, and the `@ganymede-seen` option it reads. A `pane-focus-in` hook of your own in `tmux.conf` would be replaced by it.
 
 ## Why
 

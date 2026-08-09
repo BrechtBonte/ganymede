@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/tmuxconf"
 )
@@ -212,4 +213,121 @@ func TestInstallKeepsSettingsAfterAnUnterminatedBlock(t *testing.T) {
 	if after := readUserConf(t, layout); after != before {
 		t.Errorf("installing over the repaired block changed it again:\n%s", after)
 	}
+}
+
+// hostile is a directory name holding every character that means something to
+// one of the two readers the harness's path has to survive — tmux's own
+// parser, and the shell tmux hands the command to. A harness built somewhere
+// like this is still a harness, and a path it cannot write down would not just
+// cost the seen-tracking: the fragment is one file, and a line tmux refuses to
+// read takes the settings under it with it.
+const hostile = `o'brien $x #y "z ` + "`w"
+
+// recorder is a stand-in for the ganymede binary that writes down every
+// argument it was run with.
+func recorder(t *testing.T) (command, record string) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), hostile)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("make a hostile directory: %v", err)
+	}
+	command = filepath.Join(dir, "gan ymede")
+	record = filepath.Join(dir, "seen.txt")
+	body := "#!/bin/sh\nprintf '%s ' \"$@\" >> \"" + record + "\"\n"
+	if err := os.WriteFile(command, []byte(body), 0o755); err != nil {
+		t.Fatalf("write the recorder: %v", err)
+	}
+	return command, record
+}
+
+// installedWithRecorder installs a fragment whose harness is the recorder.
+func installedWithRecorder(t *testing.T) (layout tmuxconf.Layout, record string) {
+	t.Helper()
+	layout = layoutIn(t)
+	layout.Command, record = recorder(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	return layout, record
+}
+
+// Seen-tracking rests on tmux telling the harness when a pane is looked at.
+// The pid has to still be a format after the config is read — expanded at load
+// it would name one pane forever, and the wrong one.
+func TestTheInstalledConfigAsksTmuxToReportFocus(t *testing.T) {
+	layout, _ := installedWithRecorder(t)
+
+	tmux := tmuxWithConf(t, layout.UserConf)
+	hook := tmux("show-hooks", "-g", "pane-focus-in")
+
+	if !strings.Contains(hook, "seen") {
+		t.Errorf("focus on a pane does not run the harness: %q", hook)
+	}
+	// The settings the harness cannot work without are read whatever the
+	// harness is called: a path tmux chokes on must not cost them.
+	if got := tmux("show-options", "-A", "-s", "-v", "focus-events"); got != "on" {
+		t.Errorf("focus-events = %q, want %q", got, "on")
+	}
+	if !strings.Contains(hook, "#{pane_pid}") {
+		t.Errorf("the pane was decided when the config was read, not when the focus lands: %q", hook)
+	}
+}
+
+// The whole path, through real tmux: a client attaches to a Session's pane,
+// tmux reports the focus, and the harness is run for that pane's own process —
+// which is what the Dashboard turns back into Sessions you have now seen.
+func TestFocusLandingOnAPaneRunsTheHarnessForIt(t *testing.T) {
+	layout, record := installedWithRecorder(t)
+	tmux := tmuxWithConf(t, layout.UserConf)
+	pane := tmux("display-message", "-p", "-t", "=probe", "#{pane_pid}")
+
+	// A client with a pty of its own, the way the dock attaches to a Session.
+	// Only an attached client has a focus to land anywhere.
+	attach(t, sessionsSocket(t))
+
+	if !settled(func() bool { return strings.Contains(read(t, record), pane) }) {
+		t.Errorf("the harness was run with %q, want the focused pane's process %s", read(t, record), pane)
+	}
+}
+
+// sessionsSocket is the socket tmuxWithConf started its server on.
+func sessionsSocket(t *testing.T) string {
+	t.Helper()
+	return "ganymede-test-" + strings.ReplaceAll(t.Name(), "/", "-")
+}
+
+// attach opens a client onto the probe session from a tmux server of its own,
+// which stands in for the emulator holding the dock.
+func attach(t *testing.T, socket string) {
+	t.Helper()
+	emulator := socket + "-emulator"
+	out, err := exec.Command("tmux", "-L", emulator, "new-session", "-d", "sh", "-c",
+		"env -u TMUX tmux -L "+socket+" attach -t =probe").CombinedOutput()
+	if err != nil {
+		t.Fatalf("attach a client: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", emulator, "kill-server").Run() })
+}
+
+// read is what the recorder has written down so far.
+func read(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(body)
+}
+
+// settled polls until cond holds, so the test does not race tmux's client
+// setup and the shell it starts.
+func settled(cond func() bool) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
 }

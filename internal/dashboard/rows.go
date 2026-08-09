@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/BrechtBonte/ganymede/internal/registry"
+	"github.com/BrechtBonte/ganymede/internal/session"
 )
 
 // row is one line of the repo tree: a repo's header, or one of its Sessions
@@ -15,7 +15,7 @@ type row struct {
 	// root is the Main root the row belongs to.
 	root string
 	// session is the Session the row draws, and nil on a repo's header row.
-	session *registry.Session
+	session *session.Session
 }
 
 // label is what the row is called.
@@ -45,11 +45,11 @@ func (r row) key() string {
 // came from, and a Session outside every scan root under its own directory,
 // because the registry's cwd is ground truth. Repos are grouped by root rather
 // than by name, so two checkouts that happen to share a name stay apart.
-func rowsOf(sessions []registry.Session, rootOf func(dir string) string) []row {
-	byRoot := map[string][]registry.Session{}
-	for _, session := range sessions {
-		root := rootOf(session.Dir)
-		byRoot[root] = append(byRoot[root], session)
+func rowsOf(sessions []session.Session, rootOf func(dir string) string) []row {
+	byRoot := map[string][]session.Session{}
+	for _, s := range sessions {
+		root := rootOf(s.Dir)
+		byRoot[root] = append(byRoot[root], s)
 	}
 
 	roots := make([]string, 0, len(byRoot))
@@ -75,15 +75,17 @@ func rowsOf(sessions []registry.Session, rootOf func(dir string) string) []row {
 	return rows
 }
 
-// tier ranks a Session by how much it is asking of you.
-func tier(s registry.Session) int {
+// tier ranks a Session by how much it is asking of you. Blocked outranks
+// Ready: one cannot continue at all, the other is only waiting to be read.
+func tier(s session.Session) int {
 	switch s.State {
-	case registry.Blocked:
+	case session.Blocked:
 		return 0
-	// 1 is Ready's, once the harness tracks which turns you have seen.
-	case registry.Working:
+	case session.Ready:
+		return 1
+	case session.Working:
 		return 2
-	case registry.Shell:
+	case session.Shell:
 		return 3
 	default:
 		return 4
@@ -94,12 +96,12 @@ func tier(s registry.Session) int {
 // within a tier, the Session that has been waiting on you longest. A tier that
 // is asking nothing of you reads the other way round — most recently moved
 // first, which is where you were last.
-func moreUrgent(a, b registry.Session) int {
+func moreUrgent(a, b session.Session) int {
 	if d := tier(a) - tier(b); d != 0 {
 		return d
 	}
 	if d := a.Since.Compare(b.Since); d != 0 {
-		if a.State == registry.Blocked {
+		if a.Attention() {
 			return d
 		}
 		return -d

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
-	"github.com/BrechtBonte/ganymede/internal/registry"
+	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/topology"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -27,8 +27,8 @@ func (j *jumps) Jump(pid int) error {
 }
 
 // sidepanel is a Dashboard sized for the sidepanel, showing sessions.
-func sidepanel(jumper dashboard.Jumper, sessions ...registry.Session) tea.Model {
-	var model tea.Model = dashboard.New(nil, jumper)
+func sidepanel(jumper dashboard.Jumper, sessions ...session.Session) tea.Model {
+	var model tea.Model = dashboard.New(nil, jumper, nil)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions(sessions))
 	return model
@@ -61,9 +61,9 @@ func press(model tea.Model, key tea.KeyType) tea.Model {
 	return model
 }
 
-// session is a Session as the registry would describe it.
-func session(name, dir string, state registry.State) registry.Session {
-	return registry.Session{
+// live is a Session as the registry would describe it.
+func live(name, dir string, state session.State) session.Session {
+	return session.Session{
 		PID:   len(name) + len(dir),
 		ID:    name + "-id",
 		Dir:   dir,
@@ -89,8 +89,8 @@ func lineWith(view, want string) (string, bool) {
 // the repo tree turns to soup.
 func TestDashboardFitsTheSidepanel(t *testing.T) {
 	model := sidepanel(&jumps{},
-		session("teamleadercrm-monolith-billing-b7", "/repos/teamleadercrm-monolith-and-then-some", registry.Working),
-		session("FIRE-2841-max-paging-numbers", "/repos/teamleadercrm-monolith-and-then-some", registry.Blocked),
+		live("teamleadercrm-monolith-billing-b7", "/repos/teamleadercrm-monolith-and-then-some", session.Working),
+		live("FIRE-2841-max-paging-numbers", "/repos/teamleadercrm-monolith-and-then-some", session.Blocked),
 	)
 
 	for _, line := range strings.Split(model.View(), "\n") {
@@ -108,8 +108,8 @@ func TestDashboardFitsTheSidepanel(t *testing.T) {
 func TestDashboardFitsTheSidepanelWhateverASessionIsNamed(t *testing.T) {
 	// Each of these is well inside 40 characters and well outside 40 columns.
 	model := sidepanel(&jumps{},
-		session("請求書ページングの最大値を直す作業を続けています", "/repos/service-billing", registry.Blocked),
-		session("ai-assistant-b3", "/repos/日本語のプロジェクトディレクトリの名前", registry.Working),
+		live("請求書ページングの最大値を直す作業を続けています", "/repos/service-billing", session.Blocked),
+		live("ai-assistant-b3", "/repos/日本語のプロジェクトディレクトリの名前", session.Working),
 	)
 
 	for _, line := range strings.Split(model.View(), "\n") {
@@ -136,9 +136,9 @@ func TestDashboardNamesItselfAndReportsAnEmptyWorkingSet(t *testing.T) {
 // repos rather than a flat list of names.
 func TestSessionsAreGroupedUnderTheirRepo(t *testing.T) {
 	view := tree(sidepanel(&jumps{},
-		session("service-billing-a1", "/repos/service-billing", registry.Idle),
-		session("ai-assistant-b3", "/repos/service-ai-assistant", registry.Idle),
-		session("FIRE-2841-paging", "/repos/service-ai-assistant", registry.Idle),
+		live("service-billing-a1", "/repos/service-billing", session.Idle),
+		live("ai-assistant-b3", "/repos/service-ai-assistant", session.Idle),
+		live("FIRE-2841-paging", "/repos/service-ai-assistant", session.Idle),
 	))
 
 	if got := strings.Count(view, "service-ai-assistant"); got != 1 {
@@ -158,35 +158,15 @@ func TestSessionsAreGroupedUnderTheirRepo(t *testing.T) {
 	}
 }
 
-// Every state the registry can tell apart reads differently at a glance.
-func TestEachSessionStateIsDrawnDistinctly(t *testing.T) {
-	seen := map[string]registry.State{}
-	for _, state := range []registry.State{registry.Working, registry.Blocked, registry.Idle, registry.Shell} {
-		view := tree(sidepanel(&jumps{}, session("ganymede-78", "/repos/ganymede", state)))
-		line, ok := lineWith(view, "ganymede-78")
-		if !ok {
-			t.Fatalf("no row for a %s Session:\n%s", state, view)
-		}
-		glyph := strings.TrimSpace(strings.TrimSuffix(strings.TrimRight(line, " "), "ganymede-78"))
-		if glyph == "" {
-			t.Errorf("a %s Session's row carries no state glyph: %q", state, line)
-		}
-		if other, taken := seen[glyph]; taken {
-			t.Errorf("%s and %s are both drawn %q", state, other, glyph)
-		}
-		seen[glyph] = state
-	}
-}
-
 // Attention comes first: a Session that cannot continue without you outranks
 // one that is getting on with its work, whichever repo each is in. The names
 // here run the other way round, so only the state can be putting them in this
 // order.
 func TestBlockedSessionsRiseToTheTop(t *testing.T) {
 	view := tree(sidepanel(&jumps{},
-		session("ai-assistant-b3", "/repos/service-ai-assistant", registry.Working),
-		session("ganymede-78", "/repos/ganymede", registry.Idle),
-		session("service-billing-a1", "/repos/service-billing", registry.Blocked),
+		live("ai-assistant-b3", "/repos/service-ai-assistant", session.Working),
+		live("ganymede-78", "/repos/ganymede", session.Idle),
+		live("service-billing-a1", "/repos/service-billing", session.Blocked),
 	))
 
 	blocked := strings.Index(view, "service-billing-a1")
@@ -200,9 +180,9 @@ func TestBlockedSessionsRiseToTheTop(t *testing.T) {
 // Within Attention, the Session that has been waiting on you longest is the
 // one to answer first.
 func TestTheLongestBlockedSessionIsTheTopOfAttention(t *testing.T) {
-	recent := session("aaa-just-blocked", "/repos/service-ai-assistant", registry.Blocked)
+	recent := live("aaa-just-blocked", "/repos/service-ai-assistant", session.Blocked)
 	recent.Since = epoch.Add(time.Hour)
-	waiting := session("zzz-blocked-since-lunch", "/repos/service-billing", registry.Blocked)
+	waiting := live("zzz-blocked-since-lunch", "/repos/service-billing", session.Blocked)
 	waiting.Since = epoch
 
 	view := tree(sidepanel(&jumps{}, recent, waiting))
@@ -215,9 +195,9 @@ func TestTheLongestBlockedSessionIsTheTopOfAttention(t *testing.T) {
 // Below Attention the tree reads by recency instead: what you were last at is
 // what you are most likely coming back to.
 func TestSessionsAskingNothingReadMostRecentFirst(t *testing.T) {
-	stale := session("aaa-idle-since-monday", "/repos/service-ai-assistant", registry.Idle)
+	stale := live("aaa-idle-since-monday", "/repos/service-ai-assistant", session.Idle)
 	stale.Since = epoch
-	recent := session("zzz-idle-just-now", "/repos/service-billing", registry.Idle)
+	recent := live("zzz-idle-just-now", "/repos/service-billing", session.Idle)
 	recent.Since = epoch.Add(time.Hour)
 
 	view := tree(sidepanel(&jumps{}, stale, recent))
@@ -230,7 +210,7 @@ func TestSessionsAskingNothingReadMostRecentFirst(t *testing.T) {
 // Blocked is always displayed with its reason, and the row has no room for it:
 // the detail box is where it goes.
 func TestSelectedShowsWhyASessionIsBlocked(t *testing.T) {
-	blocked := session("FIRE-2841-paging", "/repos/service-billing", registry.Blocked)
+	blocked := live("FIRE-2841-paging", "/repos/service-billing", session.Blocked)
 	blocked.Reason = "permission: Bash"
 	model := sidepanel(&jumps{}, blocked)
 
@@ -251,7 +231,7 @@ func TestSelectedAbbreviatesOnlyPathsActuallyUnderHome(t *testing.T) {
 		{"/Users/brechtbonte/Projects/ganymede", "~/Projects/ganymede"},
 		{"/Users/brechtbonte-old/billing", "/Users/brechtbonte-old/billing"},
 	} {
-		model := sidepanel(&jumps{}, session("ganymede-78", c.dir, registry.Idle))
+		model := sidepanel(&jumps{}, live("ganymede-78", c.dir, session.Idle))
 		model = press(model, tea.KeyDown)
 
 		if !strings.Contains(drawn(model), c.want) {
@@ -262,8 +242,8 @@ func TestSelectedAbbreviatesOnlyPathsActuallyUnderHome(t *testing.T) {
 
 // A Session that has gone loses its row without the Dashboard being restarted.
 func TestASessionThatIsGoneLosesItsRow(t *testing.T) {
-	staying := session("ganymede-78", "/repos/ganymede", registry.Idle)
-	model := sidepanel(&jumps{}, staying, session("service-billing-a1", "/repos/service-billing", registry.Idle))
+	staying := live("ganymede-78", "/repos/ganymede", session.Idle)
+	model := sidepanel(&jumps{}, staying, live("service-billing-a1", "/repos/service-billing", session.Idle))
 
 	model, _ = model.Update(dashboard.Sessions{staying})
 
@@ -280,7 +260,7 @@ func TestASessionThatIsGoneLosesItsRow(t *testing.T) {
 // it puts the selected Session in front of you.
 func TestEnterJumpsToTheSelectedSession(t *testing.T) {
 	jumper := &jumps{}
-	only := session("ganymede-78", "/repos/ganymede", registry.Idle)
+	only := live("ganymede-78", "/repos/ganymede", session.Idle)
 	model := sidepanel(jumper, only)
 
 	// Down from the repo's header row onto its one Session.
@@ -295,7 +275,7 @@ func TestEnterJumpsToTheSelectedSession(t *testing.T) {
 // A repo's header row is not a Session; Enter on it has nowhere to go.
 func TestEnterOnARepoHeaderJumpsNowhere(t *testing.T) {
 	jumper := &jumps{}
-	model := sidepanel(jumper, session("ganymede-78", "/repos/ganymede", registry.Idle))
+	model := sidepanel(jumper, live("ganymede-78", "/repos/ganymede", session.Idle))
 
 	model = press(model, tea.KeyEnter)
 
@@ -308,7 +288,7 @@ func TestEnterOnARepoHeaderJumpsNowhere(t *testing.T) {
 // has ended since the registry was read — is reported rather than swallowed.
 func TestAJumpThatCannotBeMadeIsReported(t *testing.T) {
 	jumper := &jumps{err: errors.New("no tmux pane is running process 4242")}
-	model := sidepanel(jumper, session("ganymede-78", "/repos/ganymede", registry.Idle))
+	model := sidepanel(jumper, live("ganymede-78", "/repos/ganymede", session.Idle))
 
 	model = press(model, tea.KeyDown)
 	model = press(model, tea.KeyEnter)
@@ -322,14 +302,14 @@ func TestAJumpThatCannotBeMadeIsReported(t *testing.T) {
 // Session you put it on, not on whatever row inherits that position.
 func TestSelectionStaysWithItsSessionAsTheWorkingSetChanges(t *testing.T) {
 	jumper := &jumps{}
-	chosen := session("ganymede-78", "/repos/ganymede", registry.Idle)
+	chosen := live("ganymede-78", "/repos/ganymede", session.Idle)
 	model := sidepanel(jumper, chosen)
 	model = press(model, tea.KeyDown)
 
 	// A Blocked Session in another repo arrives and takes the top of the tree.
 	model, _ = model.Update(dashboard.Sessions{
 		chosen,
-		session("FIRE-2841-paging", "/repos/service-billing", registry.Blocked),
+		live("FIRE-2841-paging", "/repos/service-billing", session.Blocked),
 	})
 	model = press(model, tea.KeyEnter)
 
@@ -344,8 +324,8 @@ func TestSelectionStaysWithItsSessionAsTheWorkingSetChanges(t *testing.T) {
 // repo.
 func TestSelectionSurvivesSessionsWithoutARegistryID(t *testing.T) {
 	jumper := &jumps{}
-	first := registry.Session{PID: 11, Dir: "/repos/service-ai-assistant", Name: "ai-assistant-b3", State: registry.Idle, Since: epoch}
-	second := registry.Session{PID: 22, Dir: "/repos/service-billing", Name: "service-billing-a1", State: registry.Idle, Since: epoch}
+	first := session.Session{PID: 11, Dir: "/repos/service-ai-assistant", Name: "ai-assistant-b3", State: session.Idle, Since: epoch}
+	second := session.Session{PID: 22, Dir: "/repos/service-billing", Name: "service-billing-a1", State: session.Idle, Since: epoch}
 	model := sidepanel(jumper, first, second)
 
 	// Onto the second repo's Session: header, Session, header, Session.
@@ -363,11 +343,11 @@ func TestSelectionSurvivesSessionsWithoutARegistryID(t *testing.T) {
 // However long the working set gets, the detail box stays on the sidepanel —
 // it is where the Blocked reason and the action keys live.
 func TestTheDetailBoxSurvivesAWorkingSetTallerThanTheSidepanel(t *testing.T) {
-	var many []registry.Session
+	var many []session.Session
 	for _, name := range []string{"a1", "b2", "c3", "d4", "e5", "f6", "g7", "h8", "i9", "j10", "k11", "l12"} {
-		many = append(many, session("session-"+name, "/repos/repo-"+name, registry.Idle))
+		many = append(many, live("session-"+name, "/repos/repo-"+name, session.Idle))
 	}
-	var model tea.Model = dashboard.New(nil, &jumps{})
+	var model tea.Model = dashboard.New(nil, &jumps{}, nil)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 12})
 	model, _ = model.Update(dashboard.Sessions(many))
 
@@ -385,5 +365,127 @@ func TestTheDetailBoxSurvivesAWorkingSetTallerThanTheSidepanel(t *testing.T) {
 	}
 	if !strings.Contains(tree(model), "session-l12") {
 		t.Errorf("the selected Session is not on the tree:\n%s", view)
+	}
+}
+
+// seeing records which Sessions the Dashboard reported you had looked at.
+type seeing struct{ ids []string }
+
+func (s *seeing) Seen(id string) { s.ids = append(s.ids, id) }
+
+// Ready is a state of its own on the tree, not a shade of Idle: it is the
+// unread badge, and it has to read as one at a glance.
+func TestReadyIsDrawnDistinctlyFromIdle(t *testing.T) {
+	glyphs := map[string]session.State{}
+	for _, state := range []session.State{session.Working, session.Blocked, session.Ready, session.Idle, session.Shell} {
+		view := tree(sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", state)))
+		line, ok := lineWith(view, "ganymede-78")
+		if !ok {
+			t.Fatalf("no row for a %s Session:\n%s", state, view)
+		}
+		glyph := strings.TrimSpace(strings.TrimSuffix(strings.TrimRight(line, " "), "ganymede-78"))
+		if glyph == "" {
+			t.Errorf("a %s Session's row carries no state glyph: %q", state, line)
+		}
+		for drawn, other := range glyphs {
+			if drawn == glyph {
+				t.Errorf("%s and %s are both drawn %q", state, other, glyph)
+			}
+		}
+		glyphs[glyph] = state
+	}
+}
+
+// Attention is Blocked and Ready together, and it sorts above everything that
+// is asking nothing of you. The names run the other way round, so only the
+// states can be putting these rows in this order.
+func TestAnUnreadTurnRisesAboveTheSessionsAskingNothing(t *testing.T) {
+	view := tree(sidepanel(&jumps{},
+		live("aaa-working", "/repos/service-ai-assistant", session.Working),
+		live("bbb-idle", "/repos/ganymede", session.Idle),
+		live("zzz-ready", "/repos/service-billing", session.Ready),
+	))
+
+	ready := strings.Index(view, "zzz-ready")
+	for _, later := range []string{"aaa-working", "bbb-idle"} {
+		if at := strings.Index(view, later); at < ready {
+			t.Errorf("%q is drawn above the Ready Session:\n%s", later, view)
+		}
+	}
+}
+
+// Within Attention, Blocked outranks Ready: a Session that cannot continue at
+// all comes before one that is only waiting to be read.
+func TestBlockedOutranksReadyOnTheTree(t *testing.T) {
+	view := tree(sidepanel(&jumps{},
+		live("aaa-ready", "/repos/service-ai-assistant", session.Ready),
+		live("zzz-blocked", "/repos/service-billing", session.Blocked),
+	))
+
+	if strings.Index(view, "zzz-blocked") > strings.Index(view, "aaa-ready") {
+		t.Errorf("Ready is drawn above Blocked:\n%s", view)
+	}
+}
+
+// Within Attention the Session waiting longest is the one to get to first,
+// whether it is Blocked or Ready.
+func TestTheLongestUnreadTurnIsTheTopOfReady(t *testing.T) {
+	recent := live("aaa-just-finished", "/repos/service-ai-assistant", session.Ready)
+	recent.Since = epoch.Add(time.Hour)
+	waiting := live("zzz-ready-since-lunch", "/repos/service-billing", session.Ready)
+	waiting.Since = epoch
+
+	view := tree(sidepanel(&jumps{}, recent, waiting))
+
+	if strings.Index(view, "zzz-ready-since-lunch") > strings.Index(view, "aaa-just-finished") {
+		t.Errorf("the turn that has been unread longest is not at the top of Attention:\n%s", view)
+	}
+}
+
+// An unread badge you cannot read anything of is only half a badge: the detail
+// box says what the turn ended on.
+func TestSelectedShowsWhatAReadySessionLastSaid(t *testing.T) {
+	ready := live("FIRE-2841-paging", "/repos/service-billing", session.Ready)
+	ready.Snippet = "Fix ready on fix/max-paging-numbers, 42 files, asking to push."
+	model := sidepanel(&jumps{}, ready)
+
+	model = press(model, tea.KeyDown)
+
+	if !strings.Contains(drawn(model), "Fix ready on fix/max-paging") {
+		t.Errorf("the Dashboard does not say what the Session last said:\n%s", drawn(model))
+	}
+}
+
+// Jumping to a Session is seeing it, and seeing it is what clears Ready. The
+// Dashboard says so itself rather than waiting for tmux to report the focus,
+// because it is the one that moved you.
+func TestJumpingToASessionReportsItSeen(t *testing.T) {
+	seen := &seeing{}
+	ready := live("ganymede-78", "/repos/ganymede", session.Ready)
+	var model tea.Model = dashboard.New(nil, &jumps{}, seen.Seen)
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	model, _ = model.Update(dashboard.Sessions{ready})
+
+	model = press(model, tea.KeyDown)
+	model = press(model, tea.KeyEnter)
+
+	if len(seen.ids) != 1 || seen.ids[0] != ready.ID {
+		t.Errorf("the Dashboard reported %v seen, want the Session it jumped to (%s)", seen.ids, ready.ID)
+	}
+}
+
+// A jump the harness could not make left you where you were, so the Session
+// has not been seen and its badge has to stay.
+func TestAJumpThatCouldNotBeMadeLeavesTheBadgeAlone(t *testing.T) {
+	seen := &seeing{}
+	var model tea.Model = dashboard.New(nil, &jumps{err: errors.New("no tmux pane is running process 4242")}, seen.Seen)
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	model, _ = model.Update(dashboard.Sessions{live("ganymede-78", "/repos/ganymede", session.Ready)})
+
+	model = press(model, tea.KeyDown)
+	model = press(model, tea.KeyEnter)
+
+	if len(seen.ids) != 0 {
+		t.Errorf("the Dashboard reported %v seen after a jump it could not make", seen.ids)
 	}
 }

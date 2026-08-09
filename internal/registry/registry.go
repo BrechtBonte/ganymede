@@ -17,42 +17,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/BrechtBonte/ganymede/internal/session"
 )
-
-// State is a Session's state as far as the registry can tell. Ready is not one
-// of them: the registry cannot know whether you have seen a finished turn, so
-// deciding Ready from Idle is the harness's own job.
-type State string
-
-const (
-	Working State = "Working"
-	Blocked State = "Blocked"
-	Idle    State = "Idle"
-	Shell   State = "Shell"
-)
-
-// Session is one live Claude Code process, as the registry describes it.
-type Session struct {
-	// PID is the Claude Code process. It is what the harness follows to find
-	// the tmux pane the Session is running in.
-	PID int
-	// ID is Claude Code's own session id.
-	ID string
-	// Dir is the Session's working directory — a Main root or a worktree.
-	// It is ground truth for which repo the Session belongs to, whether or
-	// not that repo lies under a scan root.
-	Dir string
-	// Name is the Session's name, which for a Worktree session carries the
-	// ticket.
-	Name string
-	// State is what the Session is doing.
-	State State
-	// Reason is what a Blocked Session is waiting for; empty otherwise.
-	Reason string
-	// Since is when the Session entered its current state, which is what a
-	// wait age counts from.
-	Since time.Time
-}
 
 // Registry is Claude Code's per-session registry directory.
 type Registry struct {
@@ -79,7 +46,10 @@ func Default() (Registry, error) {
 // Sessions whose process has died are Gone and are left out, as is a registry
 // directory that does not exist: an absent registry is an empty working set,
 // not a failure.
-func (r Registry) Read() ([]Session, error) {
+//
+// No Session comes back Ready. The registry cannot know whether you have seen
+// a finished turn; that is the state model's to decide, over these.
+func (r Registry) Read() ([]session.Session, error) {
 	entries, err := os.ReadDir(r.Dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -95,16 +65,16 @@ func (r Registry) Read() ([]Session, error) {
 
 	// os.ReadDir sorts by filename, so the order out of here is stable — which
 	// is what lets a watcher tell a real change from a re-read.
-	sessions := make([]Session, 0, len(entries))
+	sessions := make([]session.Session, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		session, ok := readSession(filepath.Join(r.Dir, entry.Name()))
-		if !ok || !alive(session.PID) {
+		found, ok := readSession(filepath.Join(r.Dir, entry.Name()))
+		if !ok || !alive(found.PID) {
 			continue
 		}
-		sessions = append(sessions, session)
+		sessions = append(sessions, found)
 	}
 	return sessions, nil
 }
@@ -127,39 +97,50 @@ type record struct {
 // Claude Code writes these files while the harness is reading them, so a file
 // that will not parse is a normal event and not worth an error: the next read
 // picks it up whole.
-func readSession(path string) (Session, bool) {
+func readSession(path string) (session.Session, bool) {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return Session{}, false
+		return session.Session{}, false
 	}
 	var r record
 	if err := json.Unmarshal(body, &r); err != nil || r.PID == 0 {
-		return Session{}, false
+		return session.Session{}, false
 	}
-	return Session{
+	return session.Session{
 		PID:    r.PID,
 		ID:     r.SessionID,
 		Dir:    r.CWD,
 		Name:   r.Name,
 		State:  stateOf(r.Status),
 		Reason: reasonOf(r.WaitingFor),
-		Since:  time.UnixMilli(r.StatusUpdatedAt),
+		Since:  since(r.StatusUpdatedAt),
 	}, true
+}
+
+// since reads when the registry last moved a Session. A record that does not
+// say gets no time at all rather than the start of the Unix epoch: a Session
+// the registry cannot timestamp must not read as one that has been waiting on
+// you since 1970, to the ordering or to anything weighing it against a clock.
+func since(millis int64) time.Time {
+	if millis <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(millis)
 }
 
 // stateOf reads the registry's status. An unknown status is Idle: it is the
 // state that claims the least about a Session this harness cannot read, and it
 // keeps the row on the Dashboard rather than pretending the Session is Gone.
-func stateOf(status string) State {
+func stateOf(status string) session.State {
 	switch status {
 	case "busy":
-		return Working
+		return session.Working
 	case "waiting":
-		return Blocked
+		return session.Blocked
 	case "shell":
-		return Shell
+		return session.Shell
 	default:
-		return Idle
+		return session.Idle
 	}
 }
 

@@ -74,6 +74,45 @@ func paneOf(pid int, panes map[int]string, parents map[int]int) (string, bool) {
 	return "", false
 }
 
+// Under reports which of pids are running inside the process root — root
+// itself, or anything below it.
+//
+// It is how a pane names the Sessions it holds, which is what turns focus
+// landing on a pane into those Sessions having been seen. tmux knows only the
+// process it started in the pane; a Session is that process's descendant,
+// however many shells down.
+func Under(root int, pids []int) ([]int, error) {
+	parents, err := parents()
+	if err != nil {
+		return nil, err
+	}
+	found := make([]int, 0, len(pids))
+	for _, pid := range pids {
+		if descends(pid, root, parents) {
+			found = append(found, pid)
+		}
+	}
+	return found, nil
+}
+
+// descends walks up from pid looking for root.
+func descends(pid, root int, parents map[int]int) bool {
+	// No process is its own ancestor, so the table's size bounds the walk
+	// however inconsistent a snapshot of it turns out to be.
+	for range len(parents) + 1 {
+		if pid == root {
+			return true
+		}
+		parent, ok := parents[pid]
+		// Reaching pid 1 means the walk left the pane behind long ago.
+		if !ok || parent <= 1 {
+			return false
+		}
+		pid = parent
+	}
+	return false
+}
+
 // workingClient is how the Sessions server knows the working client: by the
 // pty it runs on, which is the dock's right-hand pane.
 func (h Harness) workingClient() (string, error) {
