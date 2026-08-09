@@ -1,0 +1,79 @@
+# Ganymede Harness
+
+The terminal harness replacing Warp for multi-repo Claude Code work: a tmux-based environment whose dashboard shows every repo's agent sessions, their attention states, and main-root availability. This glossary is the ubiquitous language of that dashboard.
+
+## Language
+
+### Structure
+
+**Dashboard**:
+The always-visible sidepanel TUI listing the working set of repos and their sessions, from which all harness actions are taken.
+_Avoid_: overview, home screen, monitor, rail
+
+**Working set**:
+The repos the dashboard shows: those with a live session, a Claimed root, or recent harness activity. Everything else lives behind the picker.
+_Avoid_: active repos, favourites, registry
+
+**Session**:
+One live Claude Code process shown as a row on the dashboard, tied to a working directory (a main root or a worktree).
+_Avoid_: agent, instance, tab
+
+**Main root**:
+A repository's primary checkout — the directory PR reviews happen in.
+_Avoid_: main checkout, repo root, primary clone
+
+**Worktree session**:
+A session running in a git worktree spawned for background work, leaving the main root untouched.
+_Avoid_: background session, side session
+
+**Popup shell**:
+The toggleable overlay shell belonging to the session in focus, opening in that session's current directory. Hidden, not killed, on close; never an occupant of a main root.
+_Avoid_: scratch terminal, quick terminal, drawer
+
+### Session states
+
+**Working**:
+The session's turn (or its subagents) is running; nothing is asked of you.
+_Avoid_: busy, running
+
+**Blocked**:
+The session cannot continue without your decision — a permission prompt, question, or dialog. Always displayed with its reason.
+_Avoid_: waiting, stuck, pending
+
+**Ready**:
+The turn finished and you have not seen the output yet — an unread badge, not a plain idle. Seeing the session or prompting it clears Ready to Idle.
+_Avoid_: done, finished, idle-with-output
+
+**Idle**:
+At the prompt, seen, nothing pending.
+_Avoid_: inactive, sleeping
+
+**Shell**:
+Occupied by you — you are in the session's shell mode running commands.
+_Avoid_: manual mode
+
+**Gone**:
+The session's process has ended; the row disappears.
+_Avoid_: dead, closed, ended
+
+**Attention**:
+The union of Blocked and Ready — everything waiting on you. Blocked outranks Ready; within a tier, longest-waiting first.
+_Avoid_: alerts, notifications, needs-input
+
+### Main-root states
+
+**Free**:
+No live session in the main root and no claim on it — safe to check out a PR.
+_Avoid_: available, open
+
+**In use by agent**:
+Any live session has the main root as its working directory — even an Idle one, since an idle agent still holds context bound to that checkout.
+_Avoid_: busy, occupied, locked
+
+**Claimed**:
+Explicitly reserved by you (typically for a PR review), optionally with a note. Warns agent spawns away until released.
+_Avoid_: reserved, checked out
+
+**Takeover**:
+Claiming a main root whose only occupant is an Idle session by ending that session in the same action. Refused when the occupant is Working or Blocked.
+_Avoid_: force claim, steal
