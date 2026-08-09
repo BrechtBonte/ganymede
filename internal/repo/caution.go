@@ -84,11 +84,18 @@ func adrift(root string) bool {
 // it, or a repository with no remote at all — so a repository that has one of
 // the two conventional names falls back on it.
 //
+// The pointer has to still lead somewhere. git writes it when the clone is made
+// and never touches it again, so a repository whose upstream has renamed its
+// default branch since is left pointing at a branch that has been pruned away —
+// and taking that name would put a caution on the row about a root sitting
+// exactly where it should be, for as long as the checkout exists. A pointer to
+// nothing is not the remote answering; it is the remote's answer having gone.
+//
 // A repository that answers neither way has no default this can name, and gets
 // no caution rather than a made-up one.
 func usual(root string) (string, bool) {
-	if head, ok := git(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); ok {
-		// symbolic-ref answers with the remote on the front: origin/main.
+	if head, ok := git(root, "rev-parse", "--abbrev-ref", "refs/remotes/origin/HEAD"); ok {
+		// The answer has the remote on the front: origin/main.
 		if _, branch, named := strings.Cut(head, "/"); named {
 			return branch, true
 		}

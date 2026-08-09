@@ -17,6 +17,16 @@ func defaulting(t *testing.T, name string) string {
 	return root
 }
 
+// tracking gives root a remote whose default branch is name, the shape a clone
+// arrives in: the branch tracked under refs/remotes/origin, and origin's HEAD
+// pointing at it.
+func tracking(t *testing.T, root, name string) {
+	t.Helper()
+	git(t, root, "remote", "add", "origin", root)
+	git(t, root, "update-ref", "refs/remotes/origin/"+name, "HEAD")
+	git(t, root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+name)
+}
+
 // write puts a file in the checkout at root.
 func write(t *testing.T, root, name, content string) {
 	t.Helper()
@@ -105,13 +115,27 @@ func TestNoCautionOutsideARepository(t *testing.T) {
 	}
 }
 
+// git writes origin's HEAD when the clone is made and never touches it again.
+// A repository whose upstream has renamed its default branch since, and whose
+// stale tracking branch has been pruned away, is left pointing at a branch that
+// is not there — and a caution read off that pointer would sit on the row for as
+// long as the checkout exists, about a root that is exactly where it should be.
+func TestDefaultBranchIgnoresARemoteHeadPointingAtNothing(t *testing.T) {
+	root := defaulting(t, "main")
+	git(t, root, "remote", "add", "origin", root)
+	git(t, root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+
+	if got := repo.CautionOf(root); got.Branch != "" {
+		t.Errorf("CautionOf(%q) = %+v, want nothing to caution about", root, got)
+	}
+}
+
 // Which branch is default is the repository's own answer, not a guess at it: a
 // repository whose default is neither main nor master is one where guessing
 // would put a caution on a root that is exactly where it should be.
 func TestDefaultBranchIsTheOneTheRemoteNames(t *testing.T) {
 	root := defaulting(t, "2.x")
-	git(t, root, "remote", "add", "origin", root)
-	git(t, root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/2.x")
+	tracking(t, root, "2.x")
 	// Named so that a harness guessing at the default would find this one and
 	// have nothing to say.
 	git(t, root, "checkout", "-q", "-b", "main")
