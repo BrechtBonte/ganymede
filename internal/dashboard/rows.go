@@ -22,6 +22,11 @@ type row struct {
 	ticket ticket.Key
 	// state is what the Main root is doing, on a repo's header row.
 	state repo.State
+	// caution is what the Main root's own checkout is carrying, on a repo's
+	// header row. It is drawn there whatever state the root is in: the two
+	// answer different questions, and both of them are asked before a PR is
+	// checked out.
+	caution repo.Caution
 }
 
 // answers is what laying the tree out has to ask about a directory or a root.
@@ -37,6 +42,8 @@ type answers struct {
 	checkout func(dir string) string
 	// ticket is what a Session's checkout is about.
 	ticket func(dir, root string) ticket.Key
+	// caution is what a Main root's checkout is carrying.
+	caution func(root string) repo.Caution
 }
 
 // label is what the row is called.
@@ -90,7 +97,7 @@ func rowsOf(sessions []session.Session, ask answers) []row {
 
 	rows := make([]row, 0, len(sessions)+len(roots))
 	for _, root := range roots {
-		rows = append(rows, row{root: root, state: stateOf(root, byRoot[root], ask)})
+		rows = append(rows, row{root: root, state: stateOf(root, byRoot[root], ask), caution: ask.caution(root)})
 		for i := range byRoot[root] {
 			running := &byRoot[root][i]
 			rows = append(rows, row{root: root, session: running, ticket: ask.ticket(running.Dir, root)})

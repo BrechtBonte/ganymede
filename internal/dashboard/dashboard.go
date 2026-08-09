@@ -22,9 +22,23 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// caution is the mark every git caution is read by: one column, in front of
+// whatever it is cautioning about.
+const caution = "⚠"
+
 // Sessions is a fresh account of the working set, as the state model reports
 // it.
 type Sessions []session.Session
+
+// Cautions is what the Main roots on the rail are carrying, by root, as git
+// last answered.
+//
+// It arrives as a message rather than being read where it is drawn, because
+// reading it means asking git whether a tree is dirty — the one question here
+// that is as big as the checkout it is asked about. A monorepo takes the better
+// part of a second to answer it, and a sidepanel that stopped taking keystrokes
+// for that long every half minute would be a sidepanel you stop reaching for.
+type Cautions map[string]repo.Caution
 
 // watchEnded says the state model has stopped reporting. The Dashboard keeps
 // showing what it last drew rather than blanking the tree.
@@ -85,6 +99,10 @@ type Model struct {
 	// question is asked of git once rather than once a redraw. It is let go of
 	// on the tick, which is what a branch switched in a Main root waits for.
 	tickets map[string]ticket.Key
+	// cautions is what git last said each Main root is carrying. It is never
+	// cleared, only replaced by the next answer: a marker that blinked out
+	// while git was being asked again would be a marker you cannot read.
+	cautions Cautions
 	// waiting is what the working set on show is asking of you: the header
 	// counts it, and the strip carries it.
 	waiting session.Attention
@@ -164,11 +182,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case Sessions:
-		return m.showing(msg).counted(), waitFor(m.sessions)
+		m = m.showing(msg).counted()
+		// A root nothing has asked git about yet is asked now, so that a repo
+		// arriving on the rail is not drawn without its cautions for half a
+		// minute. The roots already answered for wait for the tick: the working
+		// set is rebuilt several times a second while an agent is working, and
+		// asking git a question that size that often would be a git of one's
+		// own running at all times.
+		if m.unread() {
+			return m, tea.Batch(waitFor(m.sessions), m.reading())
+		}
+		return m, waitFor(m.sessions)
+	case Cautions:
+		// Wholesale, so that a root that has left the rail leaves with it.
+		m.cautions = msg
+		return m.showing(m.set), nil
 	case watchEnded:
 		return m, nil
 	case Tick:
-		return m.asking(), ticking()
+		return m.asking(), tea.Batch(ticking(), m.reading())
 	case tea.KeyMsg:
 		return m.pressed(msg)
 	}
@@ -193,7 +225,12 @@ func (m Model) showing(sessions []session.Session) Model {
 		m.tickets = map[string]ticket.Key{}
 	}
 	m.set = sessions
-	m.rows = rowsOf(sessions, answers{root: m.rootOf, checkout: m.checkoutOf, ticket: m.ticketOf})
+	m.rows = rowsOf(sessions, answers{
+		root:     m.rootOf,
+		checkout: m.checkoutOf,
+		ticket:   m.ticketOf,
+		caution:  m.cautionOf,
+	})
 	m.waiting = session.AttentionIn(sessions)
 	m.cursor = 0
 	for i, r := range m.rows {
@@ -217,6 +254,40 @@ func (m Model) showing(sessions []session.Session) Model {
 func (m Model) asking() Model {
 	clear(m.tickets)
 	return m.showing(m.set)
+}
+
+// reading asks git what every Main root on the rail is carrying, away from the
+// goroutine that draws.
+func (m Model) reading() tea.Cmd {
+	roots := make([]string, 0, len(m.rows))
+	for _, r := range m.rows {
+		if r.session == nil {
+			roots = append(roots, r.root)
+		}
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		read := make(Cautions, len(roots))
+		for _, root := range roots {
+			read[root] = repo.CautionOf(root)
+		}
+		return read
+	}
+}
+
+// unread reports whether any root on the rail has never been asked about.
+func (m Model) unread() bool {
+	for _, r := range m.rows {
+		if r.session != nil {
+			continue
+		}
+		if _, asked := m.cautions[r.root]; !asked {
+			return true
+		}
+	}
+	return false
 }
 
 // counted carries the working set's Attention out to the strip.
@@ -271,6 +342,11 @@ func (m Model) checkoutOf(dir string) string {
 	m.checkouts[dir] = checkout
 	return checkout
 }
+
+// cautionOf is what git last said a Main root is carrying. Unlike everything
+// else a row is built from, it is not asked here: a root nobody has asked about
+// yet carries nothing, and says so until the answer arrives.
+func (m Model) cautionOf(root string) repo.Caution { return m.cautions[root] }
 
 // ticketOf is which ticket a Session's checkout is about, remembering what it
 // answered — for the same reason as the root, and unlike a root only until the
@@ -470,6 +546,10 @@ var (
 	// A ticket is a reference, not a state: it reads in the colour the
 	// validated mock gives it, which is nobody's state colour.
 	ticketColour = lipgloss.NewStyle().Foreground(lipgloss.Color("#a5d6ff"))
+	// A caution is not a state either. It is the mock's amber, which is loud
+	// enough to catch an eye running down the rail and quiet enough not to be
+	// mistaken for a Session that has stopped.
+	cautionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e3b341"))
 	// The selected row is inverted and otherwise drawn plainly: a state colour
 	// nested inside the inversion fights with it.
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
@@ -595,12 +675,63 @@ func (m Model) line(i int) string {
 // is asked most often about a repo — whether a PR can be checked out in it —
 // and it sits in the same column on every header row, so that running an eye
 // down the rail reads as a list of roots you can and cannot have.
+// The cautions its checkout is carrying go in front of the mark, because they
+// are read in that order: what the root is, then what is in it.
 func (m Model) repoLine(r row, selected bool) string {
 	glyph := r.state.Glyph()
+	// The name is what the row is called and the mark is what it is for; the
+	// caution is the part that gives way when the two of them leave no room.
+	warning := carrying(r.caution, m.width-lipgloss.Width(r.label()+glyph)-2)
 	if selected {
-		return selectedStyle.Width(m.width).Render(spread(r.label(), glyph, m.width))
+		return selectedStyle.Width(m.width).Render(spread(r.label(), join(warning, glyph), m.width))
 	}
-	return spread(repoStyle.Render(r.label()), rootStyle(r.state).Render(glyph), m.width)
+	return spread(repoStyle.Render(r.label()),
+		join(cautionStyle.Render(warning), rootStyle(r.state).Render(glyph)), m.width)
+}
+
+// carrying is how a Main root's cautions read on its row, in the room the row
+// has left for them.
+//
+// The branch is the elastic part. That the root is off its default branch at
+// all is the caution; which branch it is on is the detail, and the box below
+// says it in full — while a dirty tree said in five columns is either there or
+// it is not.
+func carrying(c repo.Caution, room int) string {
+	where := c.Branch
+	if c.Detached {
+		// A commit checked out by hash has no name to give, and the state
+		// itself is the whole of what is worth saying about it.
+		where = "detached"
+	}
+	dirty := ""
+	if c.Dirty {
+		dirty = "dirty"
+	}
+	switch {
+	case where == "" && dirty == "":
+		return ""
+	case where == "":
+		return truncate(caution+" "+dirty, room)
+	}
+
+	tail := ""
+	if dirty != "" {
+		tail = " · " + dirty
+	}
+	// A branch name cut down to two or three columns says nothing at all, so
+	// the row keeps the marks it can still be read by and drops the name.
+	if spare := room - lipgloss.Width(caution+" "+tail); spare >= 4 {
+		return caution + " " + elide(where, spare) + tail
+	}
+	return truncate(strings.TrimSpace(caution+tail), room)
+}
+
+// join puts two marks side by side, and neither of them beside nothing.
+func join(warning, glyph string) string {
+	if warning == "" {
+		return glyph
+	}
+	return warning + " " + glyph
 }
 
 // rootStyle is how a Main root's state is drawn: a root with an agent in it
@@ -673,14 +804,15 @@ func (m Model) selected() []string {
 
 	r := m.rows[m.cursor]
 	if r.session == nil {
-		// The mark on the row in words: whether a PR can be checked out here is
+		// The marks on the row in words: whether a PR can be checked out here is
 		// the question a repo is on the rail to answer, and the box is where the
 		// answer is spelled rather than drawn.
-		return []string{
+		lines := []string{
 			repoStyle.Render(truncate(r.label(), m.width)),
 			rootStyle(r.state).Render(r.state.Glyph()) + " " + truncate("root: "+string(r.state), m.width-2),
-			quietStyle.Render(shorten(r.root, m.width)),
 		}
+		lines = append(lines, m.carrying(r.caution)...)
+		return append(lines, quietStyle.Render(shorten(r.root, m.width)))
 	}
 
 	// What the Session is doing and how long it has been doing it, then its
@@ -709,6 +841,29 @@ func (m Model) selected() []string {
 		quietStyle.Render(shorten(r.session.Dir, m.width)),
 		quietStyle.Render(truncate(offering(r), m.width)),
 	)
+}
+
+// carrying spells out what a Main root's checkout is carrying, a line each and
+// in full — which is what the row above had no room for. The branch is named
+// there because "off the default branch" is where the question starts and
+// "which branch" is where it ends.
+func (m Model) carrying(c repo.Caution) []string {
+	var lines []string
+	switch {
+	case c.Detached:
+		lines = append(lines, "detached — checked out by hash")
+	case c.Branch != "":
+		lines = append(lines, "off default: "+c.Branch)
+	}
+	if c.Dirty {
+		lines = append(lines, "uncommitted changes")
+	}
+	for i, line := range lines {
+		// Elided rather than cut: a branch name that runs off the end of the box
+		// as well would leave you unable to tell how much of it you are reading.
+		lines[i] = cautionStyle.Render(elide(caution+" "+line, m.width))
+	}
+	return lines
 }
 
 // offering is what the selected row can be asked to do. A Session about no
