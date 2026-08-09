@@ -13,8 +13,10 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
 	"github.com/BrechtBonte/ganymede/internal/ghostty"
 	"github.com/BrechtBonte/ganymede/internal/hooks"
+	"github.com/BrechtBonte/ganymede/internal/inventory"
 	"github.com/BrechtBonte/ganymede/internal/reconciler"
 	"github.com/BrechtBonte/ganymede/internal/registry"
+	"github.com/BrechtBonte/ganymede/internal/sidecar"
 	"github.com/BrechtBonte/ganymede/internal/state"
 	"github.com/BrechtBonte/ganymede/internal/tmuxconf"
 	"github.com/BrechtBonte/ganymede/internal/topology"
@@ -159,9 +161,28 @@ func runDashboard() error {
 	model := state.New()
 	working := model.Watch(ctx, watch, checked, reported)
 
-	// The harness is both hands the Dashboard has on tmux: it steers the
-	// working client, and it carries the counts to that client's status line.
-	_, err = tea.NewProgram(dashboard.New(working, harness, harness, model.Seen), tea.WithAltScreen()).Run()
+	// Where the harness looks for repos, and what it remembers about the ones
+	// it has been in. Neither is worth refusing to open the Dashboard over: a
+	// picker with nothing behind it costs you the repos you are not already
+	// working in, and a harness state it cannot read costs the working set its
+	// memory. Both are less than a Dashboard that will not start.
+	//
+	// The harness is every hand the Dashboard has on tmux besides: it steers
+	// the working client to a Session or to a repo, and it carries the counts
+	// to that client's status line.
+	hands := dashboard.Harness{Jumper: harness, Opener: harness, Strip: harness, Seen: model.Seen}
+	if scan, err := inventory.Default(); err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: the repo picker has nothing to offer: %v\n", err)
+	} else {
+		hands.Inventory = scan
+	}
+	if state, err := sidecar.Default(); err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: the working set will not survive a restart: %v\n", err)
+	} else {
+		hands.Activity = state
+	}
+
+	_, err = tea.NewProgram(dashboard.New(working, hands), tea.WithAltScreen()).Run()
 	return err
 }
 

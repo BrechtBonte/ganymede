@@ -1,0 +1,384 @@
+package dashboard_test
+
+import (
+	"errors"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/BrechtBonte/ganymede/internal/dashboard"
+	"github.com/BrechtBonte/ganymede/internal/session"
+	"github.com/BrechtBonte/ganymede/internal/sidecar"
+	"github.com/BrechtBonte/ganymede/internal/topology"
+	"github.com/BrechtBonte/ganymede/internal/workingset"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// opens records the repos the Dashboard asked to be taken to, standing in for
+// the harness bringing a repo's Session up and steering the working client.
+type opens struct {
+	dirs []string
+	err  error
+}
+
+func (o *opens) Open(dir string) error {
+	o.dirs = append(o.dirs, dir)
+	return o.err
+}
+
+// stock is an inventory of repos the picker can offer.
+type stock struct {
+	repos []string
+	err   error
+}
+
+func (s stock) Repos() ([]string, error) { return s.repos, s.err }
+
+// remembering is the real harness state, on a file the test owns: what the
+// working set is made of has to survive a restart, and a stand-in that only
+// held a map would never show that.
+func remembering(t *testing.T) *sidecar.State {
+	t.Helper()
+	state, err := sidecar.Load(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return state
+}
+
+// dashboardOn is a Dashboard sized for the sidepanel, wired to harness and
+// shown one working set.
+func dashboardOn(harness dashboard.Harness, sessions ...session.Session) tea.Model {
+	var model tea.Model = dashboard.New(nil, harness)
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	model, _ = model.Update(dashboard.Sessions(sessions))
+	return model
+}
+
+// typing sends each character of s to the Dashboard as a keystroke.
+func typing(model tea.Model, s string) tea.Model {
+	for _, r := range s {
+		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	return model
+}
+
+// picking opens the picker and lets the scan it asks for come back.
+func picking(t *testing.T, model tea.Model) tea.Model {
+	t.Helper()
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	if cmd == nil {
+		t.Fatal("pressing g asked for no inventory scan")
+	}
+	model, _ = model.Update(cmd())
+	return model
+}
+
+// A repo you were working in this morning is still where you are, even with
+// nothing running in it — that is the whole difference between the working set
+// and a list of live Sessions.
+func TestRepoWorkedInRecentlyIsOnTheDashboardWithNoSessions(t *testing.T) {
+	state := remembering(t)
+	state.Touch("/repos/service-billing", time.Now().Add(-2*time.Hour))
+
+	view := tree(dashboardOn(dashboard.Harness{Activity: state}))
+
+	if _, ok := lineWith(view, "service-billing"); !ok {
+		t.Errorf("no row for a repo worked in two hours ago:\n%s", view)
+	}
+}
+
+// And a repo you have not touched in longer than the window is one the
+// Dashboard stops spending a row on. It is still a keystroke away in the
+// picker.
+func TestRepoNotWorkedInSinceTheWindowIsNotOnTheDashboard(t *testing.T) {
+	state := remembering(t)
+	state.Touch("/repos/archived", time.Now().Add(-workingset.Window-time.Hour))
+
+	view := tree(dashboardOn(dashboard.Harness{Activity: state}))
+
+	if _, ok := lineWith(view, "archived"); ok {
+		t.Errorf("a repo past the recency window is still on the Dashboard:\n%s", view)
+	}
+}
+
+// A live Session keeps its repo on the Dashboard whatever the sidecar
+// remembers, because that is where you are working now.
+func TestRepoWithALiveSessionIsOnTheDashboardHoweverOldItsActivity(t *testing.T) {
+	state := remembering(t)
+	state.Touch("/repos/service-billing", time.Now().Add(-30*24*time.Hour))
+
+	view := tree(dashboardOn(dashboard.Harness{Activity: state},
+		live("service-billing-a1", "/repos/service-billing", session.Idle)))
+
+	if _, ok := lineWith(view, "service-billing-a1"); !ok {
+		t.Errorf("no row for a live Session in a long-untouched repo:\n%s", view)
+	}
+}
+
+// Repos with something running in them are what the Dashboard is for. A quiet
+// repo is on it because you were there, and belongs under them.
+func TestQuietReposSortBelowReposWithSessions(t *testing.T) {
+	state := remembering(t)
+	// Named so that sorting by anything but urgency would put it first.
+	state.Touch("/repos/aaa-quiet", time.Now())
+
+	view := tree(dashboardOn(dashboard.Harness{Activity: state},
+		live("zzz-assistant", "/repos/zzz-busy", session.Working)))
+
+	quiet := strings.Index(view, "aaa-quiet")
+	busy := strings.Index(view, "zzz-busy")
+	if quiet < 0 || busy < 0 {
+		t.Fatalf("both repos should be on the Dashboard:\n%s", view)
+	}
+	if quiet < busy {
+		t.Errorf("the quiet repo sorts above the one with a Session:\n%s", view)
+	}
+}
+
+// Working in a repo is what keeps it on the Dashboard after its Sessions end,
+// so every working set that arrives has to stamp the repos in it.
+func TestReposWithLiveSessionsAreRecordedAsWorkedIn(t *testing.T) {
+	state := remembering(t)
+
+	dashboardOn(dashboard.Harness{Activity: state},
+		live("service-billing-a1", "/repos/service-billing", session.Idle))
+
+	if _, known := state.Active()["/repos/service-billing"]; !known {
+		t.Errorf("a repo with a live Session was not recorded as worked in: %v", state.Active())
+	}
+}
+
+// The Dashboard draws the repos it remembers before a single Session has been
+// reported, so that it opens on the working set rather than filling in a
+// moment later. The cursor must not be left behind on one of those quiet
+// repos: a Dashboard you have just glanced at should be describing whatever is
+// most urgent.
+func TestTheSelectionStartsOnTheMostUrgentRow(t *testing.T) {
+	state := remembering(t)
+	// Named so that any ordering but urgency would put it first.
+	state.Touch("/repos/aaa-quiet", time.Now())
+
+	model := dashboardOn(dashboard.Harness{Activity: state},
+		live("zzz-assistant", "/repos/zzz-busy", session.Blocked))
+
+	if _, ok := lineWith(detail(model), "zzz-busy"); !ok {
+		t.Errorf("the SELECTED box describes something other than the most urgent repo:\n%s", drawn(model))
+	}
+}
+
+// Once you have put the cursor somewhere it stays on that row, however far the
+// row moves as Sessions come and go.
+func TestTheSelectionYouMadeSurvivesTheTreeBeingRebuilt(t *testing.T) {
+	state := remembering(t)
+	model := dashboardOn(dashboard.Harness{Activity: state},
+		live("service-billing-a1", "/repos/service-billing", session.Idle))
+	// Down twice: past the first repo's header onto its Session.
+	model = press(press(model, tea.KeyDown), tea.KeyDown)
+	chosen := detail(model)
+
+	// A Session arriving in another repo that outranks it, pushing the row down.
+	model, _ = model.Update(dashboard.Sessions([]session.Session{
+		live("service-billing-a1", "/repos/service-billing", session.Idle),
+		live("ai-assistant-b3", "/repos/aaa-assistant", session.Blocked),
+	}))
+
+	if got := detail(model); got != chosen {
+		t.Errorf("the selection moved off the row it was put on:\ngot:\n%s\nwant:\n%s", got, chosen)
+	}
+}
+
+// Enter on a repo's own row takes you to that repo. There may be nothing
+// running in it, so this is the repo-shaped jump rather than the Session one.
+func TestEnterOnARepoRowOpensTheRepo(t *testing.T) {
+	state := remembering(t)
+	state.Touch("/repos/service-billing", time.Now())
+	opener := &opens{}
+	model := dashboardOn(dashboard.Harness{Opener: opener, Activity: state})
+
+	model = press(model, tea.KeyEnter)
+
+	if len(opener.dirs) != 1 || opener.dirs[0] != "/repos/service-billing" {
+		t.Errorf("Enter on a repo row opened %v, want /repos/service-billing", opener.dirs)
+	}
+}
+
+// The picker is the way to everything the Dashboard is not showing.
+func TestGOffersTheWholeInventory(t *testing.T) {
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Inventory: stock{repos: []string{"/repos/acme/api", "/repos/ganymede"}},
+	}))
+
+	view := drawn(model)
+	for _, repo := range []string{"api", "ganymede"} {
+		if _, ok := lineWith(view, repo); !ok {
+			t.Errorf("the picker does not offer %q:\n%s", repo, view)
+		}
+	}
+}
+
+// Fuzzy, not prefix: the point of the picker is that a few letters from
+// anywhere in a repo's name are enough to reach it.
+func TestTypingNarrowsThePickerFuzzily(t *testing.T) {
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Inventory: stock{repos: []string{"/repos/service-billing", "/repos/ganymede"}},
+	}))
+
+	view := drawn(typing(model, "gnm"))
+
+	if _, ok := lineWith(view, "ganymede"); !ok {
+		t.Errorf("\"gnm\" does not reach ganymede:\n%s", view)
+	}
+	if _, ok := lineWith(view, "service-billing"); ok {
+		t.Errorf("\"gnm\" left an unrelated repo on show:\n%s", view)
+	}
+}
+
+// A repo whose own name matches is what you meant; one that only matches
+// somewhere up its path is a fallback, and must not be offered above it.
+func TestNameMatchesRankAboveMatchesInThePath(t *testing.T) {
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Inventory: stock{repos: []string{"/repos/ganymede/service-billing", "/repos/acme/ganymede"}},
+	}))
+
+	view := drawn(typing(model, "ganymede"))
+
+	// Each repo is read by the directory it is filed under, which is the one
+	// part of either row the typed query is not also sitting in.
+	named := strings.Index(view, "acme")
+	if named < 0 {
+		t.Fatalf("the picker does not offer the repo actually called ganymede:\n%s", view)
+	}
+	if pathed := strings.Index(view, "service-billing"); pathed >= 0 && pathed < named {
+		t.Errorf("a repo matching only in its path is offered first:\n%s", view)
+	}
+}
+
+// Picking a repo does both halves of what the ticket asks for: it takes you
+// there, and it puts the repo on the Dashboard.
+func TestPickingARepoOpensItAndPutsItOnTheDashboard(t *testing.T) {
+	state := remembering(t)
+	opener := &opens{}
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Opener:    opener,
+		Activity:  state,
+		Inventory: stock{repos: []string{"/repos/service-billing", "/repos/ganymede"}},
+	}))
+
+	model = press(typing(model, "gany"), tea.KeyEnter)
+
+	if len(opener.dirs) != 1 || opener.dirs[0] != "/repos/ganymede" {
+		t.Fatalf("picking opened %v, want /repos/ganymede", opener.dirs)
+	}
+	if _, known := state.Active()["/repos/ganymede"]; !known {
+		t.Errorf("the picked repo was not recorded as worked in: %v", state.Active())
+	}
+	view := tree(model)
+	if _, ok := lineWith(view, "ganymede"); !ok {
+		t.Errorf("the picked repo is not on the Dashboard:\n%s", view)
+	}
+}
+
+// The Dashboard is the harness's memory of where you have been, so a repo you
+// picked has to still be there after a restart — the only reason the sidecar
+// is a file at all.
+func TestAPickedRepoIsStillOnTheDashboardAfterARestart(t *testing.T) {
+	state := remembering(t)
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Opener:    &opens{},
+		Activity:  state,
+		Inventory: stock{repos: []string{"/repos/ganymede"}},
+	}))
+	press(model, tea.KeyEnter)
+
+	reloaded, err := sidecar.Load(state.Path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	view := tree(dashboardOn(dashboard.Harness{Activity: reloaded}))
+
+	if _, ok := lineWith(view, "ganymede"); !ok {
+		t.Errorf("the picked repo did not survive the restart:\n%s", view)
+	}
+}
+
+// Closing the picker leaves the Dashboard exactly as it was — the picker is a
+// way to look at the inventory, not a mode you can get stuck in.
+func TestEscapeClosesThePicker(t *testing.T) {
+	opener := &opens{}
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Opener:    opener,
+		Inventory: stock{repos: []string{"/repos/ganymede"}},
+	}, live("service-billing-a1", "/repos/service-billing", session.Idle)))
+
+	model = press(typing(model, "gany"), tea.KeyEsc)
+
+	if _, ok := lineWith(tree(model), "service-billing-a1"); !ok {
+		t.Errorf("the Dashboard did not come back after Escape:\n%s", drawn(model))
+	}
+	if len(opener.dirs) != 0 {
+		t.Errorf("Escape opened %v", opener.dirs)
+	}
+}
+
+// A query that reaches nothing says so, rather than showing an empty box that
+// reads as a picker which has broken.
+func TestPickerSaysWhenNothingMatches(t *testing.T) {
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Inventory: stock{repos: []string{"/repos/ganymede"}},
+	}))
+
+	view := strings.ToLower(drawn(typing(model, "zzzz")))
+
+	if !strings.Contains(view, "no repo") {
+		t.Errorf("the picker does not say that nothing matches:\n%s", view)
+	}
+}
+
+// An inventory that cannot be read is worth saying out loud: the picker is the
+// only way to the repos the Dashboard is not showing, and an empty one looks
+// exactly like a machine with no repos on it.
+func TestPickerSaysWhenTheInventoryCannotBeRead(t *testing.T) {
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Inventory: stock{err: errors.New("scan /Users/brecht/Projects for repositories: permission denied")},
+	}))
+
+	if !strings.Contains(drawn(model), "permission denied") {
+		t.Errorf("the picker does not report why it has nothing to offer:\n%s", drawn(model))
+	}
+}
+
+// A repo the harness could not take you to leaves you where you were, and says
+// why — the same bargain a jump that cannot be made strikes.
+func TestARepoThatCannotBeOpenedSaysSo(t *testing.T) {
+	opener := &opens{err: errors.New("no window is showing the harness to jump in")}
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Opener:    opener,
+		Inventory: stock{repos: []string{"/repos/ganymede"}},
+	}))
+
+	model = press(model, tea.KeyEnter)
+
+	if !strings.Contains(drawn(model), "no window is showing the harness") {
+		t.Errorf("the Dashboard does not say why it could not take you there:\n%s", drawn(model))
+	}
+}
+
+// The picker fills the sidepanel it lives in, whatever a repo is called or how
+// deeply it is filed.
+func TestPickerFitsTheSidepanel(t *testing.T) {
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Inventory: stock{repos: []string{
+			"/Users/brecht/Projects/teamleader/teamleadercrm-monolith-and-then-some",
+			"/Users/brecht/Projects/日本語のプロジェクトディレクトリの名前/請求書ページング",
+		}},
+	}))
+
+	for _, line := range strings.Split(model.View(), "\n") {
+		if width := lipgloss.Width(line); width > topology.SidepanelWidth {
+			t.Errorf("line is %d columns, sidepanel is %d:\n%q", width, topology.SidepanelWidth, line)
+		}
+	}
+}

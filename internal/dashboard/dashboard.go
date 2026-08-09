@@ -16,13 +16,14 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/topology"
+	"github.com/BrechtBonte/ganymede/internal/workingset"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Sessions is a fresh account of the working set, as the state model reports
-// it.
+// Sessions is a fresh account of the Sessions, as the state model reports
+// them.
 type Sessions []session.Session
 
 // watchEnded says the state model has stopped reporting. The Dashboard keeps
@@ -33,6 +34,30 @@ type watchEnded struct{}
 // pane it is running in.
 type Jumper interface {
 	Jump(pid int) error
+}
+
+// Opener puts a repo in front of you: the working client moves to that repo's
+// Session, brought up if nothing is running there yet. It is what Enter on a
+// repo's row does, and what the picker does with the repo you chose.
+type Opener interface {
+	Open(dir string) error
+}
+
+// Inventory is every repo the harness can reach — the whole discovered
+// inventory, which is what the picker offers and the Dashboard deliberately
+// does not show.
+type Inventory interface {
+	Repos() ([]string, error)
+}
+
+// Activity is where the harness remembers when you were last working in each
+// repo. It is what keeps a repo in the working set once its Sessions have
+// ended, and it is a file rather than a map because a Dashboard that forgot
+// this on restart would have no working set worth the name.
+type Activity interface {
+	Active() map[string]time.Time
+	Touch(root string, at time.Time)
+	Save() error
 }
 
 // Seen is how the Dashboard says a Session has been put in front of you, which
@@ -47,43 +72,76 @@ type Strip interface {
 	Show(waiting session.Attention) error
 }
 
+// Harness is everything the Dashboard reaches the rest of the world through.
+// Any of them may be absent: a Dashboard missing one does less, and still
+// draws.
+type Harness struct {
+	// Jumper puts a Session in front of you, and Opener a repo.
+	Jumper Jumper
+	Opener Opener
+	// Strip carries the Attention counts to the working client's status line.
+	Strip Strip
+	// Seen reports a Session as looked at, which is what clears Ready.
+	Seen Seen
+	// Inventory is what the picker offers.
+	Inventory Inventory
+	// Activity is the harness's memory of where you have been working.
+	Activity Activity
+}
+
 // Model is the Dashboard's bubbletea model.
 type Model struct {
 	width, height int
 	sessions      <-chan []session.Session
-	jumper        Jumper
-	strip         Strip
-	seen          Seen
+	harness       Harness
 	rows          []row
 	cursor        int
+	// chosen is the row you put the cursor on, so that the selection follows
+	// that row however far it moves as the tree is rebuilt. Until you have
+	// moved it the cursor belongs to the tree, and sits on whatever is most
+	// urgent — which is the row a Dashboard you have just glanced at should
+	// be describing.
+	chosen string
+	// latest is the last account of the Sessions the state model reported,
+	// kept so the tree can be rebuilt when the working set changes underneath
+	// it — a repo picked, a repo opened — with no Session having moved.
+	latest []session.Session
+	// working is the working set: the Main roots the Dashboard shows.
+	working []string
+	// picker is the fuzzy repo picker, open or not.
+	picker picker
 	// roots remembers which Main root a Session's directory belongs to.
 	roots map[string]string
-	// waiting is what the working set on show is asking of you: the header
+	// waiting is what the Sessions on show are asking of you: the header
 	// counts it, and the strip carries it.
 	waiting session.Attention
-	// written is what the strip was last told, so that a working set rebuilt
-	// with the same Attention in it is not written out again — and shown says
-	// whether it has been told anything at all, since a Dashboard opening on a
-	// quiet working set still has to clear whatever the last one left there.
+	// written is what the strip was last told, so that a tree rebuilt with the
+	// same Attention in it is not written out again — and shown says whether it
+	// has been told anything at all, since a Dashboard opening on a quiet
+	// morning still has to clear whatever the last one left there.
 	written session.Attention
 	shown   bool
 	// notice is the last thing the Dashboard was asked to do and could not.
 	notice string
 }
 
-// New returns a Dashboard drawing the working sets that arrive on sessions,
-// jumping through jumper, counting Attention out to strip and reporting what
-// you have seen through seen. It is sized for the sidepanel until the terminal
+// New returns a Dashboard drawing the Sessions that arrive on sessions and
+// acting through harness. It is sized for the sidepanel until the terminal
 // says otherwise.
-func New(sessions <-chan []session.Session, jumper Jumper, strip Strip, seen Seen) Model {
-	return Model{
+//
+// The working set is worked out here rather than waited for, so that the very
+// first frame already shows the repos you were last working in — a Dashboard
+// that opened empty and filled in once something moved would read as one that
+// had lost them.
+func New(sessions <-chan []session.Session, harness Harness) Model {
+	m := Model{
 		width:    topology.SidepanelWidth,
 		height:   45,
 		sessions: sessions,
-		jumper:   jumper,
-		strip:    strip,
-		seen:     seen,
+		harness:  harness,
+		roots:    map[string]string{},
 	}
+	return m.rebuilt()
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(waitFor(m.sessions), ticking()) }
@@ -98,7 +156,7 @@ func ticking() tea.Cmd {
 	return tea.Tick(30*time.Second, func(time.Time) tea.Msg { return tick{} })
 }
 
-// waitFor takes the next working set off the watch.
+// waitFor takes the next account of the Sessions off the watch.
 func waitFor(sessions <-chan []session.Session) tea.Cmd {
 	if sessions == nil {
 		return nil
@@ -121,29 +179,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case watchEnded:
 		return m, nil
 	case tick:
-		return m, ticking()
+		// A repo can fall out of the working set with nothing having moved:
+		// the recency window closes on the clock, not on an event.
+		return m.rebuilt(), ticking()
+	case discovered:
+		m.picker = m.picker.found(msg)
+		return m, nil
 	case tea.KeyMsg:
 		return m.pressed(msg)
 	}
 	return m, nil
 }
 
-// showing redraws the tree around a new working set, leaving the selection on
-// the row it was on however far that row has moved.
+// showing takes in a fresh account of the Sessions.
+//
+// Every repo running one is recorded as worked in on the way past. That is
+// what the recency window is measured from: a repo whose Sessions have all
+// ended stays on the Dashboard for as long as the window says, because the
+// harness saw you there while they were running.
 func (m Model) showing(sessions []session.Session) Model {
-	var selected string
-	if m.cursor < len(m.rows) {
-		selected = m.rows[m.cursor].key()
+	m.latest = sessions
+	if m.harness.Activity != nil {
+		now := time.Now()
+		for _, s := range sessions {
+			m.harness.Activity.Touch(m.rootOf(s.Dir), now)
+		}
+		// Recording is cheap and saving is nearly always a no-op: the stamps
+		// are rounded before they go in, so a file saying the same thing is
+		// not written again.
+		if err := m.harness.Activity.Save(); err != nil {
+			m.notice = err.Error()
+		}
 	}
+	return m.rebuilt()
+}
 
+// rebuilt redraws the tree around the working set, leaving the selection on
+// the row you put it on however far that row has moved.
+func (m Model) rebuilt() Model {
 	if m.roots == nil {
 		m.roots = map[string]string{}
 	}
-	m.rows = rowsOf(sessions, m.rootOf)
-	m.waiting = session.AttentionIn(sessions)
+	m.working = m.workingSet()
+	m.rows = rowsOf(m.latest, m.working, m.rootOf)
+	m.waiting = session.AttentionIn(m.latest)
 	m.cursor = 0
 	for i, r := range m.rows {
-		if r.key() == selected {
+		if r.key() == m.chosen {
 			m.cursor = i
 			break
 		}
@@ -151,11 +233,39 @@ func (m Model) showing(sessions []session.Session) Model {
 	return m
 }
 
-// counted carries the working set's Attention out to the strip.
+// moving is the cursor being put somewhere on purpose, which is what makes
+// that row the one to follow from here on.
+func (m Model) moving(to int) Model {
+	m.cursor = to
+	if to < len(m.rows) {
+		m.chosen = m.rows[to].key()
+	}
+	return m
+}
+
+// workingSet is the repos the Dashboard shows: the ones with a Session running
+// in them, and the ones the harness remembers you working in recently enough.
+//
+// Claimed roots belong in here too and are not passed yet — nothing can claim
+// one until the Claim action exists. The rule already honours them, so that is
+// a field to fill rather than a rule to revisit.
+func (m Model) workingSet() []string {
+	live := make([]string, 0, len(m.latest))
+	for _, s := range m.latest {
+		live = append(live, m.rootOf(s.Dir))
+	}
+	var active map[string]time.Time
+	if m.harness.Activity != nil {
+		active = m.harness.Activity.Active()
+	}
+	return workingset.Membership{Live: live, Active: active}.Roots(time.Now())
+}
+
+// counted carries the Sessions' Attention out to the strip.
 //
 // Counts that have not moved are not written again: writing the strip redraws
-// every client on the Sessions server, the working set is rebuilt whenever
-// anything at all moves, and flickering the Session you are typing in to tell
+// every client on the Sessions server, the tree is rebuilt whenever anything
+// at all moves, and flickering the Session you are typing in to tell
 // you what it already said is worse than no strip.
 //
 // It is written here rather than handed to the runtime, which would run it in
@@ -165,14 +275,14 @@ func (m Model) showing(sessions []session.Session) Model {
 // One tmux call, on a count that has actually changed, is the cheaper end of
 // that trade — and it is what the jump does too.
 func (m Model) counted() Model {
-	if m.strip == nil || (m.shown && m.waiting == m.written) {
+	if m.harness.Strip == nil || (m.shown && m.waiting == m.written) {
 		return m
 	}
 	// The strip is deliberate redundancy: everything it says is on the rail
 	// already, so one that could not be written is not worth a word about. It
 	// is worth trying again, though, which is why only a write that landed
 	// counts as having been said.
-	if err := m.strip.Show(m.waiting); err != nil {
+	if err := m.harness.Strip.Show(m.waiting); err != nil {
 		return m
 	}
 	m.written, m.shown = m.waiting, true
@@ -195,6 +305,13 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Whatever the Dashboard last could not do has been read by now.
 	m.notice = ""
 
+	// The picker is a mode: while it is up every key belongs to it, because
+	// the keys it needs are the printable ones every other action is bound to.
+	// Ctrl+C is the exception, since quitting must never be behind a mode.
+	if m.picker.open && msg.Type != tea.KeyCtrlC {
+		return m.picking(msg)
+	}
+
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		// The Dashboard is meant to stay up for as long as the harness does,
@@ -203,42 +320,86 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// it, since a count nobody is left to keep up to date is one that will
 		// be wrong by morning. It goes out the same way every other count
 		// does, so nothing can be left in flight behind it.
-		if m.strip != nil && m.shown {
-			_ = m.strip.Show(session.Attention{})
+		if m.harness.Strip != nil && m.shown {
+			_ = m.harness.Strip.Show(session.Attention{})
 		}
 		return m, tea.Quit
 	case tea.KeyUp:
 		if m.cursor > 0 {
-			m.cursor--
+			m = m.moving(m.cursor - 1)
 		}
 	case tea.KeyDown:
 		if m.cursor+1 < len(m.rows) {
-			m.cursor++
+			m = m.moving(m.cursor + 1)
 		}
 	case tea.KeyEnter:
 		m = m.jump()
+	case tea.KeyRunes:
+		if string(msg.Runes) == "g" {
+			return m.opening()
+		}
 	}
 	return m, nil
 }
 
-// jump puts the selected Session in front of you, which is also the moment it
-// counts as seen. A repo's header row is not a Session and has nowhere to go.
+// jump puts the selected row in front of you. On a Session that is the pane it
+// is running in, and the moment it counts as seen; on a repo's header row it
+// is the repo — which may have nothing running in it at all, which is exactly
+// why the Dashboard shows repos rather than only Sessions.
 func (m Model) jump() Model {
 	if m.cursor >= len(m.rows) {
 		return m
 	}
-	jumping := m.rows[m.cursor].session
-	if jumping == nil || m.jumper == nil {
+	selected := m.rows[m.cursor]
+	if selected.session == nil {
+		return m.open(selected.root)
+	}
+	if m.harness.Jumper == nil {
 		return m
 	}
-	if err := m.jumper.Jump(jumping.PID); err != nil {
+	if err := m.harness.Jumper.Jump(selected.session.PID); err != nil {
 		// A jump that could not be made left you where you were, so the
 		// Session has not been seen and its badge stays.
 		m.notice = err.Error()
 		return m
 	}
-	if m.seen != nil {
-		m.seen(jumping.ID)
+	if m.harness.Seen != nil {
+		m.harness.Seen(selected.session.ID)
+	}
+	return m
+}
+
+// open takes you to a repo and puts it in the working set, which are the two
+// halves of the same thing: where you are working is what the Dashboard shows.
+//
+// A repo it could not take you to does neither. Recording a repo you never
+// reached would leave a row on the Dashboard as the only trace of a jump that
+// did not happen.
+func (m Model) open(root string) Model {
+	if m.harness.Opener == nil {
+		return m
+	}
+	if err := m.harness.Opener.Open(root); err != nil {
+		m.notice = err.Error()
+		return m
+	}
+	if m.harness.Activity != nil {
+		m.harness.Activity.Touch(root, time.Now())
+		if err := m.harness.Activity.Save(); err != nil {
+			m.notice = err.Error()
+		}
+	}
+	m = m.rebuilt()
+	return m.selecting(root)
+}
+
+// selecting puts the cursor on a repo's own row, so that the repo you were
+// just taken to is the one the SELECTED box is describing.
+func (m Model) selecting(root string) Model {
+	for i, r := range m.rows {
+		if r.session == nil && r.root == root {
+			return m.moving(i)
+		}
 	}
 	return m
 }
@@ -263,6 +424,10 @@ func styleOf(state session.State) lipgloss.Style {
 }
 
 func (m Model) View() string {
+	if m.picker.open {
+		return m.pickerView()
+	}
+
 	rule := ruleStyle.Render(strings.Repeat("─", m.width))
 	detail := m.detail()
 
@@ -295,8 +460,8 @@ func (m Model) header() string {
 
 // counts draws Attention as a mark and a number per tier, in the tier's own
 // colour — the same reading as the strip in the working client's status line.
-// A working set asking nothing of you is drawn as nothing: a count that is
-// always there is one you stop seeing.
+// Nothing waiting on you is drawn as nothing: a count that is always there is
+// one you stop seeing.
 func (m Model) counts() string {
 	var tiers []string
 	for _, tier := range []struct {
@@ -333,7 +498,8 @@ func (m Model) tree(space int) []string {
 }
 
 // nothingRunning says so, rather than leaving an empty frame that reads as a
-// Dashboard which has broken.
+// Dashboard which has broken. It also says where the rest of them are, since
+// an empty working set is exactly when you need the picker.
 func (m Model) nothingRunning() []string {
 	return []string{
 		quietStyle.Render(truncate("No sessions.", m.width)),
@@ -341,6 +507,8 @@ func (m Model) nothingRunning() []string {
 		quietStyle.Render(truncate("Repos with a live Session, a", m.width)),
 		quietStyle.Render(truncate("Claimed root, or recent activity", m.width)),
 		quietStyle.Render(truncate("appear here.", m.width)),
+		"",
+		quietStyle.Render(truncate("g — go to any repo", m.width)),
 	}
 }
 
@@ -388,6 +556,7 @@ func (m Model) selected() []string {
 		return []string{
 			repoStyle.Render(truncate(r.label(), m.width)),
 			quietStyle.Render(shorten(r.root, m.width)),
+			quietStyle.Render(truncate("⏎ go to repo", m.width)),
 		}
 	}
 

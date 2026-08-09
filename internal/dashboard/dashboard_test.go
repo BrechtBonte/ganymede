@@ -28,7 +28,7 @@ func (j *jumps) Jump(pid int) error {
 
 // sidepanel is a Dashboard sized for the sidepanel, showing sessions.
 func sidepanel(jumper dashboard.Jumper, sessions ...session.Session) tea.Model {
-	var model tea.Model = dashboard.New(nil, jumper, nil, nil)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper})
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions(sessions))
 	return model
@@ -48,7 +48,7 @@ func (s *strips) Show(waiting session.Attention) error {
 
 // showing runs one working set after another past a Dashboard wired to strip.
 func showing(strip dashboard.Strip, sets ...[]session.Session) tea.Model {
-	var model tea.Model = dashboard.New(nil, &jumps{}, strip, nil)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: &jumps{}, Strip: strip})
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	for _, set := range sets {
 		model, _ = model.Update(dashboard.Sessions(set))
@@ -315,15 +315,23 @@ func TestEnterJumpsToTheSelectedSession(t *testing.T) {
 	}
 }
 
-// A repo's header row is not a Session; Enter on it has nowhere to go.
-func TestEnterOnARepoHeaderJumpsNowhere(t *testing.T) {
+// A repo's header row is not a Session. Enter on it takes you to the repo —
+// never into one of the Sessions under it, which would be the Dashboard
+// choosing on your behalf which of them you meant.
+func TestEnterOnARepoHeaderTakesYouToTheRepoRatherThanASession(t *testing.T) {
 	jumper := &jumps{}
-	model := sidepanel(jumper, live("ganymede-78", "/repos/ganymede", session.Idle))
+	opener := &opens{}
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper, Opener: opener})
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	model, _ = model.Update(dashboard.Sessions([]session.Session{live("ganymede-78", "/repos/ganymede", session.Idle)}))
 
 	model = press(model, tea.KeyEnter)
 
 	if len(jumper.pids) != 0 {
 		t.Errorf("jumped to %v from a repo's header row", jumper.pids)
+	}
+	if len(opener.dirs) != 1 || opener.dirs[0] != "/repos/ganymede" {
+		t.Errorf("Enter on the repo's header opened %v, want /repos/ganymede", opener.dirs)
 	}
 }
 
@@ -390,7 +398,7 @@ func TestTheDetailBoxSurvivesAWorkingSetTallerThanTheSidepanel(t *testing.T) {
 	for _, name := range []string{"a1", "b2", "c3", "d4", "e5", "f6", "g7", "h8", "i9", "j10", "k11", "l12"} {
 		many = append(many, live("session-"+name, "/repos/repo-"+name, session.Idle))
 	}
-	var model tea.Model = dashboard.New(nil, &jumps{}, nil, nil)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: &jumps{}})
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 12})
 	model, _ = model.Update(dashboard.Sessions(many))
 
@@ -703,7 +711,7 @@ func detail(model tea.Model) string {
 func TestJumpingToASessionReportsItSeen(t *testing.T) {
 	seen := &seeing{}
 	ready := live("ganymede-78", "/repos/ganymede", session.Ready)
-	var model tea.Model = dashboard.New(nil, &jumps{}, nil, seen.Seen)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: &jumps{}, Seen: seen.Seen})
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions{ready})
 
@@ -719,7 +727,7 @@ func TestJumpingToASessionReportsItSeen(t *testing.T) {
 // has not been seen and its badge has to stay.
 func TestAJumpThatCouldNotBeMadeLeavesTheBadgeAlone(t *testing.T) {
 	seen := &seeing{}
-	var model tea.Model = dashboard.New(nil, &jumps{err: errors.New("no tmux pane is running process 4242")}, nil, seen.Seen)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: &jumps{err: errors.New("no tmux pane is running process 4242")}, Seen: seen.Seen})
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions{live("ganymede-78", "/repos/ganymede", session.Ready)})
 
