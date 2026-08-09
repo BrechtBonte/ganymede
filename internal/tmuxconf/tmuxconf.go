@@ -20,21 +20,70 @@ const (
 	endMarker   = "# <<< ganymede <<<"
 )
 
-// Layout locates the files Install touches.
+// Layout locates the files Install touches, and names the harness itself.
 type Layout struct {
 	// Fragment is the harness-owned config file holding the settings.
 	Fragment string
 	// UserConf is the user's tmux.conf, which Install makes source Fragment.
 	UserConf string
+	// Command is the ganymede binary, which tmux runs when focus lands on a
+	// pane. A Layout with no command installs no such hook: a harness that
+	// cannot say where it lives must not leave tmux running something that is
+	// not there.
+	Command string
 }
 
-// fragmentBody is what the harness needs from every tmux server running a
+// settings are what the harness needs from every tmux server running a
 // Session: passthrough so an application can talk past tmux to the emulator,
-// and focus events so the Dashboard learns when a Session has been seen.
-const fragmentBody = `# Managed by ganymede. Edit ganymede, not this file.
+// and focus events, which is tmux agreeing to say when a pane is looked at.
+const settings = `# Managed by ganymede. Edit ganymede, not this file.
 set -g allow-passthrough on
 set -g focus-events on
 `
+
+// seenHook is what turns tmux's focus into the harness's seen-tracking, and
+// with it Ready back into Idle. The pane's own process is all tmux can say
+// about what is running there; the harness works the Sessions out from it.
+//
+// The harness's path goes in an option of its own rather than into the hook,
+// so that the hook can hand it to the shell through #{q:}, which is tmux's own
+// escaping and the only thing that survives every character a path is allowed
+// to hold — including the quote that would otherwise end the hook's own line
+// and take the whole fragment down with it.
+//
+// The rest is left literal, so #{pane_pid} is still a format when the hook
+// fires rather than something expanded at load to a pane nobody was looking
+// at; -b leaves tmux free the moment it has started the command; and the hook
+// is set rather than appended, so that re-sourcing this fragment onto a server
+// that already had it — which is what bringing the harness up does — leaves
+// one hook rather than another copy of it. That does mean the harness owns
+// this hook: a pane-focus-in of the user's own would be replaced by it.
+const seenHook = `
+set -g @ganymede-seen "%s"
+set-hook -g pane-focus-in 'run-shell -b "#{q:@ganymede-seen} seen #{pane_pid}"'
+`
+
+// fragment is the harness's tmux configuration for a Layout. What the harness
+// cannot work without comes first, so that a line tmux will not read costs
+// only what is under it.
+func fragment(l Layout) string {
+	if l.Command == "" {
+		return settings
+	}
+	return settings + fmt.Sprintf(seenHook, quoteForOption(l.Command))
+}
+
+// quoteForOption writes a path into a tmux double-quoted string. What tmux
+// reads there is the escape itself, the quote that would end the string, and
+// the two characters that begin an expansion.
+func quoteForOption(path string) string {
+	return strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		`$`, `\$`,
+		`#`, `\#`,
+	).Replace(path)
+}
 
 // DefaultLayout resolves the standard locations: the fragment under the
 // harness's own config directory, and whichever tmux.conf the user already
@@ -49,10 +98,18 @@ func DefaultLayout() (Layout, error) {
 	if xdg := filepath.Join(config.Home(home), "tmux", "tmux.conf"); exists(xdg) {
 		userConf = xdg
 	}
+	// Whatever is running this install is what tmux will run on a focus. A
+	// harness that cannot say where it lives still installs the settings; it
+	// just leaves the seen-tracking to the Dashboard's own jump.
+	command, err := os.Executable()
+	if err != nil {
+		command = ""
+	}
 
 	return Layout{
 		Fragment: filepath.Join(config.Home(home), "ganymede", "tmux.conf"),
 		UserConf: userConf,
+		Command:  command,
 	}, nil
 }
 
@@ -63,7 +120,7 @@ func exists(path string) bool {
 
 // Install writes the fragment and makes UserConf source it.
 func Install(l Layout) error {
-	if err := config.Replace(l.Fragment, []byte(fragmentBody)); err != nil {
+	if err := config.Replace(l.Fragment, []byte(fragment(l))); err != nil {
 		return fmt.Errorf("write fragment: %w", err)
 	}
 	existing, err := os.ReadFile(l.UserConf)

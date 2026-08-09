@@ -184,3 +184,44 @@ func TestJumpToAProcessInNoPaneSaysSo(t *testing.T) {
 		t.Errorf("the working client moved to %q on a jump that could not be made", session)
 	}
 }
+
+// Focus lands on a pane, and the harness has to work out which Sessions that
+// was. tmux knows only the process it started there; a Session is that
+// process's descendant, so nothing but a walk up the process tree connects the
+// two.
+func TestUnderNamesTheProcessesInsideAPane(t *testing.T) {
+	// A pane's shell with a Session nested inside it. The trailing `true`
+	// stops the shell exec'ing straight into the command, the way a real pane
+	// keeps its shell.
+	pane := exec.Command("sh", "-c", "sh -c 'sleep 30; true'; true")
+	if err := pane.Start(); err != nil {
+		t.Fatalf("start a stand-in pane: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = pane.Process.Kill()
+		_ = pane.Wait()
+	})
+	session := deepestChild(t, pane.Process.Pid)
+
+	// The test's own process is this pane's parent, not one of its Sessions.
+	found, err := topology.Under(pane.Process.Pid, []int{session, os.Getpid()})
+	if err != nil {
+		t.Fatalf("Under: %v", err)
+	}
+
+	if len(found) != 1 || found[0] != session {
+		t.Errorf("the pane holds %v, want only the Session nested inside it (%d)", found, session)
+	}
+}
+
+// Focus landing on a pane with no Session in it — the Dashboard's own, a shell
+// you opened — is not something to report about anybody else.
+func TestUnderNamesNothingWhenAPaneHoldsNoneOfThem(t *testing.T) {
+	found, err := topology.Under(1, nil)
+	if err != nil {
+		t.Fatalf("Under: %v", err)
+	}
+	if len(found) != 0 {
+		t.Errorf("found %v inside a pane it was given no processes for", found)
+	}
+}
