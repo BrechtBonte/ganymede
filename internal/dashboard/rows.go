@@ -75,12 +75,14 @@ func rowsOf(sessions []session.Session, rootOf func(dir string) string) []row {
 	return rows
 }
 
-// tier ranks a Session by how much it is asking of you.
+// tier ranks a Session by how much it is asking of you. Blocked outranks
+// Ready: one cannot continue at all, the other is only waiting to be read.
 func tier(s session.Session) int {
 	switch s.State {
 	case session.Blocked:
 		return 0
-	// 1 is Ready's, once the harness tracks which turns you have seen.
+	case session.Ready:
+		return 1
 	case session.Working:
 		return 2
 	case session.Shell:
@@ -99,7 +101,7 @@ func moreUrgent(a, b session.Session) int {
 		return d
 	}
 	if d := a.Since.Compare(b.Since); d != 0 {
-		if a.State == session.Blocked {
+		if a.Attention() {
 			return d
 		}
 		return -d

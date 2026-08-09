@@ -1,9 +1,9 @@
 // Package dashboard renders the Dashboard: the always-visible sidepanel TUI
 // listing the working set of repos and their Sessions.
 //
-// It draws what the session registry reports and nothing it has invented, so
-// the states on show are the ones the registry can tell apart — Working,
-// Blocked, Idle and Shell. A Session whose row disappears is Gone.
+// It draws the state model's account and nothing it has invented — the states
+// a Session can be found in, sorted so that everything asking something of you
+// is at the top. A Session whose row disappears is Gone.
 package dashboard
 
 import (
@@ -19,12 +19,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Sessions is a fresh account of the working set, as the registry watch
-// reports it.
+// Sessions is a fresh account of the working set, as the state model reports
+// it.
 type Sessions []session.Session
 
-// watchEnded says the registry watch has stopped reporting. The Dashboard
-// keeps showing what it last drew rather than blanking the tree.
+// watchEnded says the state model has stopped reporting. The Dashboard keeps
+// showing what it last drew rather than blanking the tree.
 type watchEnded struct{}
 
 // Jumper puts a Session in front of you by steering the working client to the
@@ -33,11 +33,17 @@ type Jumper interface {
 	Jump(pid int) error
 }
 
+// Seen is how the Dashboard says a Session has been put in front of you, which
+// is what clears Ready. It reports as it jumps rather than waiting for tmux to
+// notice the focus, because the Dashboard is the one that moved you.
+type Seen func(id string)
+
 // Model is the Dashboard's bubbletea model.
 type Model struct {
 	width, height int
 	sessions      <-chan []session.Session
 	jumper        Jumper
+	seen          Seen
 	rows          []row
 	cursor        int
 	// roots remembers which Main root a Session's directory belongs to.
@@ -46,15 +52,16 @@ type Model struct {
 	notice string
 }
 
-// New returns a Dashboard drawing the working sets that arrive on sessions and
-// jumping through jumper. It is sized for the sidepanel until the terminal says
-// otherwise.
-func New(sessions <-chan []session.Session, jumper Jumper) Model {
+// New returns a Dashboard drawing the working sets that arrive on sessions,
+// jumping through jumper and reporting what you have seen through seen. It is
+// sized for the sidepanel until the terminal says otherwise.
+func New(sessions <-chan []session.Session, jumper Jumper, seen Seen) Model {
 	return Model{
 		width:    topology.SidepanelWidth,
 		height:   45,
 		sessions: sessions,
 		jumper:   jumper,
+		seen:     seen,
 	}
 }
 
@@ -146,8 +153,8 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// jump puts the selected Session in front of you. A repo's header row is not a
-// Session and has nowhere to go.
+// jump puts the selected Session in front of you, which is also the moment it
+// counts as seen. A repo's header row is not a Session and has nowhere to go.
 func (m Model) jump() Model {
 	if m.cursor >= len(m.rows) {
 		return m
@@ -157,7 +164,13 @@ func (m Model) jump() Model {
 		return m
 	}
 	if err := m.jumper.Jump(jumping.PID); err != nil {
+		// A jump that could not be made left you where you were, so the
+		// Session has not been seen and its badge stays.
 		m.notice = err.Error()
+		return m
+	}
+	if m.seen != nil {
+		m.seen(jumping.ID)
 	}
 	return m
 }
@@ -176,6 +189,7 @@ var (
 // validated sidepanel mock.
 var glyphs = map[session.State]string{
 	session.Blocked: "█",
+	session.Ready:   "●",
 	session.Working: "⠿",
 	session.Idle:    "○",
 	session.Shell:   "❯",
@@ -183,6 +197,7 @@ var glyphs = map[session.State]string{
 
 var stateStyles = map[session.State]lipgloss.Style{
 	session.Blocked: lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")),
+	session.Ready:   lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950")),
 	session.Working: lipgloss.NewStyle().Foreground(lipgloss.Color("#58a6ff")),
 	session.Shell:   lipgloss.NewStyle().Foreground(lipgloss.Color("#d2a8ff")),
 	session.Idle:    lipgloss.NewStyle().Faint(true),
@@ -295,6 +310,10 @@ func (m Model) selected() []string {
 	if r.session.Reason != "" {
 		// Blocked is always displayed with its reason.
 		lines = append(lines, state.Render(truncate(r.session.Reason, m.width)))
+	}
+	if r.session.Snippet != "" {
+		// An unread badge you cannot read anything of is only half a badge.
+		lines = append(lines, quietStyle.Render(truncate(r.session.Snippet, m.width)))
 	}
 	return append(lines,
 		quietStyle.Render(shorten(r.session.Dir, m.width)),
