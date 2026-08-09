@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/fsnotify/fsnotify v1.10.1
 )
 
 require (
