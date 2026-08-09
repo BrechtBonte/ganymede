@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/registry"
+	"github.com/BrechtBonte/ganymede/internal/session"
 )
 
 // entry is one registry file's contents, in the shape Claude Code 2.1.220
@@ -53,7 +54,7 @@ func living(dir string) registry.Registry {
 	return registry.Registry{Dir: dir, Alive: func(int) bool { return true }}
 }
 
-func read(t *testing.T, r registry.Registry) []registry.Session {
+func read(t *testing.T, r registry.Registry) []session.Session {
 	t.Helper()
 	sessions, err := r.Read()
 	if err != nil {
@@ -77,12 +78,12 @@ func TestReadsWhatTheRegistrySaysAboutASession(t *testing.T) {
 
 	sessions := read(t, living(dir))
 
-	want := registry.Session{
+	want := session.Session{
 		PID:   72144,
 		ID:    "11105884-3fd7-496b-a49e-833cea89a5c7",
 		Dir:   "/Users/brechtbonte/Projects/BrechtBonte/ganymede",
 		Name:  "ganymede-78",
-		State: registry.Working,
+		State: session.Working,
 		Since: time.UnixMilli(1786272362730),
 	}
 	if len(sessions) != 1 {
@@ -98,15 +99,15 @@ func TestReadsWhatTheRegistrySaysAboutASession(t *testing.T) {
 func TestRegistryStatusBecomesASessionState(t *testing.T) {
 	for _, c := range []struct {
 		status string
-		want   registry.State
+		want   session.State
 	}{
-		{"busy", registry.Working},
-		{"waiting", registry.Blocked},
-		{"idle", registry.Idle},
-		{"shell", registry.Shell},
+		{"busy", session.Working},
+		{"waiting", session.Blocked},
+		{"idle", session.Idle},
+		{"shell", session.Shell},
 		// A status from a Claude Code newer than this harness. Idle is the
 		// state that claims the least about a Session we cannot read.
-		{"transcendent", registry.Idle},
+		{"transcendent", session.Idle},
 	} {
 		t.Run(c.status, func(t *testing.T) {
 			dir := registryOf(t, entry{PID: 1, Status: c.status})
@@ -177,5 +178,17 @@ func TestIgnoresFilesThatAreNotSessionRecords(t *testing.T) {
 
 	if sessions := read(t, living(dir)); len(sessions) != 1 {
 		t.Errorf("read %+v, want only the one Session", sessions)
+	}
+}
+
+// A record that does not say when the Session last moved gets no time at all,
+// rather than the start of the Unix epoch — which reads as a Session that has
+// been waiting on you for fifty years, to the ordering and to anything else
+// weighing it against a clock.
+func TestASessionWithNoTimestampHasNoTime(t *testing.T) {
+	dir := registryOf(t, entry{PID: 1, Status: "waiting"})
+
+	if got := read(t, living(dir))[0].Since; !got.IsZero() {
+		t.Errorf("Since = %v, want no time at all", got)
 	}
 }

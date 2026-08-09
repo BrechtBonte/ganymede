@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
-	"github.com/BrechtBonte/ganymede/internal/registry"
+	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/topology"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -27,7 +27,7 @@ func (j *jumps) Jump(pid int) error {
 }
 
 // sidepanel is a Dashboard sized for the sidepanel, showing sessions.
-func sidepanel(jumper dashboard.Jumper, sessions ...registry.Session) tea.Model {
+func sidepanel(jumper dashboard.Jumper, sessions ...session.Session) tea.Model {
 	var model tea.Model = dashboard.New(nil, jumper)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions(sessions))
@@ -61,9 +61,9 @@ func press(model tea.Model, key tea.KeyType) tea.Model {
 	return model
 }
 
-// session is a Session as the registry would describe it.
-func session(name, dir string, state registry.State) registry.Session {
-	return registry.Session{
+// live is a Session as the registry would describe it.
+func live(name, dir string, state session.State) session.Session {
+	return session.Session{
 		PID:   len(name) + len(dir),
 		ID:    name + "-id",
 		Dir:   dir,
@@ -89,8 +89,8 @@ func lineWith(view, want string) (string, bool) {
 // the repo tree turns to soup.
 func TestDashboardFitsTheSidepanel(t *testing.T) {
 	model := sidepanel(&jumps{},
-		session("teamleadercrm-monolith-billing-b7", "/repos/teamleadercrm-monolith-and-then-some", registry.Working),
-		session("FIRE-2841-max-paging-numbers", "/repos/teamleadercrm-monolith-and-then-some", registry.Blocked),
+		live("teamleadercrm-monolith-billing-b7", "/repos/teamleadercrm-monolith-and-then-some", session.Working),
+		live("FIRE-2841-max-paging-numbers", "/repos/teamleadercrm-monolith-and-then-some", session.Blocked),
 	)
 
 	for _, line := range strings.Split(model.View(), "\n") {
@@ -108,8 +108,8 @@ func TestDashboardFitsTheSidepanel(t *testing.T) {
 func TestDashboardFitsTheSidepanelWhateverASessionIsNamed(t *testing.T) {
 	// Each of these is well inside 40 characters and well outside 40 columns.
 	model := sidepanel(&jumps{},
-		session("請求書ページングの最大値を直す作業を続けています", "/repos/service-billing", registry.Blocked),
-		session("ai-assistant-b3", "/repos/日本語のプロジェクトディレクトリの名前", registry.Working),
+		live("請求書ページングの最大値を直す作業を続けています", "/repos/service-billing", session.Blocked),
+		live("ai-assistant-b3", "/repos/日本語のプロジェクトディレクトリの名前", session.Working),
 	)
 
 	for _, line := range strings.Split(model.View(), "\n") {
@@ -136,9 +136,9 @@ func TestDashboardNamesItselfAndReportsAnEmptyWorkingSet(t *testing.T) {
 // repos rather than a flat list of names.
 func TestSessionsAreGroupedUnderTheirRepo(t *testing.T) {
 	view := tree(sidepanel(&jumps{},
-		session("service-billing-a1", "/repos/service-billing", registry.Idle),
-		session("ai-assistant-b3", "/repos/service-ai-assistant", registry.Idle),
-		session("FIRE-2841-paging", "/repos/service-ai-assistant", registry.Idle),
+		live("service-billing-a1", "/repos/service-billing", session.Idle),
+		live("ai-assistant-b3", "/repos/service-ai-assistant", session.Idle),
+		live("FIRE-2841-paging", "/repos/service-ai-assistant", session.Idle),
 	))
 
 	if got := strings.Count(view, "service-ai-assistant"); got != 1 {
@@ -160,9 +160,9 @@ func TestSessionsAreGroupedUnderTheirRepo(t *testing.T) {
 
 // Every state the registry can tell apart reads differently at a glance.
 func TestEachSessionStateIsDrawnDistinctly(t *testing.T) {
-	seen := map[string]registry.State{}
-	for _, state := range []registry.State{registry.Working, registry.Blocked, registry.Idle, registry.Shell} {
-		view := tree(sidepanel(&jumps{}, session("ganymede-78", "/repos/ganymede", state)))
+	seen := map[string]session.State{}
+	for _, state := range []session.State{session.Working, session.Blocked, session.Idle, session.Shell} {
+		view := tree(sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", state)))
 		line, ok := lineWith(view, "ganymede-78")
 		if !ok {
 			t.Fatalf("no row for a %s Session:\n%s", state, view)
@@ -184,9 +184,9 @@ func TestEachSessionStateIsDrawnDistinctly(t *testing.T) {
 // order.
 func TestBlockedSessionsRiseToTheTop(t *testing.T) {
 	view := tree(sidepanel(&jumps{},
-		session("ai-assistant-b3", "/repos/service-ai-assistant", registry.Working),
-		session("ganymede-78", "/repos/ganymede", registry.Idle),
-		session("service-billing-a1", "/repos/service-billing", registry.Blocked),
+		live("ai-assistant-b3", "/repos/service-ai-assistant", session.Working),
+		live("ganymede-78", "/repos/ganymede", session.Idle),
+		live("service-billing-a1", "/repos/service-billing", session.Blocked),
 	))
 
 	blocked := strings.Index(view, "service-billing-a1")
@@ -200,9 +200,9 @@ func TestBlockedSessionsRiseToTheTop(t *testing.T) {
 // Within Attention, the Session that has been waiting on you longest is the
 // one to answer first.
 func TestTheLongestBlockedSessionIsTheTopOfAttention(t *testing.T) {
-	recent := session("aaa-just-blocked", "/repos/service-ai-assistant", registry.Blocked)
+	recent := live("aaa-just-blocked", "/repos/service-ai-assistant", session.Blocked)
 	recent.Since = epoch.Add(time.Hour)
-	waiting := session("zzz-blocked-since-lunch", "/repos/service-billing", registry.Blocked)
+	waiting := live("zzz-blocked-since-lunch", "/repos/service-billing", session.Blocked)
 	waiting.Since = epoch
 
 	view := tree(sidepanel(&jumps{}, recent, waiting))
@@ -215,9 +215,9 @@ func TestTheLongestBlockedSessionIsTheTopOfAttention(t *testing.T) {
 // Below Attention the tree reads by recency instead: what you were last at is
 // what you are most likely coming back to.
 func TestSessionsAskingNothingReadMostRecentFirst(t *testing.T) {
-	stale := session("aaa-idle-since-monday", "/repos/service-ai-assistant", registry.Idle)
+	stale := live("aaa-idle-since-monday", "/repos/service-ai-assistant", session.Idle)
 	stale.Since = epoch
-	recent := session("zzz-idle-just-now", "/repos/service-billing", registry.Idle)
+	recent := live("zzz-idle-just-now", "/repos/service-billing", session.Idle)
 	recent.Since = epoch.Add(time.Hour)
 
 	view := tree(sidepanel(&jumps{}, stale, recent))
@@ -230,7 +230,7 @@ func TestSessionsAskingNothingReadMostRecentFirst(t *testing.T) {
 // Blocked is always displayed with its reason, and the row has no room for it:
 // the detail box is where it goes.
 func TestSelectedShowsWhyASessionIsBlocked(t *testing.T) {
-	blocked := session("FIRE-2841-paging", "/repos/service-billing", registry.Blocked)
+	blocked := live("FIRE-2841-paging", "/repos/service-billing", session.Blocked)
 	blocked.Reason = "permission: Bash"
 	model := sidepanel(&jumps{}, blocked)
 
@@ -251,7 +251,7 @@ func TestSelectedAbbreviatesOnlyPathsActuallyUnderHome(t *testing.T) {
 		{"/Users/brechtbonte/Projects/ganymede", "~/Projects/ganymede"},
 		{"/Users/brechtbonte-old/billing", "/Users/brechtbonte-old/billing"},
 	} {
-		model := sidepanel(&jumps{}, session("ganymede-78", c.dir, registry.Idle))
+		model := sidepanel(&jumps{}, live("ganymede-78", c.dir, session.Idle))
 		model = press(model, tea.KeyDown)
 
 		if !strings.Contains(drawn(model), c.want) {
@@ -262,8 +262,8 @@ func TestSelectedAbbreviatesOnlyPathsActuallyUnderHome(t *testing.T) {
 
 // A Session that has gone loses its row without the Dashboard being restarted.
 func TestASessionThatIsGoneLosesItsRow(t *testing.T) {
-	staying := session("ganymede-78", "/repos/ganymede", registry.Idle)
-	model := sidepanel(&jumps{}, staying, session("service-billing-a1", "/repos/service-billing", registry.Idle))
+	staying := live("ganymede-78", "/repos/ganymede", session.Idle)
+	model := sidepanel(&jumps{}, staying, live("service-billing-a1", "/repos/service-billing", session.Idle))
 
 	model, _ = model.Update(dashboard.Sessions{staying})
 
@@ -280,7 +280,7 @@ func TestASessionThatIsGoneLosesItsRow(t *testing.T) {
 // it puts the selected Session in front of you.
 func TestEnterJumpsToTheSelectedSession(t *testing.T) {
 	jumper := &jumps{}
-	only := session("ganymede-78", "/repos/ganymede", registry.Idle)
+	only := live("ganymede-78", "/repos/ganymede", session.Idle)
 	model := sidepanel(jumper, only)
 
 	// Down from the repo's header row onto its one Session.
@@ -295,7 +295,7 @@ func TestEnterJumpsToTheSelectedSession(t *testing.T) {
 // A repo's header row is not a Session; Enter on it has nowhere to go.
 func TestEnterOnARepoHeaderJumpsNowhere(t *testing.T) {
 	jumper := &jumps{}
-	model := sidepanel(jumper, session("ganymede-78", "/repos/ganymede", registry.Idle))
+	model := sidepanel(jumper, live("ganymede-78", "/repos/ganymede", session.Idle))
 
 	model = press(model, tea.KeyEnter)
 
@@ -308,7 +308,7 @@ func TestEnterOnARepoHeaderJumpsNowhere(t *testing.T) {
 // has ended since the registry was read — is reported rather than swallowed.
 func TestAJumpThatCannotBeMadeIsReported(t *testing.T) {
 	jumper := &jumps{err: errors.New("no tmux pane is running process 4242")}
-	model := sidepanel(jumper, session("ganymede-78", "/repos/ganymede", registry.Idle))
+	model := sidepanel(jumper, live("ganymede-78", "/repos/ganymede", session.Idle))
 
 	model = press(model, tea.KeyDown)
 	model = press(model, tea.KeyEnter)
@@ -322,14 +322,14 @@ func TestAJumpThatCannotBeMadeIsReported(t *testing.T) {
 // Session you put it on, not on whatever row inherits that position.
 func TestSelectionStaysWithItsSessionAsTheWorkingSetChanges(t *testing.T) {
 	jumper := &jumps{}
-	chosen := session("ganymede-78", "/repos/ganymede", registry.Idle)
+	chosen := live("ganymede-78", "/repos/ganymede", session.Idle)
 	model := sidepanel(jumper, chosen)
 	model = press(model, tea.KeyDown)
 
 	// A Blocked Session in another repo arrives and takes the top of the tree.
 	model, _ = model.Update(dashboard.Sessions{
 		chosen,
-		session("FIRE-2841-paging", "/repos/service-billing", registry.Blocked),
+		live("FIRE-2841-paging", "/repos/service-billing", session.Blocked),
 	})
 	model = press(model, tea.KeyEnter)
 
@@ -344,8 +344,8 @@ func TestSelectionStaysWithItsSessionAsTheWorkingSetChanges(t *testing.T) {
 // repo.
 func TestSelectionSurvivesSessionsWithoutARegistryID(t *testing.T) {
 	jumper := &jumps{}
-	first := registry.Session{PID: 11, Dir: "/repos/service-ai-assistant", Name: "ai-assistant-b3", State: registry.Idle, Since: epoch}
-	second := registry.Session{PID: 22, Dir: "/repos/service-billing", Name: "service-billing-a1", State: registry.Idle, Since: epoch}
+	first := session.Session{PID: 11, Dir: "/repos/service-ai-assistant", Name: "ai-assistant-b3", State: session.Idle, Since: epoch}
+	second := session.Session{PID: 22, Dir: "/repos/service-billing", Name: "service-billing-a1", State: session.Idle, Since: epoch}
 	model := sidepanel(jumper, first, second)
 
 	// Onto the second repo's Session: header, Session, header, Session.
@@ -363,9 +363,9 @@ func TestSelectionSurvivesSessionsWithoutARegistryID(t *testing.T) {
 // However long the working set gets, the detail box stays on the sidepanel —
 // it is where the Blocked reason and the action keys live.
 func TestTheDetailBoxSurvivesAWorkingSetTallerThanTheSidepanel(t *testing.T) {
-	var many []registry.Session
+	var many []session.Session
 	for _, name := range []string{"a1", "b2", "c3", "d4", "e5", "f6", "g7", "h8", "i9", "j10", "k11", "l12"} {
-		many = append(many, session("session-"+name, "/repos/repo-"+name, registry.Idle))
+		many = append(many, live("session-"+name, "/repos/repo-"+name, session.Idle))
 	}
 	var model tea.Model = dashboard.New(nil, &jumps{})
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 12})

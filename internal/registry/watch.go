@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -31,7 +32,7 @@ const settle = 50 * time.Millisecond
 // The first read happens here rather than in the background, so that a
 // registry the harness cannot read at all is an error you are told about
 // instead of a Dashboard that quietly reports no Sessions.
-func (r Registry) Watch(ctx context.Context) (<-chan []Session, error) {
+func (r Registry) Watch(ctx context.Context) (<-chan []session.Session, error) {
 	first, err := r.Read()
 	if err != nil {
 		return nil, err
@@ -41,12 +42,12 @@ func (r Registry) Watch(ctx context.Context) (<-chan []Session, error) {
 		return nil, fmt.Errorf("watch the session registry: %w", err)
 	}
 
-	snapshots := make(chan []Session)
+	snapshots := make(chan []session.Session)
 	go r.watch(ctx, watcher, first, snapshots)
 	return snapshots, nil
 }
 
-func (r Registry) watch(ctx context.Context, watcher *fsnotify.Watcher, first []Session, snapshots chan<- []Session) {
+func (r Registry) watch(ctx context.Context, watcher *fsnotify.Watcher, first []session.Session, snapshots chan<- []session.Session) {
 	defer close(snapshots)
 	defer watcher.Close()
 
@@ -74,7 +75,7 @@ func (r Registry) watch(ctx context.Context, watcher *fsnotify.Watcher, first []
 	// report sends the working set unless it is the one already on show, so
 	// that the constant rewriting of these files does not redraw it. It
 	// returns false once the watch is over.
-	report := func(sessions []Session) bool {
+	report := func(sessions []session.Session) bool {
 		if reported && slices.Equal(sessions, last) {
 			return true
 		}

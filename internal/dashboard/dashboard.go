@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/BrechtBonte/ganymede/internal/registry"
 	"github.com/BrechtBonte/ganymede/internal/repo"
+	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/topology"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -21,7 +21,7 @@ import (
 
 // Sessions is a fresh account of the working set, as the registry watch
 // reports it.
-type Sessions []registry.Session
+type Sessions []session.Session
 
 // watchEnded says the registry watch has stopped reporting. The Dashboard
 // keeps showing what it last drew rather than blanking the tree.
@@ -36,7 +36,7 @@ type Jumper interface {
 // Model is the Dashboard's bubbletea model.
 type Model struct {
 	width, height int
-	sessions      <-chan []registry.Session
+	sessions      <-chan []session.Session
 	jumper        Jumper
 	rows          []row
 	cursor        int
@@ -49,7 +49,7 @@ type Model struct {
 // New returns a Dashboard drawing the working sets that arrive on sessions and
 // jumping through jumper. It is sized for the sidepanel until the terminal says
 // otherwise.
-func New(sessions <-chan []registry.Session, jumper Jumper) Model {
+func New(sessions <-chan []session.Session, jumper Jumper) Model {
 	return Model{
 		width:    topology.SidepanelWidth,
 		height:   45,
@@ -61,7 +61,7 @@ func New(sessions <-chan []registry.Session, jumper Jumper) Model {
 func (m Model) Init() tea.Cmd { return waitFor(m.sessions) }
 
 // waitFor takes the next working set off the watch.
-func waitFor(sessions <-chan []registry.Session) tea.Cmd {
+func waitFor(sessions <-chan []session.Session) tea.Cmd {
 	if sessions == nil {
 		return nil
 	}
@@ -90,7 +90,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // showing redraws the tree around a new working set, leaving the selection on
 // the row it was on however far that row has moved.
-func (m Model) showing(sessions []registry.Session) Model {
+func (m Model) showing(sessions []session.Session) Model {
 	var selected string
 	if m.cursor < len(m.rows) {
 		selected = m.rows[m.cursor].key()
@@ -152,11 +152,11 @@ func (m Model) jump() Model {
 	if m.cursor >= len(m.rows) {
 		return m
 	}
-	session := m.rows[m.cursor].session
-	if session == nil || m.jumper == nil {
+	jumping := m.rows[m.cursor].session
+	if jumping == nil || m.jumper == nil {
 		return m
 	}
-	if err := m.jumper.Jump(session.PID); err != nil {
+	if err := m.jumper.Jump(jumping.PID); err != nil {
 		m.notice = err.Error()
 	}
 	return m
@@ -174,18 +174,18 @@ var (
 
 // glyphs are how each state reads at a glance, one column wide, from the
 // validated sidepanel mock.
-var glyphs = map[registry.State]string{
-	registry.Blocked: "█",
-	registry.Working: "⠿",
-	registry.Idle:    "○",
-	registry.Shell:   "❯",
+var glyphs = map[session.State]string{
+	session.Blocked: "█",
+	session.Working: "⠿",
+	session.Idle:    "○",
+	session.Shell:   "❯",
 }
 
-var stateStyles = map[registry.State]lipgloss.Style{
-	registry.Blocked: lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")),
-	registry.Working: lipgloss.NewStyle().Foreground(lipgloss.Color("#58a6ff")),
-	registry.Shell:   lipgloss.NewStyle().Foreground(lipgloss.Color("#d2a8ff")),
-	registry.Idle:    lipgloss.NewStyle().Faint(true),
+var stateStyles = map[session.State]lipgloss.Style{
+	session.Blocked: lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")),
+	session.Working: lipgloss.NewStyle().Foreground(lipgloss.Color("#58a6ff")),
+	session.Shell:   lipgloss.NewStyle().Foreground(lipgloss.Color("#d2a8ff")),
+	session.Idle:    lipgloss.NewStyle().Faint(true),
 }
 
 func (m Model) View() string {
@@ -269,7 +269,7 @@ func (m Model) line(i int) string {
 func (m Model) detail() []string {
 	lines := m.selected()
 	if m.notice != "" {
-		lines = append(lines, stateStyles[registry.Blocked].Render(truncate(m.notice, m.width)))
+		lines = append(lines, stateStyles[session.Blocked].Render(truncate(m.notice, m.width)))
 	}
 	return lines
 }
