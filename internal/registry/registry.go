@@ -106,12 +106,16 @@ func readSession(path string) (session.Session, bool) {
 	if err := json.Unmarshal(body, &r); err != nil || r.PID == 0 {
 		return session.Session{}, false
 	}
+	// A status this reader does not know is taken as the Idle it falls back to.
+	// This is the account the Dashboard runs on when nothing contradicts it, so
+	// claiming the least and keeping the row is all there is to do with one.
+	state, _ := session.StateOf(r.Status)
 	return session.Session{
 		PID:    r.PID,
 		ID:     r.SessionID,
 		Dir:    r.CWD,
 		Name:   r.Name,
-		State:  stateOf(r.Status),
+		State:  state,
 		Reason: reasonOf(r.WaitingFor),
 		Since:  since(r.StatusUpdatedAt),
 	}, true
@@ -126,22 +130,6 @@ func since(millis int64) time.Time {
 		return time.Time{}
 	}
 	return time.UnixMilli(millis)
-}
-
-// stateOf reads the registry's status. An unknown status is Idle: it is the
-// state that claims the least about a Session this harness cannot read, and it
-// keeps the row on the Dashboard rather than pretending the Session is Gone.
-func stateOf(status string) session.State {
-	switch status {
-	case "busy":
-		return session.Working
-	case "waiting":
-		return session.Blocked
-	case "shell":
-		return session.Shell
-	default:
-		return session.Idle
-	}
 }
 
 // reasonOf reads waitingFor, which has only ever been observed as a string.
