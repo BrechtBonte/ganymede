@@ -58,6 +58,48 @@ func StateOf(status string) (State, bool) {
 	return Idle, false
 }
 
+// Glyph is how a State reads at a glance: one column wide, from the validated
+// sidepanel mock. It is here rather than in whichever surface draws it because
+// the harness shows the same states in more than one place — the rail, the
+// attention strip in the status line — and two surfaces disagreeing about what
+// Blocked looks like would be two vocabularies, not one.
+//
+// A state with no mark is one this harness does not draw.
+func (s State) Glyph() string {
+	switch s {
+	case Blocked:
+		return "█"
+	case Ready:
+		return "●"
+	case Working:
+		return "⠿"
+	case Idle:
+		return "○"
+	case Shell:
+		return "❯"
+	}
+	return ""
+}
+
+// Colour is the State's colour, as a hex triplet every surface can say in its
+// own way. Attention is what has to carry across a room — a Session that has
+// stopped is red, an unread turn green — while the states asking nothing of
+// you have no colour of their own and are drawn in whatever quiet the surface
+// keeps for them.
+func (s State) Colour() string {
+	switch s {
+	case Blocked:
+		return "#f85149"
+	case Ready:
+		return "#3fb950"
+	case Working:
+		return "#58a6ff"
+	case Shell:
+		return "#d2a8ff"
+	}
+	return ""
+}
+
 // Session is one live Claude Code process, shown as a row on the Dashboard.
 type Session struct {
 	// PID is the Claude Code process. It is what the harness follows to find
@@ -88,4 +130,33 @@ type Session struct {
 // Attention is the union of Blocked and Ready: everything waiting on you.
 func (s Session) Attention() bool {
 	return s.State == Blocked || s.State == Ready
+}
+
+// Attention is how much of a working set is waiting on you, counted by tier.
+// It is what the ambient surfaces show — the ones with room for a number and
+// not for a row.
+type Attention struct {
+	// Blocked is how many Sessions cannot continue without your decision.
+	Blocked int
+	// Ready is how many turns have finished that you have not read.
+	Ready int
+}
+
+// Any reports whether anything at all is waiting on you. A working set that
+// asks nothing of you is drawn as nothing rather than as a pair of zeroes:
+// a strip that is always lit is one you stop reading.
+func (a Attention) Any() bool { return a.Blocked > 0 || a.Ready > 0 }
+
+// AttentionIn counts what is waiting on you across a working set.
+func AttentionIn(sessions []Session) Attention {
+	var counted Attention
+	for _, s := range sessions {
+		switch s.State {
+		case Blocked:
+			counted.Blocked++
+		case Ready:
+			counted.Ready++
+		}
+	}
+	return counted
 }

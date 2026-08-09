@@ -28,9 +28,31 @@ func (j *jumps) Jump(pid int) error {
 
 // sidepanel is a Dashboard sized for the sidepanel, showing sessions.
 func sidepanel(jumper dashboard.Jumper, sessions ...session.Session) tea.Model {
-	var model tea.Model = dashboard.New(nil, jumper, nil)
+	var model tea.Model = dashboard.New(nil, jumper, nil, nil)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions(sessions))
+	return model
+}
+
+// strips records the counts the Dashboard put out, standing in for the working
+// client's status line.
+type strips struct {
+	shown []session.Attention
+	err   error
+}
+
+func (s *strips) Show(waiting session.Attention) error {
+	s.shown = append(s.shown, waiting)
+	return s.err
+}
+
+// showing runs one working set after another past a Dashboard wired to strip.
+func showing(strip dashboard.Strip, sets ...[]session.Session) tea.Model {
+	var model tea.Model = dashboard.New(nil, &jumps{}, strip, nil)
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	for _, set := range sets {
+		model, _ = model.Update(dashboard.Sessions(set))
+	}
 	return model
 }
 
@@ -174,6 +196,27 @@ func TestBlockedSessionsRiseToTheTop(t *testing.T) {
 		if at := strings.Index(view, later); at < blocked {
 			t.Errorf("%q is drawn above the Blocked Session:\n%s", later, view)
 		}
+	}
+}
+
+// A repo is as urgent as the most urgent Session in it: one Session that
+// cannot continue takes its whole repo to the top, over a repo whose Sessions
+// are all getting on with their work.
+func TestARepoIsAsUrgentAsItsMostUrgentSession(t *testing.T) {
+	view := tree(sidepanel(&jumps{},
+		live("aaa-working", "/repos/service-ai-assistant", session.Working),
+		live("bbb-working", "/repos/service-ai-assistant", session.Working),
+		live("zzz-idle", "/repos/service-billing", session.Idle),
+		live("zzz-blocked", "/repos/service-billing", session.Blocked),
+	))
+
+	if strings.Index(view, "service-billing") > strings.Index(view, "service-ai-assistant") {
+		t.Errorf("the repo holding the Blocked Session is drawn second:\n%s", view)
+	}
+	// And the Session it was promoted for leads it, rather than sitting under
+	// whichever of its Sessions the registry happened to name first.
+	if strings.Index(view, "zzz-blocked") > strings.Index(view, "zzz-idle") {
+		t.Errorf("the Blocked Session is not at the top of its repo:\n%s", view)
 	}
 }
 
@@ -347,7 +390,7 @@ func TestTheDetailBoxSurvivesAWorkingSetTallerThanTheSidepanel(t *testing.T) {
 	for _, name := range []string{"a1", "b2", "c3", "d4", "e5", "f6", "g7", "h8", "i9", "j10", "k11", "l12"} {
 		many = append(many, live("session-"+name, "/repos/repo-"+name, session.Idle))
 	}
-	var model tea.Model = dashboard.New(nil, &jumps{}, nil)
+	var model tea.Model = dashboard.New(nil, &jumps{}, nil, nil)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 12})
 	model, _ = model.Update(dashboard.Sessions(many))
 
@@ -383,8 +426,10 @@ func TestReadyIsDrawnDistinctlyFromIdle(t *testing.T) {
 		if !ok {
 			t.Fatalf("no row for a %s Session:\n%s", state, view)
 		}
-		glyph := strings.TrimSpace(strings.TrimSuffix(strings.TrimRight(line, " "), "ganymede-78"))
-		if glyph == "" {
+		// The mark is the first thing on the row after the indent, and the row
+		// carries a name and a wait age after it.
+		glyph, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if glyph == "" || strings.Contains(glyph, "ganymede-78") {
 			t.Errorf("a %s Session's row carries no state glyph: %q", state, line)
 		}
 		for drawn, other := range glyphs {
@@ -456,13 +501,209 @@ func TestSelectedShowsWhatAReadySessionLastSaid(t *testing.T) {
 	}
 }
 
+// The strip is the same Attention the rail is sorted by, carried to the status
+// line of the Session you are working in — one working set, counted once, so
+// the two surfaces cannot disagree.
+func TestTheStripCarriesTheCountsTheRailIsSortedBy(t *testing.T) {
+	strip := &strips{}
+
+	showing(strip, []session.Session{
+		live("aaa-blocked", "/repos/service-billing", session.Blocked),
+		live("bbb-ready", "/repos/service-ai-assistant", session.Ready),
+		live("ccc-ready", "/repos/ganymede", session.Ready),
+		live("ddd-working", "/repos/ganymede", session.Working),
+	})
+
+	if len(strip.shown) == 0 {
+		t.Fatal("the Dashboard never put the counts out")
+	}
+	if last, want := strip.shown[len(strip.shown)-1], (session.Attention{Blocked: 1, Ready: 2}); last != want {
+		t.Errorf("the strip reads %+v, want %+v", last, want)
+	}
+}
+
+// The counts follow the working set: a Session answered is a Blocked count
+// that has to come down of its own accord, without you having looked at the
+// strip or anything else.
+func TestTheStripFollowsTheStatesAsTheyChange(t *testing.T) {
+	strip := &strips{}
+	blocked := live("FIRE-2841-paging", "/repos/service-billing", session.Blocked)
+	answered := blocked
+	answered.State = session.Working
+
+	showing(strip, []session.Session{blocked}, []session.Session{answered})
+
+	if last, want := strip.shown[len(strip.shown)-1], (session.Attention{}); last != want {
+		t.Errorf("the strip still reads %+v after the Session was answered, want %+v", last, want)
+	}
+}
+
+// Writing the strip redraws every client on the Sessions server, and the
+// working set is rebuilt whenever anything at all moves. A Dashboard that
+// wrote the same counts again on every registry event would flicker the
+// Session you are typing in for no news.
+func TestTheStripIsLeftAloneWhenTheCountsHaveNotChanged(t *testing.T) {
+	strip := &strips{}
+	blocked := live("FIRE-2841-paging", "/repos/service-billing", session.Blocked)
+	elsewhere := live("ganymede-78", "/repos/ganymede", session.Idle)
+	working := elsewhere
+	working.State = session.Working
+
+	showing(strip,
+		[]session.Session{blocked, elsewhere},
+		[]session.Session{blocked, working},
+		[]session.Session{blocked, elsewhere},
+	)
+
+	if len(strip.shown) != 1 {
+		t.Errorf("the Dashboard wrote the strip %d times for one set of counts: %+v", len(strip.shown), strip.shown)
+	}
+}
+
+// The strip is redundancy, and redundancy that fails is not worth a word: the
+// rail still has everything the strip was going to say.
+func TestAStripThatCannotBeWrittenLeavesTheRailAlone(t *testing.T) {
+	strip := &strips{err: errors.New("no server running on /private/tmp/tmux-501/default")}
+
+	model := showing(strip, []session.Session{live("ganymede-78", "/repos/ganymede", session.Blocked)})
+
+	if view := drawn(model); !strings.Contains(view, "ganymede-78") || strings.Contains(view, "no server running") {
+		t.Errorf("a strip that could not be written cost the rail its tree:\n%s", view)
+	}
+}
+
+// A write that did not land has not been said. Counts the Dashboard only
+// tried to put out must be tried again, or a status line that went blank on a
+// tmux the Dashboard could not reach for a moment stays blank for as long as
+// nothing else moves.
+func TestCountsThatCouldNotBeWrittenAreTriedAgain(t *testing.T) {
+	strip := &strips{err: errors.New("no server running on /private/tmp/tmux-501/default")}
+	blocked := live("FIRE-2841-paging", "/repos/service-billing", session.Blocked)
+
+	showing(strip, []session.Session{blocked}, []session.Session{blocked})
+
+	if len(strip.shown) != 2 {
+		t.Errorf("the Dashboard wrote the strip %d times, want it tried again after the write that failed", len(strip.shown))
+	}
+}
+
+// A Dashboard that has gone takes its counts with it: a strip nobody is left
+// to keep up to date is a strip that will be wrong by morning.
+func TestAClosedDashboardTakesItsCountsWithIt(t *testing.T) {
+	strip := &strips{}
+	model := showing(strip, []session.Session{live("ganymede-78", "/repos/ganymede", session.Blocked)})
+
+	press(model, tea.KeyCtrlC)
+
+	if last := strip.shown[len(strip.shown)-1]; last.Any() {
+		t.Errorf("a closed Dashboard left %+v on the status line", last)
+	}
+}
+
+// The rail's own header carries the counts too — the tree scrolls, and what is
+// waiting on you has to be readable without it.
+func TestTheDashboardHeaderCountsWhatIsWaitingOnYou(t *testing.T) {
+	view := drawn(sidepanel(&jumps{},
+		live("aaa-blocked", "/repos/service-billing", session.Blocked),
+		live("bbb-ready", "/repos/service-ai-assistant", session.Ready),
+		live("ccc-ready", "/repos/ganymede", session.Ready),
+	))
+
+	header, _, _ := strings.Cut(view, "\n")
+	if !strings.Contains(header, session.Blocked.Glyph()+" 1") {
+		t.Errorf("the header does not count the Blocked Session: %q", header)
+	}
+	if !strings.Contains(header, session.Ready.Glyph()+" 2") {
+		t.Errorf("the header does not count the unread turns: %q", header)
+	}
+}
+
+// A working set asking nothing of you leaves the header as quiet as the strip.
+func TestTheHeaderCountsNothingWhenNothingIsWaiting(t *testing.T) {
+	view := drawn(sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", session.Working)))
+
+	header, _, _ := strings.Cut(view, "\n")
+	if strings.ContainsAny(header, "0123456789") {
+		t.Errorf("the header counts something with nothing waiting on you: %q", header)
+	}
+}
+
+// Longest-waiting first is an order you can only check if the rail says how
+// long: every row carries the age of the state it is in.
+func TestEveryRowSaysHowLongItHasBeenInItsState(t *testing.T) {
+	waiting := live("FIRE-2841-paging", "/repos/service-billing", session.Blocked)
+	waiting.Since = time.Now().Add(-4 * time.Minute)
+	since := live("ganymede-78", "/repos/ganymede", session.Idle)
+	since.Since = time.Now().Add(-3 * time.Hour)
+
+	view := tree(sidepanel(&jumps{}, waiting, since))
+
+	if line, _ := lineWith(view, "FIRE-2841-paging"); !strings.HasSuffix(strings.TrimRight(line, " "), "4m") {
+		t.Errorf("the Blocked row does not say it has been waiting four minutes: %q", line)
+	}
+	if line, _ := lineWith(view, "ganymede-78"); !strings.HasSuffix(strings.TrimRight(line, " "), "3h") {
+		t.Errorf("the Idle row does not say how long it has been there: %q", line)
+	}
+}
+
+// A Session that has just moved is drawn as having just moved, rather than as
+// having waited nought minutes.
+func TestARowThatHasJustMovedSaysSo(t *testing.T) {
+	just := live("ganymede-78", "/repos/ganymede", session.Ready)
+	just.Since = time.Now()
+
+	view := tree(sidepanel(&jumps{}, just))
+
+	if line, _ := lineWith(view, "ganymede-78"); !strings.Contains(line, "now") {
+		t.Errorf("a Session that has just moved reads %q", line)
+	}
+}
+
+// The detail box is where you decide what to do about the row, and how long it
+// has been waiting is half of that decision.
+func TestTheDetailBoxSaysHowLongTheSessionHasBeenWaiting(t *testing.T) {
+	blocked := live("FIRE-2841-paging", "/repos/service-billing", session.Blocked)
+	blocked.Since = time.Now().Add(-90 * time.Minute)
+	blocked.Reason = "permission: Bash"
+
+	model := press(sidepanel(&jumps{}, blocked), tea.KeyDown)
+
+	box := detail(model)
+	if !strings.Contains(box, string(session.Blocked)) || !strings.Contains(box, "1h") {
+		t.Errorf("the detail box does not say how long the Session has been Blocked:\n%s", box)
+	}
+}
+
+// The rail truncates a Session's name to fit; the detail box is where the whole
+// of it goes, because it is what you would type to find the thing again.
+func TestTheDetailBoxNamesTheSelectedSessionInFull(t *testing.T) {
+	long := live("FIRE-2841-max-paging-numbers", "/repos/service-billing", session.Ready)
+
+	model := press(sidepanel(&jumps{}, long), tea.KeyDown)
+
+	if box := detail(model); !strings.Contains(box, long.Name) {
+		t.Errorf("the detail box does not name the Session in full:\n%s", box)
+	}
+}
+
+// detail is just the SELECTED box: everything below the second rule.
+func detail(model tea.Model) string {
+	lines := strings.Split(drawn(model), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if lines[i] != "" && strings.Trim(lines[i], "─") == "" {
+			return strings.Join(lines[i+1:], "\n")
+		}
+	}
+	return drawn(model)
+}
+
 // Jumping to a Session is seeing it, and seeing it is what clears Ready. The
 // Dashboard says so itself rather than waiting for tmux to report the focus,
 // because it is the one that moved you.
 func TestJumpingToASessionReportsItSeen(t *testing.T) {
 	seen := &seeing{}
 	ready := live("ganymede-78", "/repos/ganymede", session.Ready)
-	var model tea.Model = dashboard.New(nil, &jumps{}, seen.Seen)
+	var model tea.Model = dashboard.New(nil, &jumps{}, nil, seen.Seen)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions{ready})
 
@@ -478,7 +719,7 @@ func TestJumpingToASessionReportsItSeen(t *testing.T) {
 // has not been seen and its badge has to stay.
 func TestAJumpThatCouldNotBeMadeLeavesTheBadgeAlone(t *testing.T) {
 	seen := &seeing{}
-	var model tea.Model = dashboard.New(nil, &jumps{err: errors.New("no tmux pane is running process 4242")}, seen.Seen)
+	var model tea.Model = dashboard.New(nil, &jumps{err: errors.New("no tmux pane is running process 4242")}, nil, seen.Seen)
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
 	model, _ = model.Update(dashboard.Sessions{live("ganymede-78", "/repos/ganymede", session.Ready)})
 

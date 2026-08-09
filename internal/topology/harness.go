@@ -55,6 +55,16 @@ func (h Harness) Ensure() error {
 	if err := h.ensureSession(DashboardSession, h.WorkingDir, h.Dashboard); err != nil {
 		return err
 	}
+	// The sidepanel is all Dashboard. tmux's own status line under it would
+	// cost the rail a row to repeat what the rail already says — the strip
+	// belongs to the Session you are working in (§2.2). Best effort: a harness
+	// that could not turn it off is one row shorter, not one that cannot open.
+	//
+	// An option's target is a pane, where the exact-match prefix only holds up
+	// with the window and pane left off after it — "=ganymede" alone is read as
+	// a session of that name, and there is none. Without the prefix a repo
+	// called ganymede-something would answer to it.
+	_ = h.sessions().run("set", "-t", "="+DashboardSession+":", "status", "off")
 	if err := h.ensureSession(working, h.WorkingDir, nil); err != nil {
 		return err
 	}
