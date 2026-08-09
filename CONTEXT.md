@@ -10,6 +10,10 @@ The terminal harness replacing Warp for multi-repo Claude Code work: a tmux-base
 The always-visible sidepanel TUI listing the working set of repos and their sessions, from which all harness actions are taken.
 _Avoid_: overview, home screen, monitor, rail
 
+**Dock**:
+The tmux frame filling the emulator window, holding the dashboard on the left and the working client on the right. It has no prefix key of its own, so every keystroke belongs to the client inside the pane.
+_Avoid_: frame, container, wrapper, shell, layout
+
 **Working set**:
 The repos the dashboard shows: those with a live session, a Claimed root, or recent harness activity. Everything else lives behind the picker.
 _Avoid_: active repos, favourites, registry
