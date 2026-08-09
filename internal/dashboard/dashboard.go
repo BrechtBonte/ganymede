@@ -9,7 +9,9 @@ package dashboard
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
@@ -38,34 +40,63 @@ type Jumper interface {
 // notice the focus, because the Dashboard is the one that moved you.
 type Seen func(id string)
 
+// Strip is the ambient attention strip: the counts the Dashboard puts where
+// you are already looking, in the status line of the Session you are working
+// in rather than over here in the sidepanel.
+type Strip interface {
+	Show(waiting session.Attention) error
+}
+
 // Model is the Dashboard's bubbletea model.
 type Model struct {
 	width, height int
 	sessions      <-chan []session.Session
 	jumper        Jumper
+	strip         Strip
 	seen          Seen
 	rows          []row
 	cursor        int
 	// roots remembers which Main root a Session's directory belongs to.
 	roots map[string]string
+	// waiting is what the working set on show is asking of you: the header
+	// counts it, and the strip carries it.
+	waiting session.Attention
+	// written is what the strip was last told, so that a working set rebuilt
+	// with the same Attention in it is not written out again — and shown says
+	// whether it has been told anything at all, since a Dashboard opening on a
+	// quiet working set still has to clear whatever the last one left there.
+	written session.Attention
+	shown   bool
 	// notice is the last thing the Dashboard was asked to do and could not.
 	notice string
 }
 
 // New returns a Dashboard drawing the working sets that arrive on sessions,
-// jumping through jumper and reporting what you have seen through seen. It is
-// sized for the sidepanel until the terminal says otherwise.
-func New(sessions <-chan []session.Session, jumper Jumper, seen Seen) Model {
+// jumping through jumper, counting Attention out to strip and reporting what
+// you have seen through seen. It is sized for the sidepanel until the terminal
+// says otherwise.
+func New(sessions <-chan []session.Session, jumper Jumper, strip Strip, seen Seen) Model {
 	return Model{
 		width:    topology.SidepanelWidth,
 		height:   45,
 		sessions: sessions,
 		jumper:   jumper,
+		strip:    strip,
 		seen:     seen,
 	}
 }
 
-func (m Model) Init() tea.Cmd { return waitFor(m.sessions) }
+func (m Model) Init() tea.Cmd { return tea.Batch(waitFor(m.sessions), ticking()) }
+
+// tick is the Dashboard asking to be drawn again with nothing new to show.
+type tick struct{}
+
+// ticking keeps the wait ages honest. Nothing arrives on the watch while every
+// Session sits still, and a row that has been Blocked for an hour would go on
+// saying four minutes for as long as nothing else moved.
+func ticking() tea.Cmd {
+	return tea.Tick(30*time.Second, func(time.Time) tea.Msg { return tick{} })
+}
 
 // waitFor takes the next working set off the watch.
 func waitFor(sessions <-chan []session.Session) tea.Cmd {
@@ -86,9 +117,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case Sessions:
-		return m.showing(msg), waitFor(m.sessions)
+		return m.showing(msg).counted(), waitFor(m.sessions)
 	case watchEnded:
 		return m, nil
+	case tick:
+		return m, ticking()
 	case tea.KeyMsg:
 		return m.pressed(msg)
 	}
@@ -107,6 +140,7 @@ func (m Model) showing(sessions []session.Session) Model {
 		m.roots = map[string]string{}
 	}
 	m.rows = rowsOf(sessions, m.rootOf)
+	m.waiting = session.AttentionIn(sessions)
 	m.cursor = 0
 	for i, r := range m.rows {
 		if r.key() == selected {
@@ -114,6 +148,34 @@ func (m Model) showing(sessions []session.Session) Model {
 			break
 		}
 	}
+	return m
+}
+
+// counted carries the working set's Attention out to the strip.
+//
+// Counts that have not moved are not written again: writing the strip redraws
+// every client on the Sessions server, the working set is rebuilt whenever
+// anything at all moves, and flickering the Session you are typing in to tell
+// you what it already said is worse than no strip.
+//
+// It is written here rather than handed to the runtime, which would run it in
+// a goroutine of its own: two counts written out of order would leave the
+// status line saying something that had stopped being true, and a Dashboard
+// which believed it had already said the true thing would never correct it.
+// One tmux call, on a count that has actually changed, is the cheaper end of
+// that trade — and it is what the jump does too.
+func (m Model) counted() Model {
+	if m.strip == nil || (m.shown && m.waiting == m.written) {
+		return m
+	}
+	// The strip is deliberate redundancy: everything it says is on the rail
+	// already, so one that could not be written is not worth a word about. It
+	// is worth trying again, though, which is why only a write that landed
+	// counts as having been said.
+	if err := m.strip.Show(m.waiting); err != nil {
+		return m
+	}
+	m.written, m.shown = m.waiting, true
 	return m
 }
 
@@ -137,7 +199,13 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC:
 		// The Dashboard is meant to stay up for as long as the harness does,
 		// so it answers to no quit key. Ctrl+C is left alone for the times you
-		// are running it by hand.
+		// are running it by hand — and on the way out it takes the strip with
+		// it, since a count nobody is left to keep up to date is one that will
+		// be wrong by morning. It goes out the same way every other count
+		// does, so nothing can be left in flight behind it.
+		if m.strip != nil && m.shown {
+			_ = m.strip.Show(session.Attention{})
+		}
 		return m, tea.Quit
 	case tea.KeyUp:
 		if m.cursor > 0 {
@@ -185,22 +253,13 @@ var (
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
 )
 
-// glyphs are how each state reads at a glance, one column wide, from the
-// validated sidepanel mock.
-var glyphs = map[session.State]string{
-	session.Blocked: "█",
-	session.Ready:   "●",
-	session.Working: "⠿",
-	session.Idle:    "○",
-	session.Shell:   "❯",
-}
-
-var stateStyles = map[session.State]lipgloss.Style{
-	session.Blocked: lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")),
-	session.Ready:   lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950")),
-	session.Working: lipgloss.NewStyle().Foreground(lipgloss.Color("#58a6ff")),
-	session.Shell:   lipgloss.NewStyle().Foreground(lipgloss.Color("#d2a8ff")),
-	session.Idle:    lipgloss.NewStyle().Faint(true),
+// styleOf is how a state is drawn: its own colour where it has one, and the
+// quiet the sidepanel keeps for the states asking nothing of you.
+func styleOf(state session.State) lipgloss.Style {
+	if colour := state.Colour(); colour != "" {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(colour))
+	}
+	return quietStyle
 }
 
 func (m Model) View() string {
@@ -217,7 +276,7 @@ func (m Model) View() string {
 		space = 0
 	}
 
-	lines := []string{titleStyle.Render(truncate("GANYMEDE", m.width)), rule}
+	lines := []string{m.header(), rule}
 	lines = append(lines, m.tree(space)...)
 	lines = append(lines, rule, titleStyle.Render(truncate("SELECTED", m.width)))
 	lines = append(lines, detail...)
@@ -225,6 +284,33 @@ func (m Model) View() string {
 		lines = lines[:m.height]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// header names the Dashboard, and counts what is waiting on you beside it. The
+// tree scrolls and the detail box shows one row; how much is asking something
+// of you is a number that should never have to be scrolled to.
+func (m Model) header() string {
+	return spread(titleStyle.Render("GANYMEDE"), m.counts(), m.width)
+}
+
+// counts draws Attention as a mark and a number per tier, in the tier's own
+// colour — the same reading as the strip in the working client's status line.
+// A working set asking nothing of you is drawn as nothing: a count that is
+// always there is one you stop seeing.
+func (m Model) counts() string {
+	var tiers []string
+	for _, tier := range []struct {
+		state session.State
+		count int
+	}{
+		{session.Blocked, m.waiting.Blocked},
+		{session.Ready, m.waiting.Ready},
+	} {
+		if tier.count > 0 {
+			tiers = append(tiers, styleOf(tier.state).Render(tier.state.Glyph()+" "+strconv.Itoa(tier.count)))
+		}
+	}
+	return strings.Join(tiers, " ")
 }
 
 // tree draws the repo tree, showing as much of it as space allows and keeping
@@ -270,21 +356,24 @@ func (m Model) line(i int) string {
 	}
 
 	// Two columns of indent put a Session under its repo; then the state
-	// glyph, which is what the eye runs down.
+	// glyph, which is what the eye runs down; and the age at the far end,
+	// which is what the ordering within a tier is made of — the row above has
+	// been waiting on you longer, and the rail should be able to show that.
 	const indent = "  "
-	glyph := glyphs[r.session.State]
-	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" "))
+	glyph := r.session.State.Glyph()
+	age := ageOf(*r.session)
+	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" ")-lipgloss.Width(age)-1)
 	if i == m.cursor {
-		return selectedStyle.Width(m.width).Render(indent + glyph + " " + name)
+		return selectedStyle.Width(m.width).Render(spread(indent+glyph+" "+name, age, m.width))
 	}
-	return indent + stateStyles[r.session.State].Render(glyph) + " " + name
+	return spread(indent+styleOf(r.session.State).Render(glyph)+" "+name, quietStyle.Render(age), m.width)
 }
 
 // detail is the SELECTED box: what the highlighted row has no room to say.
 func (m Model) detail() []string {
 	lines := m.selected()
 	if m.notice != "" {
-		lines = append(lines, stateStyles[session.Blocked].Render(truncate(m.notice, m.width)))
+		lines = append(lines, styleOf(session.Blocked).Render(truncate(m.notice, m.width)))
 	}
 	return lines
 }
@@ -302,10 +391,18 @@ func (m Model) selected() []string {
 		}
 	}
 
-	state := stateStyles[r.session.State]
+	// What the Session is doing and how long it has been doing it, then its
+	// name with the whole width to itself: the rail has to give the indent,
+	// the mark and the age their columns first, and a worktree name — which is
+	// what carries the ticket — is the row most likely to have run out of them.
+	state := styleOf(r.session.State)
+	standing := string(r.session.State)
+	if age := ageOf(*r.session); age != "" {
+		standing += " · " + age
+	}
 	lines := []string{
-		state.Render(glyphs[r.session.State]) + " " +
-			truncate(string(r.session.State)+" · "+r.session.Name, m.width-2),
+		state.Render(r.session.State.Glyph()) + " " + truncate(standing, m.width-2),
+		elide(r.session.Name, m.width),
 	}
 	if r.session.Reason != "" {
 		// Blocked is always displayed with its reason.
@@ -319,6 +416,46 @@ func (m Model) selected() []string {
 		quietStyle.Render(shorten(r.session.Dir, m.width)),
 		quietStyle.Render(truncate("⏎ jump", m.width)),
 	)
+}
+
+// spread puts left at one end of a line width columns wide and right at the
+// other. Left is the end that gives way: a name reads truncated, while a count
+// or an age is the whole of what it says.
+func spread(left, right string, width int) string {
+	if room := width - lipgloss.Width(right) - 1; lipgloss.Width(left) > room {
+		left = truncate(left, max(0, room))
+	}
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 0 {
+		return truncate(right, width)
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// ageOf is how long a Session has been in the state it is in. A registry
+// record with no clock on it has no age to show, and says nothing rather than
+// counting from the epoch.
+func ageOf(s session.Session) string {
+	if s.Since.IsZero() {
+		return ""
+	}
+	return age(time.Since(s.Since))
+}
+
+// age is a duration in the coarsest unit that still says something, which in a
+// 40-column rail is all there is room for. Anything under a minute is now,
+// including a clock that has run backwards on us.
+func age(waited time.Duration) string {
+	switch {
+	case waited < time.Minute:
+		return "now"
+	case waited < time.Hour:
+		return strconv.Itoa(int(waited.Minutes())) + "m"
+	case waited < 24*time.Hour:
+		return strconv.Itoa(int(waited.Hours())) + "h"
+	default:
+		return strconv.Itoa(int(waited.Hours()/24)) + "d"
+	}
 }
 
 // clip keeps at most space lines.
@@ -338,6 +475,16 @@ func truncate(s string, width int) string {
 		return ""
 	}
 	return ansi.Truncate(s, width, "")
+}
+
+// elide fits a name into width by keeping its head — where a worktree carries
+// its ticket — and saying that the rest was cut, rather than leaving you to
+// wonder whether the name really ends there.
+func elide(name string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return ansi.Truncate(name, width, "…")
 }
 
 // shorten fits a path into width by keeping its tail, which is the end that

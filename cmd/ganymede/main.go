@@ -159,7 +159,9 @@ func runDashboard() error {
 	model := state.New()
 	working := model.Watch(ctx, watch, checked, reported)
 
-	_, err = tea.NewProgram(dashboard.New(working, harness, model.Seen), tea.WithAltScreen()).Run()
+	// The harness is both hands the Dashboard has on tmux: it steers the
+	// working client, and it carries the counts to that client's status line.
+	_, err = tea.NewProgram(dashboard.New(working, harness, harness, model.Seen), tea.WithAltScreen()).Run()
 	return err
 }
 
