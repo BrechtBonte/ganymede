@@ -119,6 +119,8 @@ type Harness struct {
 	Inventory Inventory
 	// Activity is the harness's memory of where you have been working.
 	Activity Activity
+	// Spawner starts a background Worktree session for a repo.
+	Spawner Spawner
 }
 
 // Model is the Dashboard's bubbletea model.
@@ -167,6 +169,8 @@ type Model struct {
 	notice string
 	// setting is the ticket being typed, and nil when none is.
 	setting *setting
+	// spawning is the worktree-spawn dialog, and nil when none is open.
+	spawning *spawning
 }
 
 // setting is a ticket being set by hand: the checkout it is about, the name it
@@ -555,6 +559,8 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// mode.
 	switch {
 	case msg.Type == tea.KeyCtrlC:
+	case m.spawning != nil:
+		return m.spawningKey(msg), nil
 	case m.setting != nil:
 		return m.typed(msg), nil
 	case m.picker.open:
@@ -591,6 +597,8 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.setTicket()
 		case "g":
 			return m.opening()
+		case "w":
+			m = m.spawn()
 		}
 	}
 	return m, nil
@@ -1028,6 +1036,9 @@ func (m Model) detail() []string {
 }
 
 func (m Model) selected() []string {
+	if m.spawning != nil {
+		return m.spawningView()
+	}
 	if m.setting != nil {
 		// The box is the input for as long as one is open. It says what is
 		// being corrected rather than what is selected, because the two come
@@ -1061,7 +1072,7 @@ func (m Model) selected() []string {
 		lines = append(lines, m.carrying(r.caution)...)
 		return append(lines,
 			quietStyle.Render(shorten(r.root, m.width)),
-			quietStyle.Render(truncate("⏎ go to repo", m.width)))
+			quietStyle.Render(truncate("⏎ go to repo · w spawn", m.width)))
 	}
 
 	// What the Session is doing and how long it has been doing it, then its

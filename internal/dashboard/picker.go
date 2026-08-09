@@ -83,6 +83,13 @@ func (m Model) picking(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.goTo(chosen), nil
+	case tea.KeyTab:
+		// Every printable key already belongs to the query, so spawning into
+		// the highlighted repo — rather than jumping to it — gets the one key
+		// left that Enter does not already mean.
+		if chosen := m.picker.chosen(); chosen != "" {
+			return m.spawnInto(chosen), nil
+		}
 	case tea.KeyUp:
 		if m.picker.cursor > 0 {
 			m.picker.cursor--

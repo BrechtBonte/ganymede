@@ -17,11 +17,8 @@ import (
 // may have nothing running in it at all, and what you are asking for is to be
 // somewhere rather than to be shown something.
 func (h Harness) Open(dir string) error {
-	name, err := h.sessionFor(dir)
+	name, err := h.broughtUp(dir)
 	if err != nil {
-		return err
-	}
-	if err := h.ensureSession(name, dir, nil); err != nil {
 		return err
 	}
 	client, err := h.workingClient()
