@@ -4,7 +4,7 @@ A terminal harness for day-to-day multi-repo [Claude Code](https://code.claude.c
 
 It replaces Warp as the daily driver. It is not a general-purpose terminal: tmux owns the layout, Ghostty is just the window it lives in, and the harness itself is one Go binary.
 
-> **Status: the dashboard is live, and read-only.** It watches Claude Code's session registry, listens to hooks, and cross-checks both against `claude agents --json` every 30 seconds, and draws your real sessions grouped under their repo in every state — Working, Blocked with its reason, Ready with the message the turn ended on, Idle, Shell — appearing and disappearing as sessions start and end. Everything waiting on you sorts to the top — Blocked above Ready, longest-waiting first — with each row carrying how long it has been there, the SELECTED box spelling the highlighted row out in full, and the working client's status line carrying the ambient `█ N blocked · ● M ready` counts. `⏎` jumps the working client to the selected session, and seeing a session clears its Ready badge. Nothing else on the dashboard acts yet: no claims, no worktree spawn, no inline actions, no notifier. Everything below describes the design in full — the specification is the single source of truth for the build, see [Design documents](#design-documents). See [Getting started](#getting-started) for what runs today.
+> **Status: the dashboard is live, and read-only.** It watches Claude Code's session registry, listens to hooks, and cross-checks both against `claude agents --json` every 30 seconds, and draws your real sessions grouped under their repo in every state — Working, Blocked with its reason, Ready with the message the turn ended on, Idle, Shell — appearing and disappearing as sessions start and end. Everything waiting on you sorts to the top — Blocked above Ready, longest-waiting first — with each row carrying how long it has been there, the SELECTED box spelling the highlighted row out in full, and the working client's status line carrying the ambient `█ N blocked · ● M ready` counts. The list is the **working set**, not everything: repos with a live session, plus the ones you worked in over the last seven days, which it remembers across restarts and drops again once the window closes. `⏎` jumps the working client to the selected session — or, on a repo's own row, takes you to the repo — and seeing a session clears its Ready badge. `g` opens a fuzzy picker over every repo discovered under `~/Projects`, and picking one takes you there and puts it on the dashboard. Nothing else on the dashboard acts yet: no claims, no worktree spawn, no inline actions, no notifier. Everything below describes the design in full — the specification is the single source of truth for the build, see [Design documents](#design-documents). See [Getting started](#getting-started) for what runs today.
 
 ## Getting started
 
@@ -25,9 +25,11 @@ go build -o bin/ganymede ./cmd/ganymede
 
 Inside the window, `Alt+g` moves between the sidepanel and the working client. The dock — the outer tmux server framing the two — runs with no prefix key, so `C-b` and everything else belongs to the session you are working in.
 
-In the sidepanel, `↑` and `↓` move the selection and `⏎` jumps the working client to the selected session — including sessions in repos you never opened the harness from, since the registry's `cwd` is what puts a row on the list.
+In the sidepanel, `↑` and `↓` move the selection and `⏎` jumps the working client to the selected session — including sessions in repos you never opened the harness from, since the registry's `cwd` is what puts a row on the list. `⏎` on a repo's own header row takes you to the repo instead, bringing its session up at the main root if nothing is running there yet.
 
-What the harness writes: a config fragment at `~/.config/ganymede/tmux.conf`, sourced from a marked block in your `tmux.conf`; the dock's own config at `~/.config/ganymede/dock.conf`; its event socket at `~/.config/ganymede/events.sock`, owned by one dashboard at a time — a second `ganymede dashboard` refuses to start rather than take it; and its own hook entries in `~/.claude/settings.json`, which are replaced rather than repeated on every install and leave the rest of that file, permissions included, untouched.
+`g` opens the repo picker over every repo the harness can find. Typing narrows it fuzzily — `gnm` reaches `ganymede` — matching a repo's own name ahead of one that only matches somewhere up its path, with the directory it is filed under shown at the right to tell two repos of the same name apart. `⏎` takes you to the highlighted repo and puts it on the dashboard; `Esc` leaves everything as it was.
+
+What the harness writes: a config fragment at `~/.config/ganymede/tmux.conf`, sourced from a marked block in your `tmux.conf`; the dock's own config at `~/.config/ganymede/dock.conf`; its event socket at `~/.config/ganymede/events.sock`, owned by one dashboard at a time — a second `ganymede dashboard` refuses to start rather than take it; its harness state at `~/.config/ganymede/state.json`, which is where the working set's per-repo activity is remembered across restarts; and its own hook entries in `~/.claude/settings.json`, which are replaced rather than repeated on every install and leave the rest of that file, permissions included, untouched.
 
 Two things in that fragment are the harness's to own: tmux's global `pane-focus-in` hook, which is how seeing a session clears its Ready badge, and the `@ganymede-seen` option it reads. A `pane-focus-in` hook of your own in `tmux.conf` would be replaced by it.
 
@@ -52,7 +54,7 @@ Two things in that fragment are the harness's to own: tmux's global `pane-focus-
 
 ### Topology
 
-- **One tmux session per repo**, named after the repo. Window 1 is the main root; each worktree session gets its own window, named after the worktree (which carries the ticket ID).
+- **One tmux session per repo**, named after the repo. Window 1 is the main root; each worktree session gets its own window, named after the worktree (which carries the ticket ID). Two repos wanting the same name — an `api` under more than one organisation — are told apart by qualifying the second with the directory it is filed under (`acme-api`), so the picker can never quietly take you to the other one.
 - **One persistent `ganymede` tmux session** hosting the dashboard TUI.
 - **The dashboard is a docked sidepanel.** One Ghostty window holds two tmux clients side by side: a narrow (~40-column) left client permanently attached to the `ganymede` session, and the **working client** on the right showing the repo session in focus. The dashboard steers the working client with `switch-client -c`.
 - The working client's tmux status line carries an ambient **attention strip** — `█ N blocked · ● M ready` — deliberate redundancy with the dashboard, sitting under your eye line inside the session you're focused on.
@@ -135,11 +137,14 @@ stateDiagram-v2
 
 The dashboard shows repos with a live session, a Claimed root, or harness activity in the last 7 days (window configurable) — expected size 5–10 rows. Discovery scans configured roots, default `~/Projects` at depth ≤ 3, excluding worktree checkouts; sessions living outside the scan roots still appear, since the registry's `cwd` is ground truth. Everything else sits behind the fuzzy picker (`g`) over the full inventory — jumping or spawning into a repo puts it on the dashboard. A repo drops off after the recency window with no sessions and no claim, and is never evicted while live or Claimed.
 
+A checkout is a repo when its `.git` is a directory. A worktree checkout, a submodule and a `--separate-git-dir` checkout all keep a `.git` *file* naming a git directory elsewhere, so none of the three is offered as a repo of its own — which is also what stops the scan descending into the trees vendored inside a checkout. Per-repo activity is stamped whenever a session is running in a repo and whenever you open one yourself, and lives in the harness state sidecar so the working set survives a restart.
+
 ## Keys
 
 | Key | On | Action |
 |---|---|---|
-| `⏎` | any row | Jump — switch the working client to the session (clears Ready) |
+| `⏎` | session row | Jump — switch the working client to the session (clears Ready) |
+| `⏎` | repo row | Go to the repo — switch the working client to its session, started at the main root if nothing is running there |
 | `y` / `n` | Blocked | Approve-once (`Y`) / deny (`Esc`). Richer choices always jump in |
 | `p` | Idle, Ready, Working | Prompt from the detail box. On Working, Enter **queues**; `Ctrl+Enter` interrupts-then-sends |
 | `x` | Working | Interrupt via guarded `Esc` — no confirm dialog; the guard plus a deliberate key is the safety |
