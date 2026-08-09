@@ -3,9 +3,11 @@
 // which Sessions exist and what each of them is doing.
 //
 // The registry is undocumented. This package was built against Claude Code
-// 2.1.220 and is written to survive the shape moving underneath it: a file it
-// cannot read costs only its own Session, and a status it does not recognise
-// reads as Idle rather than dropping the row.
+// 2.1.220, re-verified unchanged against 2.1.226, and is written to survive
+// the shape moving underneath it: a file it cannot read costs only its own
+// Session, and a status it does not recognise reads as Idle rather than
+// dropping the row. What it cannot do is notice that the shape has moved,
+// which is what the reconciler is for.
 package registry
 
 import (

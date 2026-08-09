@@ -13,8 +13,9 @@ import (
 )
 
 // entry is one registry file's contents, in the shape Claude Code 2.1.220
-// writes it (§11 of the spec). The registry is undocumented, so these literals
-// are the harness's record of the schema it was built against.
+// writes it (§11 of the spec), unchanged as of 2.1.226. The registry is
+// undocumented, so these literals are the harness's record of the schema it
+// was built against.
 type entry struct {
 	PID             int    `json:"pid"`
 	SessionID       string `json:"sessionId"`

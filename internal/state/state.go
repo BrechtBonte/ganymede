@@ -1,15 +1,20 @@
 // Package state is the harness's state model: one account of every Session,
-// merged from the two things that report them.
+// merged from the three things that report them.
 //
-// The registry is authoritative and slow — it says what a Session is doing,
-// but only once it has written the file. The hooks are early and partial —
-// they say the moment something changed and carry what the registry never
-// holds, but only for Sessions running with the hooks installed.
+// The registry is quick and undocumented — it says what a Session is doing as
+// soon as it has written the file, in a shape nobody promised. The reconciler
+// is slow and documented — it asks Claude Code the same question every half
+// minute, in words that will still mean this after an upgrade. The hooks are
+// earlier than either and partial — they say the moment something changed and
+// carry what neither of the others holds, but only for Sessions running with
+// the hooks installed.
 //
-// Laying one over the other is this package's whole job, and it comes down to
-// two rules. A hook edge holds a row only until the registry has moved since
-// it arrived; and Ready is the harness's alone, because whether you have seen
-// a finished turn is a thing only the harness is watching.
+// Laying them over one another is this package's whole job, and it comes down
+// to three rules. The cross-check corrects a registry that has drifted, but
+// never one that has simply moved on since it was asked. A hook edge holds a
+// row only until the registry has moved since it arrived. And Ready is the
+// harness's alone, because whether you have seen a finished turn is a thing
+// only the harness is watching.
 package state
 
 import (
@@ -17,6 +22,7 @@ import (
 	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/hooks"
+	"github.com/BrechtBonte/ganymede/internal/reconciler"
 	"github.com/BrechtBonte/ganymede/internal/session"
 )
 
@@ -35,6 +41,8 @@ type Model struct {
 	marks map[string]mark
 	// latest is the registry's last word on the working set.
 	latest []session.Session
+	// checked is the reconciler's last cross-check of it.
+	checked reconciler.Reconciled
 }
 
 // mark is what the hooks have said about one Session that the registry has not
@@ -55,12 +63,12 @@ func New() *Model {
 	return &Model{raised: make(chan hooks.Event, raised), marks: map[string]mark{}}
 }
 
-// Watch reports the working set — the registry's, with the hooks' account over
-// it — every time either of them says something, until ctx ends. The channel
-// is closed when the watch stops.
-func (m *Model) Watch(ctx context.Context, snapshots <-chan []session.Session, events <-chan hooks.Event) <-chan []session.Session {
+// Watch reports the working set — the registry's, corrected by the cross-check
+// and with the hooks' account over both — every time any of them says
+// something, until ctx ends. The channel is closed when the watch stops.
+func (m *Model) Watch(ctx context.Context, snapshots <-chan []session.Session, checks <-chan reconciler.Reconciled, events <-chan hooks.Event) <-chan []session.Session {
 	merged := make(chan []session.Session)
-	go m.run(ctx, snapshots, events, merged)
+	go m.run(ctx, snapshots, checks, events, merged)
 	return merged
 }
 
@@ -78,7 +86,7 @@ func (m *Model) Seen(id string) {
 	}
 }
 
-func (m *Model) run(ctx context.Context, snapshots <-chan []session.Session, events <-chan hooks.Event, merged chan<- []session.Session) {
+func (m *Model) run(ctx context.Context, snapshots <-chan []session.Session, checks <-chan reconciler.Reconciled, events <-chan hooks.Event, merged chan<- []session.Session) {
 	defer close(merged)
 
 	for {
@@ -93,6 +101,16 @@ func (m *Model) run(ctx context.Context, snapshots <-chan []session.Session, eve
 				continue
 			}
 			m.arrived(set)
+		case checked, ok := <-checks:
+			if !ok {
+				// The reconciler has stopped. Its last cross-check stands and
+				// goes on ageing, which costs it every argument with a
+				// registry record newer than it — the right way for insurance
+				// nobody is renewing to lapse.
+				checks = nil
+				continue
+			}
+			m.checked = checked
 		case event, ok := <-events:
 			if !ok {
 				events = nil
@@ -172,11 +190,98 @@ func (m *Model) hold(id string, held mark) {
 
 // merged is the working set as the Dashboard should draw it.
 func (m *Model) merged() []session.Session {
-	working := make([]session.Session, len(m.latest))
-	for i, s := range m.latest {
+	working := m.reconciled()
+	for i, s := range working {
 		working[i] = merge(s, m.marks[s.ID])
 	}
 	return working
+}
+
+// reconciled is the registry's working set with the last cross-check laid over
+// it: the Sessions the registry never reported added to it, and the ones it
+// describes differently corrected.
+//
+// The two are matched on the process. That is the field the harness has
+// checked — it names something alive, and no two live Sessions share one —
+// while the session id comes from a file whose shape this cross-check exists
+// to insure against.
+//
+// Nothing here takes a row off. The cross-check is always the older picture of
+// the two, so a Session it has not heard of is far likelier to be one that has
+// just started than one that has gone. Rows it added are another matter: the
+// registry is not reporting them, so nothing is liveness-checking them either,
+// and one whose Session has ended stays up until the next cross-check drops it
+// — a tick, which is what the whole component is accurate to.
+func (m *Model) reconciled() []session.Session {
+	working := make([]session.Session, len(m.latest), len(m.latest)+len(m.checked.Sessions))
+	copy(working, m.latest)
+
+	// running is where each process already sits in the working set. Rows the
+	// cross-check adds go into it too, so that one process is one row however
+	// many times it was reported — the Dashboard keys its rows by process, and
+	// a second row for one could never be selected.
+	running := make(map[int]int, len(working))
+	for i, s := range working {
+		running[s.PID] = i
+	}
+	for _, checked := range m.checked.Sessions {
+		i, known := running[checked.PID]
+		if known {
+			working[i] = correct(working[i], checked, m.checked.At)
+			continue
+		}
+		if checked.State == "" {
+			// The registry never reported this Session and the cross-check
+			// cannot read what it is doing. Idle is the right answer here after
+			// all: there is nothing to fall back on, and a row you can see and
+			// jump to beats a Session nothing on the Dashboard mentions.
+			checked.State = session.Idle
+		}
+		// As far as anything here knows, it has been in that state since the
+		// harness first heard of it.
+		checked.Since = m.checked.At
+		running[checked.PID] = len(working)
+		working = append(working, checked)
+	}
+	return working
+}
+
+// correct settles what one Session is doing between the registry's account of
+// it and the cross-check's.
+//
+// The cross-check wins. Where the two disagree, one of them read an
+// undocumented file that may have moved underneath it and the other asked
+// Claude Code a documented question — and this whole component exists because
+// only the second of those can be relied on to still mean what it meant.
+//
+// A registry that has moved the Session since the picture was taken is the one
+// exception, and it is not really a disagreement: the cross-check is the
+// slower of the two by design, and handing a live row back to a picture half a
+// minute old would be the flicker this must not have. A record that cannot say
+// when it last moved cannot make that case — and a clock the harness can no
+// longer read is drift of exactly the kind being insured against.
+// A cross-check that could not read a Session's status is the other exception,
+// and the plainest one: it has no opinion, so there is nothing to prefer.
+func correct(s, checked session.Session, at time.Time) session.Session {
+	if checked.State == "" || s.State == checked.State {
+		return s
+	}
+	if !s.Since.IsZero() && s.Since.After(at) {
+		return s
+	}
+	// The reason the registry gave goes with the state just overruled — it was
+	// about that state — and the cross-check has none to put in its place. A
+	// Blocked row can come out of here with nothing under it, which is worse
+	// than a Blocked row with its reason and better than an Idle row over a
+	// Session that is stopped waiting for you.
+	//
+	// The wait age runs from the cross-check. That under-reports it, and the
+	// alternatives are worse: no time at all reads as a Session waiting since
+	// 1970 to a tree that sorts Attention by longest-waiting first, and keeps
+	// the hooks off the row besides, since a hook edge can only be weighed
+	// against a clock.
+	s.State, s.Reason, s.Since = checked.State, "", at
+	return s
 }
 
 // merge lays what the hooks have said over the registry's account of one
