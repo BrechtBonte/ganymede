@@ -1,5 +1,11 @@
-// Package repo locates the Main root a directory belongs to — the repository's
-// primary checkout, which is what the Dashboard groups Sessions under.
+// Package repo is what the harness knows about a Main root: the repository's
+// primary checkout, which is what the Dashboard groups Sessions under and where
+// PR review happens.
+//
+// It answers the questions that follow from that. Which root a directory
+// belongs to — the tree. And which of the repository's checkouts a Session
+// actually has its hands on, which is what makes a root Free or In use by
+// agent.
 package repo
 
 import (
