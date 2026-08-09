@@ -203,6 +203,20 @@ func TestALongBranchGivesWayRatherThanOverflowingTheRail(t *testing.T) {
 	}
 }
 
+// A repo named at length leaves no room for a branch name at all. The row keeps
+// the marks it can still be read by rather than saying half a branch — or, worse,
+// the punctuation between two marks with nothing left on either side of it.
+func TestARowWithNoRoomForTheBranchKeepsTheMarksItCanBeReadBy(t *testing.T) {
+	root := mainRoot(t, "teamleadercrm-monolith-b7")
+	strayed(t, root, "fix/FIRE-2841-max-paging-numbers-in-the-invoice-list")
+
+	line := headerOf(t, rail(t, live("billing-a1", root, session.Idle)), root)
+
+	if !strings.Contains(line, caution+" dirty") {
+		t.Errorf("header = %q, want the marks that still fit, said plainly", line)
+	}
+}
+
 // The box under the rail is where a row says what it had no room for. A caution
 // cut down to a mark and a word is one you have to go and check for yourself,
 // so the box names the branch and says what is in the tree.

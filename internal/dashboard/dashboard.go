@@ -200,7 +200,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case watchEnded:
 		return m, nil
 	case Tick:
-		return m.asking(), tea.Batch(ticking(), m.reading())
+		m = m.asking()
+		return m, tea.Batch(ticking(), m.reading())
 	case tea.KeyMsg:
 		return m.pressed(msg)
 	}
@@ -707,23 +708,30 @@ func carrying(c repo.Caution, room int) string {
 	if c.Dirty {
 		dirty = "dirty"
 	}
-	switch {
-	case where == "" && dirty == "":
+	if where == "" && dirty == "" {
 		return ""
-	case where == "":
-		return truncate(caution+" "+dirty, room)
 	}
 
-	tail := ""
-	if dirty != "" {
-		tail = " · " + dirty
+	// A branch name cut down to two or three columns says nothing at all, so a
+	// row with no room for one drops it and keeps the marks it can still be read
+	// by — never the punctuation between two of them with one of them gone.
+	marks := dirty
+	if where != "" {
+		spare := room - lipgloss.Width(caution+" ")
+		if dirty != "" {
+			spare -= lipgloss.Width(" · " + dirty)
+		}
+		if spare >= 4 {
+			marks = elide(where, spare)
+			if dirty != "" {
+				marks += " · " + dirty
+			}
+		}
 	}
-	// A branch name cut down to two or three columns says nothing at all, so
-	// the row keeps the marks it can still be read by and drops the name.
-	if spare := room - lipgloss.Width(caution+" "+tail); spare >= 4 {
-		return caution + " " + elide(where, spare) + tail
+	if marks == "" {
+		return truncate(caution, room)
 	}
-	return truncate(strings.TrimSpace(caution+tail), room)
+	return truncate(caution+" "+marks, room)
 }
 
 // join puts two marks side by side, and neither of them beside nothing.
