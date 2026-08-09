@@ -69,13 +69,19 @@ func strayed(t *testing.T, root, branch string) {
 	}
 }
 
+// opened is a Dashboard sized for the sidepanel, showing nothing yet.
+func opened(t *testing.T) tea.Model {
+	t.Helper()
+	var model tea.Model = dashboard.New(nil, &jumps{}, nil, nil, nil)
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	return model
+}
+
 // rail is a Dashboard sized for the sidepanel showing sessions, with whatever
 // it asked to have read off git read and handed back to it.
 func rail(t *testing.T, sessions ...session.Session) tea.Model {
 	t.Helper()
-	var model tea.Model = dashboard.New(nil, &jumps{}, nil, nil, nil)
-	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
-	model, cmd := model.Update(dashboard.Sessions(sessions))
+	model, cmd := opened(t).Update(dashboard.Sessions(sessions))
 	return cautioned(t, model, cmd)
 }
 
@@ -214,6 +220,99 @@ func TestARowWithNoRoomForTheBranchKeepsTheMarksItCanBeReadBy(t *testing.T) {
 
 	if !strings.Contains(line, caution+" dirty") {
 		t.Errorf("header = %q, want the marks that still fit, said plainly", line)
+	}
+}
+
+// A repo named at the width of the whole rail leaves room for nothing else, and
+// the mark is what the row gives up last. A caution dropped for want of room
+// would leave a root that is detached and dirty reading exactly like one that is
+// clean, on the row you go to precisely to find out which.
+func TestARowWithNoRoomAtAllKeepsTheCautionMarkAndGivesUpTheName(t *testing.T) {
+	root := mainRoot(t, "teamleadercrm-monolith-and-then-some-more")
+	strayed(t, root, "toolbar")
+
+	line, ok := lineWith(tree(rail(t, live("billing-a1", root, session.Idle))), "teamleadercrm-monolith")
+	if !ok {
+		t.Fatalf("no header row for %q", root)
+	}
+	if !strings.Contains(line, caution) {
+		t.Errorf("header = %q, want the caution mark kept and the name given up for it", line)
+	}
+}
+
+// A word cut in half says something the harness did not mean. Where there is no
+// room for the whole of a mark, the row says the marks it can and leaves the
+// rest to the box.
+func TestARowNeverSaysHalfOfAMark(t *testing.T) {
+	root := mainRoot(t, "teamleadercrm-monolith-invoicing")
+	git(t, root, "branch", "-M", "main")
+	if err := os.WriteFile(filepath.Join(root, "toolbar.go"), []byte("package ui\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	line := headerOf(t, rail(t, live("billing-a1", root, session.Idle)), root)
+
+	if strings.Contains(line, "dir") && !strings.Contains(line, "dirty") {
+		t.Errorf("header = %q, want no half-said mark on it", line)
+	}
+}
+
+// Two reads of the rail can land in the order they were asked in or the other
+// one, and nothing here has a say in which. What comes back is laid over what
+// the Dashboard already knows rather than put in its place, so that an answer
+// about one root cannot take another root's caution off the rail with it.
+func TestAnAnswerAboutOneRootLeavesTheOthersAlone(t *testing.T) {
+	billing := mainRoot(t, "billing")
+	strayed(t, billing, "toolbar")
+	assistant := mainRoot(t, "assistant")
+	strayed(t, assistant, "spike")
+
+	model := rail(t,
+		live("billing-a1", billing, session.Idle),
+		live("assistant-b3", assistant, session.Idle))
+	// An older read, about one of the two roots only, landing last.
+	model, _ = model.Update(dashboard.Cautions{billing: repo.Caution{Branch: "toolbar"}})
+
+	if line := headerOf(t, model, assistant); !strings.Contains(line, caution) {
+		t.Errorf("header = %q, want the caution the other answer had already found", line)
+	}
+}
+
+// Asking git what a root is carrying is the most expensive thing the Dashboard
+// does, and the working set is rebuilt several times a second while an agent is
+// working. It asks once and waits for the answer rather than asking again over
+// the top of a question it has not had one to.
+func TestTheDashboardDoesNotAskGitAgainWhileItIsAlreadyAsking(t *testing.T) {
+	set := []session.Session{live("billing-a1", mainRoot(t, "billing"), session.Idle)}
+	model := opened(t)
+
+	model, asking := model.Update(dashboard.Sessions(set))
+	if asking == nil {
+		t.Fatal("the Dashboard never asked git about a root it has never asked about")
+	}
+	if _, again := model.Update(dashboard.Sessions(set)); again != nil {
+		t.Error("the Dashboard asked git again while it was already asking")
+	}
+}
+
+// A repo that arrived while git was being asked about the others is asked about
+// as soon as that answer lands. Waiting for the tick would leave it on the rail
+// without its cautions for half a minute — and the answer in flight was never
+// about it.
+func TestARootThatArrivedWhileAskingIsAskedAboutNext(t *testing.T) {
+	billing := mainRoot(t, "billing")
+	assistant := mainRoot(t, "assistant")
+	model := opened(t)
+
+	model, _ = model.Update(dashboard.Sessions([]session.Session{live("billing-a1", billing, session.Idle)}))
+	model, _ = model.Update(dashboard.Sessions([]session.Session{
+		live("billing-a1", billing, session.Idle),
+		live("assistant-b3", assistant, session.Idle),
+	}))
+	_, asking := model.Update(dashboard.Cautions{billing: repo.Caution{}})
+
+	if asking == nil {
+		t.Error("the Dashboard never asked git about the root that arrived while it was asking")
 	}
 }
 
