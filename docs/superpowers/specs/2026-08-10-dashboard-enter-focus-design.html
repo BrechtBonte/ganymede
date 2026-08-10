@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Enter moves focus into the working client — Ganymede spec</title>
+<style>
+  :root{
+    --desk-a:#9d9d9d; --desk-b:#b3b3b3;
+    --win:#ffffff; --win-gray:#dddddd; --ink:#0a0a0a; --mut:#444444; --faint:#777;
+    --accent:#3b51c4; --green:#1d7a3a; --amber:#9a6b00; --red:#b3261e;
+    --chrome:"Geneva","Lucida Grande","Trebuchet MS",Tahoma,system-ui,sans-serif;
+    --body:"Geneva","Lucida Grande",Verdana,system-ui,sans-serif;
+    --mono:"Monaco",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  @media(prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+  body{margin:0;color:var(--ink);font-family:var(--body);font-size:14.5px;line-height:1.6;
+    background:conic-gradient(var(--desk-a) 25%, var(--desk-b) 0 50%, var(--desk-a) 0 75%, var(--desk-b) 0);
+    background-size:4px 4px;-webkit-font-smoothing:antialiased}
+
+  /* menu bar */
+  .menubar{position:sticky;top:0;z-index:10;background:#fff;border-bottom:1.5px solid #000;
+    display:flex;align-items:center;gap:24px;padding:5px 18px;font-family:var(--chrome);font-size:13.5px;font-weight:600}
+  .menubar .logo{font-size:15px}
+  .menubar .right{margin-left:auto;font-weight:400;color:var(--mut)}
+  @media(max-width:640px){.menubar{gap:14px}.menubar .m{display:none}}
+
+  /* desk layout: document column + sticky ToC rail */
+  .desk{max-width:1180px;margin:0 auto;padding:42px 24px 110px;
+    display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:0 36px;align-items:start}
+  .doc{min-width:0;max-width:980px}
+  @media(max-width:1080px){.desk{grid-template-columns:1fr}.toc{display:none}}
+
+  /* window chrome */
+  .window{background:var(--win);border:1.5px solid #000;border-radius:2px;
+    box-shadow:2.5px 2.5px 0 rgba(0,0,0,.55);margin:0 0 34px;scroll-margin-top:52px}
+  .tbar{display:flex;align-items:center;height:26px;border-bottom:1.5px solid #000;padding:0 8px;gap:8px;
+    background:repeating-linear-gradient(180deg,#fff 0 2px,#888 2px 3.5px);background-clip:padding-box}
+  .tbar .closebox{flex:none;width:13px;height:13px;border:1.5px solid #000;background:#fff;
+    box-shadow:0 0 0 2.5px #fff}
+  .tbar .title{flex:none;margin:0 auto;background:#fff;padding:0 14px;font-family:var(--chrome);
+    font-size:13px;font-weight:700;letter-spacing:.02em;line-height:23px;white-space:nowrap}
+  .tbar .zoom{flex:none;width:13px;height:13px;border:1.5px solid #000;background:#fff;position:relative;
+    box-shadow:0 0 0 2.5px #fff}
+  .tbar .zoom::after{content:"";position:absolute;inset:1px 4px 4px 1px;border:1px solid #000}
+  .wbody{padding:22px 26px}
+
+  /* sticky ToC window — active item gets the inverted Finder-selection look */
+  .toc{position:sticky;top:56px}
+  .toc .window{margin:0}
+  .toc ol{list-style:none;margin:0;padding:6px 0}
+  .toc a{display:block;padding:5px 16px;font-family:var(--chrome);font-size:12.5px;font-weight:600;
+    color:var(--ink);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  .toc a.active{background:#000;color:#fff;text-decoration:none}
+
+  /* header-window kit */
+  .kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin:0 0 10px}
+  h1{font-family:var(--chrome);font-size:30px;line-height:1.12;font-weight:800;letter-spacing:-.01em;margin:0 0 10px}
+  .meta{font-family:var(--mono);font-size:11.5px;color:var(--mut)}
+  .meta b{color:var(--accent)}
+  .lede{font-size:15px;margin:16px 0 0;color:var(--mut);max-width:48em}
+  .lede b{color:var(--ink);background:#ffec99;padding:0 3px}
+  .pills{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  .pill{font-family:var(--chrome);font-size:12px;font-weight:700;padding:4px 13px;border:1.5px solid #000;
+    border-radius:9px;background:var(--win-gray);box-shadow:1.5px 1.5px 0 rgba(0,0,0,.4)}
+  .pill.ok{background:#cfe8cf;color:var(--green)}
+  .pill.warn{background:#fbeec3;color:var(--amber)}
+
+  code{font-family:var(--mono);font-size:.88em;background:var(--win-gray);border:1px solid #999;
+    border-radius:2px;padding:.04em .35em}
+
+  .formula{border:1.5px solid #000;background:#1c1c1c;color:#e8e8e8;padding:14px 18px;margin:16px 0;
+    font-family:var(--mono);font-size:13px;box-shadow:inset 2px 2px 0 rgba(255,255,255,.08)}
+  .formula .ht{color:#ffd75e;font-weight:700}
+  .formula .hf{color:#8ab8ff;font-weight:700}
+  .dims{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px}
+  @media(max-width:680px){.dims{grid-template-columns:1fr}}
+  .dim{border:1.5px solid #000;padding:13px 15px;font-size:13.5px;color:var(--mut);background:var(--win)}
+  .dim .h{font-family:var(--chrome);font-weight:800;font-size:12.5px;margin-bottom:5px;color:var(--ink)}
+  .dim.t1{background:#fdf6e0} .dim.t2{background:#e9eefb}
+  .note{color:var(--faint);font-size:12px;margin:14px 0 0;font-family:var(--mono)}
+  .note::before{content:"※ "}
+
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{text-align:left;padding:10px 13px;border-bottom:1px solid #bbb;vertical-align:top;color:var(--mut)}
+  th{background:var(--win-gray);color:var(--ink);font-family:var(--chrome);font-weight:800;font-size:11.5px;
+    border-bottom:1.5px solid #000;letter-spacing:.03em}
+  tr:last-child td{border-bottom:none}
+  tbody tr:nth-child(even){background:#f3f3f3}
+  td.opt{font-weight:700;white-space:nowrap;color:var(--ink);font-family:var(--chrome);font-size:12.5px}
+  .tag{display:inline-block;font-family:var(--chrome);font-size:11px;font-weight:700;padding:1px 9px;
+    border:1.5px solid #000;border-radius:8px;white-space:nowrap;background:var(--win-gray)}
+  .t-low{background:#cfe8cf;color:var(--green)}
+  .t-med{background:#fbeec3;color:var(--amber)}
+  .t-high{background:#f6cfcb;color:var(--red)}
+  .t-eng{background:#dbe3f8;color:var(--accent)}
+
+  .callout p{margin:0;color:var(--mut);font-size:14px}
+  .callout p b{color:var(--ink)}
+  .callout p+p{margin-top:11px}
+  .alert-row{display:flex;gap:16px;align-items:flex-start}
+  .alert-icon{flex:none;width:34px;height:34px;border:1.5px solid #000;border-radius:50%;display:grid;
+    place-items:center;font-family:var(--chrome);font-size:20px;font-weight:800;background:#ffec99}
+  .alert-icon.info{background:#dbe3f8;font-style:italic;font-family:Georgia,serif}
+  .qlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px}
+  .qlist li{position:relative;padding-left:40px;font-size:13.5px;line-height:1.55;color:var(--mut)}
+  .qlist li b{color:var(--ink)}
+  .qnum{position:absolute;left:0;top:0;width:26px;height:22px;border:1.5px solid #000;border-radius:2px;
+    background:var(--win-gray);font-family:var(--chrome);font-size:12px;font-weight:800;color:var(--ink);
+    display:inline-grid;place-items:center;box-shadow:1.5px 1.5px 0 rgba(0,0,0,.35)}
+
+  /* asked & answered — beveled Q/A buttons */
+  .qa-item{padding:14px 0;border-bottom:1px dotted #999}
+  .qa-item:first-child{padding-top:0}
+  .qa-item:last-child{border-bottom:none;padding-bottom:0}
+  .qa-q,.qa-a{position:relative;padding-left:38px;font-size:13.5px;line-height:1.55}
+  .qa-q{font-family:var(--chrome);font-weight:800;color:var(--ink)}
+  .qa-a{margin-top:6px;color:var(--mut)}
+  .qa-q::before,.qa-a::before{position:absolute;left:0;top:0;width:26px;height:22px;border:1.5px solid #000;
+    border-radius:2px;font-family:var(--chrome);font-size:12px;font-weight:800;display:inline-grid;
+    place-items:center;box-shadow:1.5px 1.5px 0 rgba(0,0,0,.35)}
+  .qa-q::before{content:"Q";background:#000;color:#fff}
+  .qa-a::before{content:"A";background:var(--win);color:var(--accent)}
+  .qa-a b{color:var(--accent)}
+
+  .statusbar{border:1.5px solid #000;background:var(--win-gray);font-family:var(--chrome);font-size:11.5px;
+    color:var(--mut);padding:5px 12px;display:flex;gap:18px;box-shadow:2.5px 2.5px 0 rgba(0,0,0,.55)}
+  .statusbar b{color:var(--ink)}
+  .statusbar .right{margin-left:auto}
+  @media(max-width:640px){.statusbar{flex-wrap:wrap;gap:6px}}
+
+  /* additions for this document: multi-line code blocks, pipeline diagram */
+  .codeblock{border:1.5px solid #000;background:#1c1c1c;color:#e8e8e8;padding:14px 18px;margin:16px 0;
+    font-family:var(--mono);font-size:12.5px;line-height:1.55;box-shadow:inset 2px 2px 0 rgba(255,255,255,.08);
+    overflow-x:auto;white-space:pre}
+  .codeblock .c{color:#8a8a8a}
+  .codeblock .kw{color:#ffd75e}
+  .codeblock .tp{color:#8ab8ff}
+  .flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:18px 0}
+  .flow .step{border:1.5px solid #000;background:var(--win);padding:8px 13px;font-family:var(--chrome);
+    font-size:12.5px;font-weight:700;box-shadow:1.5px 1.5px 0 rgba(0,0,0,.4)}
+  .flow .step.new{background:#dbe3f8;color:var(--accent)}
+  .flow .step.no{background:#f6cfcb;color:var(--red)}
+  .flow .arrow{font-size:16px;color:var(--mut)}
+</style>
+</head>
+<body>
+
+<div class="menubar">
+  <span class="logo">❖</span>
+  <span>File</span><span class="m">Edit</span><span class="m">View</span><span class="m">Special</span>
+  <span class="right">[Mon 10 Aug 2026]</span>
+</div>
+
+<div class="desk">
+<main class="doc">
+
+  <div class="window">
+    <div class="tbar"><span class="closebox"></span><span class="title">dashboard-enter-focus-design.html</span><span class="zoom"></span></div>
+    <div class="wbody">
+      <p class="kicker">Ganymede · Dashboard</p>
+      <h1>Enter moves focus into the working client</h1>
+      <div class="meta">source: <b>docs/superpowers/specs/2026-08-10-dashboard-enter-focus-design.md</b> · generated view for review · canonical: markdown</div>
+      <div class="pills">
+        <span class="pill ok">✓ Design approved</span>
+        <span class="pill warn">⚠ Not yet implemented</span>
+      </div>
+      <p class="lede">Enter already points the working client at the right Session or repo, but keystrokes stay on the Dashboard until you separately press <b>alt+g</b>. This spec adds a <b>Focus</b> primitive that Enter fires automatically — but only from the direct gestures, never from the async guard fallbacks that must never steal your keystrokes out from under you.</p>
+    </div>
+  </div>
+
+  <div class="window">
+    <div class="tbar"><span class="closebox"></span><span class="title">TL;DR</span><span class="zoom"></span></div>
+    <div class="wbody callout">
+      <div class="alert-row">
+        <div class="alert-icon info">i</div>
+        <div>
+          <p><b>Add a `Focus` step that Enter calls after a successful Jump or Open.</b> It runs `select-pane` on the dock server — the same move alt+g makes — so Enter both shows the Session/repo and hands you the keyboard in one gesture.</p>
+          <p>Applies to session rows, repo rows, and the picker's Enter. Deliberately <b>not</b> applied to the async guard-fallback paths (`answered`/`sent` mismatches, Takeover's `endFailed`, Stop's fallback) — those fire from background events and must not yank focus away from whatever you're doing on the Dashboard.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="window" id="s1">
+    <div class="tbar"><span class="closebox"></span><span class="title">1 · Why the gap exists</span><span class="zoom"></span></div>
+    <div class="wbody">
+      <p style="margin:0;color:var(--mut)">The dock is two tmux panes side by side — the Dashboard and a "working client" that is itself a tmux client attached to a separate server holding the repo Sessions. Enter and alt+g each move a different half of "being in a Session":</p>
+      <div class="dims">
+        <div class="dim t1"><div class="h">What the working client shows</div><code>switch-client</code> on the <b>Sessions server</b>. This is what <code>Jump</code> and <code>Open</code> already do — pressing Enter today gets you this far.</div>
+        <div class="dim t2"><div class="h">Which dock pane has keyboard focus</div><code>select-pane</code> on the <b>dock server</b>. This is what alt+g does today, and what Enter has never touched.</div>
+      </div>
+      <p class="note">Two different tmux servers, two different calls — Enter needs to fire both.</p>
+    </div>
+  </div>
+
+  <div class="window" id="s2">
+    <div class="tbar"><span class="closebox"></span><span class="title">2 · The new pieces</span><span class="zoom"></span></div>
+    <div class="wbody">
+      <p style="margin:0 0 4px;color:var(--mut)"><b style="color:var(--ink)">topology.Harness.Focus</b> — new file <code>internal/topology/focus.go</code>, alongside <code>jump.go</code> and <code>open.go</code>'s one-action-per-file shape. Targets <code>=dock:0.1</code>, the same pane id <code>ensureDock</code> already selects when the dock is first built.</p>
+      <div class="codeblock">// Focus moves keyboard focus in the dock to the working client's pane — the
+// same move alt+g makes, given automatically once a jump or an open has
+// already put something new in front of you.
+<span class="kw">func</span> (h Harness) Focus() <span class="tp">error</span> {
+	<span class="kw">return</span> h.dock().run(<span class="c">"select-pane"</span>, <span class="c">"-t"</span>, <span class="c">"="</span>+DockSession+<span class="c">":0.1"</span>)
+}</div>
+      <p style="margin:18px 0 4px;color:var(--mut)"><b style="color:var(--ink)">dashboard.Focuser</b> — sibling interface to <code>Jumper</code> and <code>Opener</code>, added as a field on <code>dashboard.Harness</code> (same "any of them may be absent" contract). Wired in <code>cmd/ganymede/main.go</code> as <code>Focuser: harness</code> — <code>topology.Harness</code> satisfies it structurally, same as it already does for <code>Jumper</code>/<code>Opener</code>.</p>
+      <div class="codeblock"><span class="c">// Focuser moves keyboard focus to the working client's pane — the dock's own</span>
+<span class="c">// alt+g, given automatically once Enter has already put something in front</span>
+<span class="c">// of you.</span>
+<span class="kw">type</span> Focuser <span class="kw">interface</span> {
+	Focus() <span class="tp">error</span>
+}</div>
+    </div>
+  </div>
+
+  <div class="window" id="s3">
+    <div class="tbar"><span class="closebox"></span><span class="title">3 · Which Enter paths get it</span><span class="zoom"></span></div>
+    <table>
+      <thead><tr><th>Path</th><th>Trigger</th><th>Calls Focus?</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td class="opt">jump() → jumpTo</td><td>Enter on a Session row</td>
+          <td><span class="tag t-low">Yes</span></td><td>Direct, synchronous Enter gesture.</td></tr>
+        <tr><td class="opt">goTo (Dashboard)</td><td>Enter on a repo row, no live Session yet</td>
+          <td><span class="tag t-low">Yes</span></td><td>Direct gesture; goTo calls Focus unconditionally after a successful Open.</td></tr>
+        <tr><td class="opt">goTo (picker)</td><td>Enter in the repo picker</td>
+          <td><span class="tag t-low">Yes</span></td><td>Same goTo, same direct gesture — free with no extra wiring.</td></tr>
+        <tr><td class="opt">answered mismatch → jumpTo</td><td>Guard could not verify an approve/deny</td>
+          <td><span class="tag t-high">No</span></td><td>Async background event — may land mid-keystroke on something unrelated.</td></tr>
+        <tr><td class="opt">focusPane (sent / Takeover / Stop)</td><td>Guard fallbacks that show a pane without marking it seen</td>
+          <td><span class="tag t-high">No</span></td><td>Unchanged — same reasoning that already keeps these from touching Seen.</td></tr>
+      </tbody>
+    </table>
+    <div class="wbody" style="padding-top:16px">
+      <p style="margin:0 0 8px;color:var(--mut)"><code>jumpTo</code> is shared between the first and fourth rows, so it gains a <code>moveFocus bool</code> parameter rather than duplicating the Jump logic:</p>
+      <div class="flow">
+        <span class="step">jump()</span><span class="arrow">→</span><span class="step new">jumpTo(s, true)</span><span class="arrow">→</span><span class="step new">Focus()</span>
+      </div>
+      <div class="flow">
+        <span class="step">answered mismatch</span><span class="arrow">→</span><span class="step">jumpTo(s, false)</span><span class="arrow">→</span><span class="step no">— skipped —</span>
+      </div>
+      <p class="note">Focus errors are ignored (<code>_ = ...Focus()</code>) — same best-effort treatment as focusPane's own Jump call and popup sweeping elsewhere in this codebase. Nothing actionable to tell the user, and a failed focus-move must not overwrite a successful Jump/Open's own notice.</p>
+    </div>
+  </div>
+
+  <div class="window" id="s4">
+    <div class="tbar"><span class="closebox"></span><span class="title">4 · Testing</span><span class="zoom"></span></div>
+    <div class="wbody">
+      <p style="margin:0 0 10px;color:var(--mut)">A <code>focuses</code> fake (<code>Focus() error</code>, recording calls, settable error) mirrors the existing <code>jumps</code> and <code>opens</code> fakes already in <code>dashboard_test.go</code>.</p>
+      <ul class="qlist">
+        <li><span class="qnum">1</span><b>Session row Enter</b> calls Jump then Focus.</li>
+        <li><span class="qnum">2</span><b>Repo row Enter and picker Enter</b> call Open then Focus.</li>
+        <li><span class="qnum">3</span><b>answered-mismatch fallback</b> calls Jump (via jumpTo) but not Focus.</li>
+        <li><span class="qnum">4</span><b>focusPane's callers</b> (sent mismatch, Takeover's endFailed, Stop's fallback) call Jump but not Focus — unchanged from today.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="window" id="s5">
+    <div class="tbar"><span class="closebox"></span><span class="title">5 · Asked &amp; answered</span><span class="zoom"></span></div>
+    <div class="wbody">
+      <div class="qa-item">
+        <div class="qa-q">Should Enter auto-focus the working client for repo rows and the picker too, or only for Session rows as originally described?</div>
+        <div class="qa-a"><b>Both.</b> Repo rows (goTo/Open) and the picker's Enter get Focus too, for consistency with Session rows — Enter should always finish the job it starts, everywhere it's offered.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span>source: <b>2026-08-10-dashboard-enter-focus-design.md</b></span>
+    <span>branch: <b>feat/enter-focuses-working-client</b></span>
+    <span class="right">edit the markdown &amp; regenerate — do not hand-edit</span>
+  </div>
+
+</main>
+
+<nav class="toc" aria-label="Contents">
+  <div class="window">
+    <div class="tbar"><span class="closebox"></span><span class="title">Contents</span><span class="zoom"></span></div>
+    <ol>
+      <li><a href="#s1" class="active">Why the gap</a></li>
+      <li><a href="#s2">New pieces</a></li>
+      <li><a href="#s3">Enter paths</a></li>
+      <li><a href="#s4">Testing</a></li>
+      <li><a href="#s5">Asked &amp; answered</a></li>
+    </ol>
+  </div>
+</nav>
+</div>
+
+<script>
+  (function(){
+    var links=[].slice.call(document.querySelectorAll('.toc a'));
+    if(!links.length||!('IntersectionObserver' in window))return;
+    var map={};links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a});
+    var obs=new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if(e.isIntersecting&&map[e.target.id]){
+          links.forEach(function(a){a.classList.remove('active')});
+          map[e.target.id].classList.add('active');
+        }
+      });
+    },{rootMargin:'-8% 0px -70% 0px'});
+    document.querySelectorAll('.doc [id]').forEach(function(el){obs.observe(el)});
+  })();
+</script>
+</body>
+</html>
