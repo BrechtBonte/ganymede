@@ -33,3 +33,6 @@ go.work.sum
 
 # Build output
 /bin/
+
+# Superpowers scratch workspace (ledgers, briefs, review packages)
+/.superpowers/
