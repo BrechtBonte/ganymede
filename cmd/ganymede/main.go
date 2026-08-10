@@ -204,7 +204,7 @@ func runDashboard() error {
 	// that client's status line.
 	hands := dashboard.Harness{
 		Jumper: harness, Opener: harness, Strip: harness, Spawner: harness, Popups: harness, Approver: harness,
-		Seen: model.Seen, Tickets: tickets,
+		Prompter: harness, Seen: model.Seen, Tickets: tickets,
 	}
 	// Where the harness looks for repos, and what it remembers about the ones
 	// it has been in. Neither is worth holding the Dashboard up over: a picker
