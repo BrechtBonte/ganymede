@@ -377,3 +377,139 @@ func TestRepoHeaderLeavesAMainRootWithOnlyAWorktreeSessionFree(t *testing.T) {
 		t.Errorf("header = %q, want the mark of a free root", line)
 	}
 }
+
+// A root you have reserved and nobody is holding shows the Claimed mark,
+// whatever else is or is not running in the repo.
+func TestRepoHeaderMarksAClaimedRootWithItsGlyph(t *testing.T) {
+	root := mainRoot(t, "billing")
+	fake := &claims{}
+	if err := fake.Claim(root, "reviewing PR #4123"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	model := dashboardOn(dashboard.Harness{Jumper: &jumps{}, Claimer: fake})
+
+	if line := headerOf(t, model, root); !strings.Contains(line, repo.Claimed.Glyph()) {
+		t.Errorf("header = %q, want the mark of a claimed root", line)
+	}
+}
+
+// A repo with nothing running in it stays on the rail while its root is
+// Claimed — that is the whole point of reserving it ahead of a review that
+// has not started yet.
+func TestAClaimedRootWithNoSessionsStaysOnTheRail(t *testing.T) {
+	root := mainRoot(t, "billing")
+	fake := &claims{}
+	if err := fake.Claim(root, ""); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	model := dashboardOn(dashboard.Harness{Jumper: &jumps{}, Claimer: fake})
+
+	if _, ok := lineWith(tree(model), "billing"); !ok {
+		t.Errorf("no header row for the Claimed repo:\n%s", tree(model))
+	}
+}
+
+// A live occupant always outranks a Claim: the root's row must never say
+// Claimed — implying it is safe to check a PR out in — while an agent is
+// actually sitting in it.
+func TestALiveOccupantOutranksAClaimOnTheHeaderRow(t *testing.T) {
+	root := mainRoot(t, "billing")
+	fake := &claims{}
+	if err := fake.Claim(root, "reviewing PR #4123"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	model := dashboardOn(dashboard.Harness{Jumper: &jumps{}, Claimer: fake}, live("billing-a1", root, session.Idle))
+
+	if line := headerOf(t, model, root); !strings.Contains(line, repo.InUse.Glyph()) {
+		t.Errorf("header = %q, want the mark of a root in use by an agent even though it is Claimed", line)
+	}
+}
+
+// The detail box names the note a Claim was made with — the row has no room
+// for it.
+func TestSelectedBoxNamesTheClaimNote(t *testing.T) {
+	root := mainRoot(t, "billing")
+	fake := &claims{}
+	if err := fake.Claim(root, "reviewing PR #4123"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	box := detail(dashboardOn(dashboard.Harness{Jumper: &jumps{}, Claimer: fake}))
+
+	if !strings.Contains(box, "reviewing PR #4123") {
+		t.Errorf("SELECTED = %q, want the note the root was claimed with", box)
+	}
+}
+
+// railOn is a Dashboard sized for the sidepanel, wired to harness and shown
+// the working set on sessions, with whatever it asked to have read off git
+// read and handed back to it — rail's own reach, but over a harness the
+// caller has already put something else on (a Claimer, an Activity).
+func railOn(t *testing.T, harness dashboard.Harness, sessions ...session.Session) tea.Model {
+	t.Helper()
+	if harness.Jumper == nil {
+		harness.Jumper = &jumps{}
+	}
+	var model tea.Model = dashboard.New(nil, harness)
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	model, cmd := model.Update(dashboard.Sessions(sessions))
+	return cautioned(t, model, cmd)
+}
+
+// A Claimed root back on its default branch with nothing uncommitted in it
+// is exactly what a review being wrapped up looks like — the Dashboard
+// nudges you to let it go rather than leaving it reserved forever by
+// accident.
+func TestReleaseNudgeAppearsWhenAClaimedRootIsCleanOnDefault(t *testing.T) {
+	root := mainRoot(t, "billing")
+	fake := &claims{}
+	if err := fake.Claim(root, "reviewing PR #4123"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	box := detail(railOn(t, dashboard.Harness{Claimer: fake}))
+
+	if !strings.Contains(box, "release?") {
+		t.Errorf("SELECTED = %q, want the release nudge for a clean root on its default branch", box)
+	}
+}
+
+// Before git has actually been asked about a Claimed root — the very first
+// frame after it arrives, restart included — the release nudge must not
+// fire: an unasked root and a clean one both carry the zero Caution, and
+// only the first of those is a guess.
+func TestNoReleaseNudgeBeforeGitHasBeenAskedAboutTheRoot(t *testing.T) {
+	fake := &claims{}
+	if err := fake.Claim("/repos/billing", "reviewing PR #4123"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	// dashboardOn never runs the caution-read round trip rail/railOn do, so
+	// the root's caution is exactly as unasked as it is on the first frame.
+	box := detail(dashboardOn(dashboard.Harness{Jumper: &jumps{}, Claimer: fake}))
+
+	if strings.Contains(box, "release?") {
+		t.Errorf("SELECTED = %q, want no release nudge before the caution has actually been read", box)
+	}
+}
+
+// A Claimed root still off its default branch, or still dirty, gets no
+// release nudge — the caution already says why letting go of it now would
+// be premature.
+func TestReleaseNudgeDoesNotAppearWhileTheRootCarriesACaution(t *testing.T) {
+	root := mainRoot(t, "billing")
+	strayed(t, root, "toolbar")
+	fake := &claims{}
+	if err := fake.Claim(root, "reviewing PR #4123"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	box := detail(railOn(t, dashboard.Harness{Claimer: fake}))
+
+	if strings.Contains(box, "release?") {
+		t.Errorf("SELECTED = %q, want no release nudge while the root carries a caution", box)
+	}
+}

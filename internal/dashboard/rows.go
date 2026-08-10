@@ -23,16 +23,34 @@ type row struct {
 	ticket ticket.Key
 	// state is what the Main root is doing, on a repo's header row.
 	state repo.State
+	// claimNote is the note the root was claimed with, on a repo's header row
+	// whose state is Claimed — empty otherwise (including the collision
+	// state.go documents, where a live occupant outranks an underlying
+	// Claim: the state reads InUse, and this stays empty with it), and empty
+	// for a Claim made with none.
+	claimNote string
 	// caution is what the Main root's own checkout is carrying, on a repo's
 	// header row. It is drawn there whatever state the root is in: the two
 	// answer different questions, and both of them are asked before a PR is
 	// checked out.
 	caution repo.Caution
+	// cautionKnown says git has actually been asked about this root at
+	// least once — as against a root nothing has asked about yet, which
+	// reads as the same zero Caution a genuinely clean root does. The
+	// release nudge (dashboard.go) reads this rather than caution alone, so
+	// a root's git status still in flight never gets called clean by
+	// default.
+	cautionKnown bool
 	// popup is what the row's own hidden Popup shell is doing, keyed by the
 	// same directory a popup opened over this row would open in: a Session's
 	// own on a Session row, the Main root on a repo's header row. A busy one
 	// is what earns the row its marker (§8).
 	popup popup.Status
+	// holdsRoot says a Session row's own Session is the one actually holding
+	// its repo's Main root as its checkout — as against every Session merely
+	// grouped under the repo, a Worktree session included. It is what a
+	// Takeover reads to find the root's sole occupant (claim.go).
+	holdsRoot bool
 }
 
 // answers is what laying the tree out has to ask about a directory or a root.
@@ -48,10 +66,14 @@ type answers struct {
 	checkout func(dir string) string
 	// ticket is what a Session's checkout is about.
 	ticket func(dir, root string) ticket.Key
-	// caution is what a Main root's checkout is carrying.
-	caution func(root string) repo.Caution
+	// caution is what a Main root's checkout is carrying, and whether git
+	// has actually been asked yet.
+	caution func(root string) (repo.Caution, bool)
 	// popup is what a directory's hidden Popup shell is doing.
 	popup func(dir string) popup.Status
+	// claimed is the note a Main root was claimed with, and whether it is
+	// claimed at all.
+	claimed func(root string) (string, bool)
 }
 
 // label is what the row is called.
@@ -116,27 +138,44 @@ func rowsOf(sessions []session.Session, working []string, ask answers) []row {
 
 	rows := make([]row, 0, len(sessions)+len(roots))
 	for _, root := range roots {
-		rows = append(rows, row{root: root, state: stateOf(root, byRoot[root], ask), caution: ask.caution(root), popup: ask.popup(root)})
+		note, claimed := ask.claimed(root)
+		state := stateOf(root, byRoot[root], ask, claimed)
+		if state != repo.Claimed {
+			// A live occupant outranks a Claim on the state a row draws
+			// (state.go): the note underneath stays with the harness, and
+			// never rides along on a row whose own state says it is not
+			// Claimed.
+			note = ""
+		}
+		caution, cautionKnown := ask.caution(root)
+		rows = append(rows, row{
+			root: root, state: state, claimNote: note,
+			caution: caution, cautionKnown: cautionKnown, popup: ask.popup(root),
+		})
 		for i := range byRoot[root] {
 			running := &byRoot[root][i]
-			rows = append(rows, row{root: root, session: running, ticket: ask.ticket(running.Dir, root), popup: ask.popup(running.Dir)})
+			rows = append(rows, row{
+				root: root, session: running, ticket: ask.ticket(running.Dir, root), popup: ask.popup(running.Dir),
+				holdsRoot: ask.checkout(running.Dir) == root,
+			})
 		}
 	}
 	return rows
 }
 
-// stateOf is what the Main root root is doing, given the Sessions grouped under
-// it. They are the live ones by construction — what the registry, the hooks and
-// the cross-check between them say is running — so whether any of them is
-// holding the root is the whole question. A repo on the rail with nothing
-// running in it is Free, which is what a repo you were working in yesterday
-// should say.
-func stateOf(root string, group []session.Session, ask answers) repo.State {
+// stateOf is what the Main root root is doing, given the Sessions grouped
+// under it and whether you have claimed it. The Sessions are the live ones by
+// construction — what the registry, the hooks and the cross-check between
+// them say is running — so whether any of them is holding the root is the
+// first question. A repo on the rail with nothing running in it and no Claim
+// on it is Free, which is what a repo you were working in yesterday should
+// say.
+func stateOf(root string, group []session.Session, ask answers, claimed bool) repo.State {
 	working := make([]string, 0, len(group))
 	for _, s := range group {
 		working = append(working, ask.checkout(s.Dir))
 	}
-	return repo.StateOf(root, working)
+	return repo.StateOf(root, working, claimed)
 }
 
 // louder orders two repos by what each is asking of you: a repo is as urgent
