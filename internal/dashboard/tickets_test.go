@@ -99,10 +99,14 @@ func TestSessionWithNoTicketSaysSoOnItsRow(t *testing.T) {
 
 // The box under the rail is where a row says what it had no room for, and the
 // ticket comes with something you can do about it.
+//
+// Shell, on purpose: t and o apply to every Session row regardless of state,
+// and Shell is the one state with no inline action hint of its own to
+// compete with them for the line's fixed width (§7.1: Shell gets none).
 func TestSelectedBoxShowsTheTicketAndOffersToOpenIt(t *testing.T) {
 	model := knowing(
 		&known{of: map[string]ticket.Key{"/repos/service-billing": "FIRE-2841"}},
-		live("max-paging-numbers", "/repos/service-billing", session.Working),
+		live("max-paging-numbers", "/repos/service-billing", session.Shell),
 	)
 	// Past the repo header, onto the Session.
 	model = press(model, tea.KeyDown)
@@ -116,6 +120,27 @@ func TestSelectedBoxShowsTheTicketAndOffersToOpenIt(t *testing.T) {
 	}
 	if !strings.Contains(box, "t ticket") {
 		t.Errorf("SELECTED = %q, want it to offer to set the ticket", box)
+	}
+}
+
+// A row with more offered keys than the SELECTED box has columns for drops
+// them whole off the tail rather than cutting the line off mid-word: a
+// Working row with a ticket already spends its width on jump, queue and
+// interrupt, so the ticket's own keys — the last two, and the least urgent —
+// are the ones left off entirely, never a "t ticke" left hanging.
+func TestSelectedBoxDropsTicketHintsWholeRatherThanMidWordWhenThereIsNoRoom(t *testing.T) {
+	model := knowing(
+		&known{of: map[string]ticket.Key{"/repos/service-billing": "FIRE-2841"}},
+		live("max-paging-numbers", "/repos/service-billing", session.Working),
+	)
+	model = press(model, tea.KeyDown)
+
+	box := detail(model)
+	lines := strings.Split(box, "\n")
+	hints := lines[len(lines)-1]
+
+	if want := "⏎ jump · p queue · x interrupt"; hints != want {
+		t.Errorf("hints = %q, want %q (ticket hints dropped whole, not cut mid-word)", hints, want)
 	}
 }
 

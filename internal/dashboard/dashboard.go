@@ -157,6 +157,10 @@ type Harness struct {
 	// Prompter delivers a prompt into a Session's own input box, on an Idle,
 	// Ready or Working row (§7.3).
 	Prompter Prompter
+	// Stopper interrupts a Working Session's turn with a bare guarded Esc,
+	// and ends an Idle or Ready one gracefully once its own confirmation has
+	// been answered (§7.3).
+	Stopper Stopper
 }
 
 // Model is the Dashboard's bubbletea model.
@@ -218,6 +222,8 @@ type Model struct {
 	spawning *spawning
 	// prompting is the prompt-from-dashboard input, and nil when none is open.
 	prompting *prompting
+	// ending is the end-session confirmation, and nil when none is open.
+	ending *ending
 	// pending is which Sessions, by pid, have a guarded answer in flight —
 	// sent off the main loop and not yet back — so a second y or n on the
 	// same row before the first lands cannot fire a second send at the pane
@@ -361,6 +367,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.harness.Seen(msg.id)
 		}
 		return m, nil
+	case interrupted:
+		return m.stopped(msg.pid, msg.err)
+	case ended:
+		return m.stopped(msg.pid, msg.err)
 	case tea.KeyMsg:
 		return m.pressed(msg)
 	}
@@ -731,6 +741,8 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.spawningKey(msg), nil
 	case m.prompting != nil:
 		return m.promptKey(msg)
+	case m.ending != nil:
+		return m.endingKey(msg)
 	case m.setting != nil:
 		return m.typed(msg), nil
 	case m.picker.open:
@@ -775,6 +787,10 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.approve()
 		case "n":
 			return m.deny()
+		case "x":
+			return m.interrupt()
+		case "q":
+			m = m.startEnd()
 		}
 	}
 	return m.noting(), nil
@@ -1261,6 +1277,9 @@ func (m Model) selected() []string {
 	if m.prompting != nil {
 		return m.promptingView()
 	}
+	if m.ending != nil {
+		return m.endingView()
+	}
 	if m.setting != nil {
 		// The box is the input for as long as one is open. It says what is
 		// being corrected rather than what is selected, because the two come
@@ -1321,7 +1340,7 @@ func (m Model) selected() []string {
 	}
 	return append(lines,
 		quietStyle.Render(shorten(r.session.Dir, m.width)),
-		quietStyle.Render(truncate(offering(r), m.width)),
+		quietStyle.Render(offering(r, m.width)),
 	)
 }
 
@@ -1348,26 +1367,46 @@ func (m Model) carrying(c repo.Caution) []string {
 	return lines
 }
 
-// offering is what the selected row can be asked to do. A Session about no
-// ticket is not offered a link to open, since there is none — but it is always
-// offered the key that gives it one. Approve and deny only ever apply to a
-// Session that cannot continue without you (§7.3) — anything else has
-// nothing on this row to say yes or no to.
-func offering(r row) string {
+// offering is what the selected row can be asked to do, in the order it
+// matters most: the jump every row offers, then the row's own guarded
+// actions, then the ticket's — greedily filling width with whole keys and no
+// more. A Session about no ticket is not offered a link to open, since there
+// is none — but it is always offered the key that gives it one. Approve and
+// deny only ever apply to a Session that cannot continue without you (§7.3)
+// — anything else has nothing on this row to say yes or no to.
+//
+// A row with more keys than width has room for drops them whole off the
+// tail rather than cutting the line off mid-word: "t ticke" left hanging
+// reads as a Dashboard that has glitched, not one that ran out of room on
+// purpose — and the keys that matter most (jump, the row's own action) are
+// the ones offered first, so they are the last to give way.
+func offering(r row, width int) string {
 	keys := []string{"⏎ jump"}
 	switch r.session.State {
 	case session.Blocked:
 		keys = append(keys, "y approve", "n deny")
 	case session.Idle, session.Ready:
-		keys = append(keys, "p prompt")
+		keys = append(keys, "p prompt", "q end")
 	case session.Working:
-		keys = append(keys, "p queue")
+		keys = append(keys, "p queue", "x interrupt")
 	}
 	keys = append(keys, "t ticket")
 	if r.ticket != "" {
 		keys = append(keys, "o open")
 	}
-	return strings.Join(keys, " · ")
+
+	var line string
+	for _, key := range keys {
+		next := key
+		if line != "" {
+			next = line + " · " + key
+		}
+		if lipgloss.Width(next) > width {
+			break
+		}
+		line = next
+	}
+	return line
 }
 
 // spread puts left at one end of a line width columns wide and right at the

@@ -104,7 +104,30 @@ func (h Harness) Send(pid int, text string) error {
 // input box has been resolved — shared with InterruptAndSend, which resolves
 // and clears that box itself rather than paying locate's process-table walk
 // a second time over.
+//
+// Its own postcondition — the box goes back to empty — only holds for a
+// prompt Claude Code keeps running to act on: Working reads with the same
+// empty box Idle and Ready do (prompt.go's own note), so a submit that
+// started a turn looks identical to one sitting there unsent. End does not
+// share this: /exit's own postcondition is the marker leaving for good
+// (stop.go's exited), not reappearing, so it pastes and submits through
+// pasted rather than calling sendInto.
 func (h Harness) sendInto(target, text string) error {
+	if err := h.pasted(target, text); err != nil {
+		return err
+	}
+	if !h.settledOn(target, "") {
+		return fmt.Errorf("pane %s still shows the prompt after Enter was sent", target)
+	}
+	return nil
+}
+
+// pasted lands text in target's own input box and submits it, verifying only
+// that the paste itself landed before Enter goes out — the half of a guarded
+// send every submit shares, whatever its own postcondition for "it worked"
+// turns out to be once Enter has gone out (sendInto's own empty box, or
+// End's exited).
+func (h Harness) pasted(target, text string) error {
 	// A named buffer of its own, deleted the moment paste-buffer is done with
 	// it: tmux's unnamed set-buffer/paste-buffer pair is one global slot per
 	// server, and every Session's guarded send shares the same server
@@ -126,9 +149,6 @@ func (h Harness) sendInto(target, text string) error {
 	if err := h.sessions().run("send-keys", "-t", target, "Enter"); err != nil {
 		return fmt.Errorf("submit the prompt: %w", err)
 	}
-	if !h.settledOn(target, "") {
-		return fmt.Errorf("pane %s still shows the prompt after Enter was sent", target)
-	}
 	return nil
 }
 
@@ -142,16 +162,9 @@ func (h Harness) sendInto(target, text string) error {
 // prompt sitting in the box, verified against the real CLI, which Ctrl+U
 // clears before the send itself ever reaches that pane.
 func (h Harness) InterruptAndSend(pid int, text string) error {
-	target, err := h.located(pid, "interrupt")
+	target, err := h.escaped(pid)
 	if err != nil {
 		return err
-	}
-
-	if err := h.sessions().run("send-keys", "-t", target, "Escape"); err != nil {
-		return fmt.Errorf("interrupt the Session's turn: %w", err)
-	}
-	if !h.interrupted(target) {
-		return fmt.Errorf("pane %s still shows an empty input box after Escape was sent", target)
 	}
 
 	if err := h.sessions().run("send-keys", "-t", target, "C-u"); err != nil {
@@ -161,6 +174,26 @@ func (h Harness) InterruptAndSend(pid int, text string) error {
 		return fmt.Errorf("pane %s still shows the interrupted prompt after it was cleared", target)
 	}
 	return h.sendInto(target, text)
+}
+
+// escaped sends Escape into the Session running as pid's own input box and
+// verifies the turn it interrupted actually stopped — the guarded interrupt
+// every caller shares: Interrupt's own whole job (stop.go), and
+// InterruptAndSend's own interrupt half before it clears the box and sends
+// on. It returns the resolved pane so a caller with more to do after the
+// interrupt need not pay locate's process-table walk a second time over.
+func (h Harness) escaped(pid int) (string, error) {
+	target, err := h.located(pid, "interrupt")
+	if err != nil {
+		return "", err
+	}
+	if err := h.sessions().run("send-keys", "-t", target, "Escape"); err != nil {
+		return "", fmt.Errorf("interrupt the Session's turn: %w", err)
+	}
+	if !h.interrupted(target) {
+		return "", fmt.Errorf("pane %s still shows an empty input box after Escape was sent", target)
+	}
+	return target, nil
 }
 
 // interrupted polls the pane until it no longer shows the empty input box
