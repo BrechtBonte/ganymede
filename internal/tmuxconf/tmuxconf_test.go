@@ -233,11 +233,23 @@ func recorder(t *testing.T) (command, record string) {
 	}
 	command = filepath.Join(dir, "gan ymede")
 	record = filepath.Join(dir, "seen.txt")
-	body := "#!/bin/sh\nprintf '%s ' \"$@\" >> \"" + record + "\"\n"
+	// record is written inside the recorder script's own double quotes, so it
+	// needs the same four characters escaped that any double-quoted shell
+	// string does — and hostile carries three of them, including a lone
+	// backtick that would otherwise open a command substitution the script
+	// never closes.
+	body := "#!/bin/sh\nprintf '%s ' \"$@\" >> \"" + dquote(record) + "\"\n"
 	if err := os.WriteFile(command, []byte(body), 0o755); err != nil {
 		t.Fatalf("write the recorder: %v", err)
 	}
 	return command, record
+}
+
+// dquote escapes s for use inside a double-quoted POSIX shell string: a
+// backslash before each of the characters double quotes still leave special.
+func dquote(s string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`")
+	return replacer.Replace(s)
 }
 
 // installedWithRecorder installs a fragment whose harness is the recorder.
@@ -319,7 +331,11 @@ func TestTheStripShowsWhatTheDashboardHasWrittenAndNothingBefore(t *testing.T) {
 func TestFocusLandingOnAPaneRunsTheHarnessForIt(t *testing.T) {
 	layout, record := installedWithRecorder(t)
 	tmux := tmuxWithConf(t, layout.UserConf)
-	pane := tmux("display-message", "-p", "-t", "=probe", "#{pane_pid}")
+	// The window.pane suffix matters: a bare session target leaves
+	// display-message with no pane to read #{pane_pid} off, and prints
+	// nothing rather than failing — which would make this check pass
+	// whatever the recorder actually received.
+	pane := tmux("display-message", "-p", "-t", "=probe:0.0", "#{pane_pid}")
 
 	// A client with a pty of its own, the way the dock attaches to a Session.
 	// Only an attached client has a focus to land anywhere.
