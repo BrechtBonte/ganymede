@@ -13,13 +13,6 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/config"
 )
 
-// The markers delimit the harness's block in the user's tmux.conf, so a
-// re-install can replace it in place rather than append a second copy.
-const (
-	beginMarker = "# >>> ganymede >>>"
-	endMarker   = "# <<< ganymede <<<"
-)
-
 // Layout locates the files Install touches, and names the harness itself.
 type Layout struct {
 	// Fragment is the harness-owned config file holding the settings.
@@ -193,56 +186,8 @@ func Install(l Layout) error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read %s: %w", l.UserConf, err)
 	}
-	if err := config.Replace(l.UserConf, []byte(withBlock(string(existing), l.Fragment))); err != nil {
-		return err
-	}
-	return nil
-}
-
-// withBlock returns conf carrying exactly one harness block: the existing one
-// rewritten where it stands if conf already has it, appended otherwise.
-//
-// It works a line at a time and never drops a line it cannot account for. A
-// block whose end marker has gone missing is repaired by replacing the opening
-// marker alone — everything below it is the user's, however it got there.
-func withBlock(conf, fragment string) string {
-	block := []string{beginMarker, fmt.Sprintf("source-file -q %q", fragment), endMarker}
-
-	lines := strings.Split(conf, "\n")
-	trailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
-	if trailingNewline {
-		lines = lines[:len(lines)-1]
-	}
-
-	begin := indexOfLine(lines, beginMarker, 0)
-	if begin < 0 {
-		return join(append(lines, block...))
-	}
-
-	end := indexOfLine(lines, endMarker, begin+1)
-	if end < 0 {
-		end = begin
-	}
-	kept := append(append(append([]string{}, lines[:begin]...), block...), lines[end+1:]...)
-	return join(kept)
-}
-
-// indexOfLine finds the first line at or after start whose content is marker,
-// ignoring the whitespace an editor may have left around it.
-func indexOfLine(lines []string, marker string, start int) int {
-	for i := start; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == marker {
-			return i
-		}
-	}
-	return -1
-}
-
-func join(lines []string) string {
-	if len(lines) == 0 {
-		return ""
-	}
-	return strings.Join(lines, "\n") + "\n"
+	body := config.WithBlock(string(existing), []string{fmt.Sprintf("source-file -q %q", l.Fragment)})
+	return config.Replace(l.UserConf, []byte(body))
 }
 
 // dockBody configures the dock server. The dock is only a frame: it holds the
