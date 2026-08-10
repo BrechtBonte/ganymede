@@ -26,6 +26,18 @@ func (j *jumps) Jump(pid int) error {
 	return j.err
 }
 
+// focuses records every time the Dashboard moved keyboard focus into the
+// working client, standing in for the dock's own select-pane.
+type focuses struct {
+	n   int
+	err error
+}
+
+func (f *focuses) Focus() error {
+	f.n++
+	return f.err
+}
+
 // sidepanel is a Dashboard sized for the sidepanel, showing sessions.
 func sidepanel(jumper dashboard.Jumper, sessions ...session.Session) tea.Model {
 	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper})
@@ -312,6 +324,41 @@ func TestEnterJumpsToTheSelectedSession(t *testing.T) {
 
 	if len(jumper.pids) != 1 || jumper.pids[0] != only.PID {
 		t.Errorf("jumped to %v, want the selected Session's process %d", jumper.pids, only.PID)
+	}
+}
+
+// Enter takes you all the way in: once the working client is pointed at the
+// Session, the keyboard follows it there — no separate alt+g.
+func TestEnterOnASessionRowFocusesTheWorkingClient(t *testing.T) {
+	jumper := &jumps{}
+	focuser := &focuses{}
+	only := live("ganymede-78", "/repos/ganymede", session.Idle)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper, Focuser: focuser})
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	model, _ = model.Update(dashboard.Sessions{only})
+
+	model = press(model, tea.KeyDown)
+	model = press(model, tea.KeyEnter)
+
+	if focuser.n != 1 {
+		t.Errorf("Focus called %d times, want exactly one after Enter on a Session row", focuser.n)
+	}
+}
+
+// Enter on a repo row with nothing running yet makes the same promise: once
+// Open has brought the repo's Session up, the keyboard follows it there too.
+func TestEnterOnARepoRowFocusesTheWorkingClient(t *testing.T) {
+	opener := &opens{}
+	focuser := &focuses{}
+	model := onARepo(t, dashboard.Harness{Opener: opener, Focuser: focuser}, "/repos/service-billing")
+
+	model = press(model, tea.KeyEnter)
+
+	if len(opener.dirs) != 1 || opener.dirs[0] != "/repos/service-billing" {
+		t.Fatalf("opened %v, want /repos/service-billing", opener.dirs)
+	}
+	if focuser.n != 1 {
+		t.Errorf("Focus called %d times, want exactly one after Enter on a repo row", focuser.n)
 	}
 }
 

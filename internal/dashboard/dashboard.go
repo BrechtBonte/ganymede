@@ -74,6 +74,13 @@ type Opener interface {
 	Open(dir string) error
 }
 
+// Focuser moves keyboard focus to the working client's pane — the dock's own
+// alt+g, given automatically once Enter has already put something in front
+// of you.
+type Focuser interface {
+	Focus() error
+}
+
 // Inventory is every repo the harness can reach — the whole discovered
 // inventory, which is what the picker offers and the Dashboard deliberately
 // does not show.
@@ -153,6 +160,10 @@ type Harness struct {
 	// Jumper puts a Session in front of you, and Opener a repo.
 	Jumper Jumper
 	Opener Opener
+	// Focuser moves keyboard focus into the working client once Jumper or
+	// Opener has already put something new there — the alt+g Enter used to
+	// still leave you needing.
+	Focuser Focuser
 	// Strip carries the Attention counts to the working client's status line.
 	Strip Strip
 	// Seen reports a Session as looked at, which is what clears Ready.
@@ -372,7 +383,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// not go through has to say why, not just leave you looking at the
 			// pane wondering.
 			m.notice = msg.err.Error()
-			return m.jumpTo(msg.session), nil
+			return m.jumpTo(msg.session, false), nil
 		}
 		return m, nil
 	case sent:
@@ -966,7 +977,7 @@ func (m Model) jump() Model {
 	if selected.session == nil {
 		return m.goTo(selected.root)
 	}
-	return m.jumpTo(*selected.session)
+	return m.jumpTo(*selected.session, true)
 }
 
 // jumpTo puts s in front of you: the pane it is running in, and the moment
@@ -974,7 +985,11 @@ func (m Model) jump() Model {
 // out so the guard's asynchronous fallback (§7.2) can focus the exact
 // Session it tried to answer, by the Session itself rather than whichever
 // row the cursor has since moved to.
-func (m Model) jumpTo(s session.Session) Model {
+//
+// moveFocus is true only for the direct Enter gesture in jump(): the async
+// fallback shares this same call but must never steal keyboard focus from
+// whatever you're doing on the Dashboard when it fires.
+func (m Model) jumpTo(s session.Session, moveFocus bool) Model {
 	if m.harness.Jumper == nil {
 		return m
 	}
@@ -986,6 +1001,9 @@ func (m Model) jumpTo(s session.Session) Model {
 	}
 	if m.harness.Seen != nil {
 		m.harness.Seen(s.ID)
+	}
+	if moveFocus && m.harness.Focuser != nil {
+		_ = m.harness.Focuser.Focus()
 	}
 	return m
 }
@@ -1022,6 +1040,9 @@ func (m Model) goTo(root string) Model {
 		if err := m.harness.Activity.Touch(root, time.Now()); err != nil {
 			m.notice = err.Error()
 		}
+	}
+	if m.harness.Focuser != nil {
+		_ = m.harness.Focuser.Focus()
 	}
 	return m.rebuilt().selecting(root)
 }

@@ -189,6 +189,31 @@ func TestApproveTheGuardCouldNotVerifyFocusesThePane(t *testing.T) {
 	}
 }
 
+// jumpTo is shared with the direct Enter gesture, but the guard's own
+// mismatch fires from a background send with no idea what you're doing on
+// the Dashboard right now — it must show the pane without also stealing
+// your keyboard away from it.
+func TestApproveTheGuardCouldNotVerifyDoesNotMoveFocus(t *testing.T) {
+	approver := &approvals{err: errors.New("pane does not show the dialog it was reported waiting on")}
+	jumper := &jumps{}
+	focuser := &focuses{}
+	s := session.Session{PID: 4242, ID: "sess-1", Dir: "/repos/service-billing",
+		Name: "FIRE-2841-paging", State: session.Blocked, Reason: "permission: Bash", Since: epoch}
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper, Approver: approver, Focuser: focuser})
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	model, _ = model.Update(dashboard.Sessions{s})
+	model = press(model, tea.KeyDown)
+
+	model = answering(model, "y")
+
+	if len(jumper.pids) != 1 {
+		t.Fatalf("jumped to %v, want the guard's own mismatch to still focus the pane", jumper.pids)
+	}
+	if focuser.n != 0 {
+		t.Errorf("Focus called %d times, want the async fallback to leave keyboard focus alone", focuser.n)
+	}
+}
+
 // A second y or n on the same row before the first answer has come back must
 // not fire a second guarded send at a pane the first is still verifying.
 func TestASecondPressBeforeTheFirstAnswerLandsSendsOnlyOne(t *testing.T) {
