@@ -87,6 +87,24 @@ func TestInstalledConfigSetsFontAndTheme(t *testing.T) {
 	}
 }
 
+// On non-US keyboard layouts (e.g. Belgian AZERTY), Ghostty's default for
+// Option leaves it as a macOS Unicode compose key rather than Alt, so
+// Option+G types "©" instead of sending the M-g tmux's dock config binds at
+// the root table (tmuxconf.FocusKey). The harness must force Option to
+// behave as Alt regardless of layout.
+func TestInstalledConfigTreatsOptionAsAlt(t *testing.T) {
+	layout, home := layoutIn(t)
+
+	if err := ghostty.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	out := showConfig(t, home)
+	if !strings.Contains(out, "macos-option-as-alt = true") {
+		t.Errorf("config = %q, want macos-option-as-alt = true", out)
+	}
+}
+
 // Warp's one surviving muscle memory (§13): Cmd+F must land in tmux copy-mode
 // search rather than Ghostty's own scrollback search — its stock binding for
 // the same key.
