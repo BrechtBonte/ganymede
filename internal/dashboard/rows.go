@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BrechtBonte/ganymede/internal/popup"
 	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/ticket"
@@ -27,6 +28,11 @@ type row struct {
 	// answer different questions, and both of them are asked before a PR is
 	// checked out.
 	caution repo.Caution
+	// popup is what the row's own hidden Popup shell is doing, keyed by the
+	// same directory a popup opened over this row would open in: a Session's
+	// own on a Session row, the Main root on a repo's header row. A busy one
+	// is what earns the row its marker (§8).
+	popup popup.Status
 }
 
 // answers is what laying the tree out has to ask about a directory or a root.
@@ -44,6 +50,8 @@ type answers struct {
 	ticket func(dir, root string) ticket.Key
 	// caution is what a Main root's checkout is carrying.
 	caution func(root string) repo.Caution
+	// popup is what a directory's hidden Popup shell is doing.
+	popup func(dir string) popup.Status
 }
 
 // label is what the row is called.
@@ -108,10 +116,10 @@ func rowsOf(sessions []session.Session, working []string, ask answers) []row {
 
 	rows := make([]row, 0, len(sessions)+len(roots))
 	for _, root := range roots {
-		rows = append(rows, row{root: root, state: stateOf(root, byRoot[root], ask), caution: ask.caution(root)})
+		rows = append(rows, row{root: root, state: stateOf(root, byRoot[root], ask), caution: ask.caution(root), popup: ask.popup(root)})
 		for i := range byRoot[root] {
 			running := &byRoot[root][i]
-			rows = append(rows, row{root: root, session: running, ticket: ask.ticket(running.Dir, root)})
+			rows = append(rows, row{root: root, session: running, ticket: ask.ticket(running.Dir, root), popup: ask.popup(running.Dir)})
 		}
 	}
 	return rows
