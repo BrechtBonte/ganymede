@@ -36,6 +36,10 @@ type Model struct {
 	// raised carries the events the harness raises itself — a jump clearing
 	// Ready — down the same path as the ones Sessions report.
 	raised chan hooks.Event
+	// alerts is what the notifier watches (§9): Blocked and Ready decisions
+	// this model has already made the call on, so the notifier need only ask
+	// whether Ghostty is frontmost and build the banner.
+	alerts chan Alert
 	// marks is what the hooks have said, by session id. It is only ever
 	// touched from the watch's own goroutine.
 	marks map[string]mark
@@ -52,15 +56,69 @@ type mark struct {
 	// something says you have seen it. This is where Ready comes from.
 	finished time.Time
 	snippet  string
+	// escalated says the Ready cycle since finished has already raised its one
+	// Alert, so a repeated idle_prompt — or one arriving after Seen has
+	// already cleared finished — cannot raise a second.
+	escalated bool
 	// blocked is when the Session last said it cannot continue without you,
 	// and reason is why.
 	blocked time.Time
 	reason  string
 }
 
+// Alert is an Attention decision worth raising beyond the Dashboard (§9) —
+// what happened and to which Session, not the OS notification itself, which
+// is the notifier's to build once it has checked whether Ghostty is
+// frontmost.
+type Alert struct {
+	// Kind is what the Alert is about.
+	Kind AlertKind
+	// Session is Claude Code's own session id, the same join the hooks use.
+	Session string
+	// Reason is why a Blocked Session cannot continue; empty for a Ready one.
+	Reason string
+	// Snippet is what a Ready Session's turn ended on; empty for a Blocked
+	// one.
+	Snippet string
+	// At is when the model raised it.
+	At time.Time
+}
+
+// AlertKind is what an Alert reports.
+type AlertKind string
+
+const (
+	// AlertBlocked: a Session has gone Blocked. It is edge-triggered — raised
+	// once when the Session was not already Blocked, and not again for as
+	// long as it stands, which is what "no re-nagging" means on this side of
+	// the notifier.
+	AlertBlocked AlertKind = "Blocked"
+	// AlertReady: a Ready Session is still unseen when the first-party 60s
+	// idle_prompt signal arrives. Raised once per Ready cycle — a Session
+	// seen and left Ready again by a later turn can escalate again, but the
+	// same turn's idle_prompt (however many times it fires) cannot raise a
+	// second.
+	AlertReady AlertKind = "Ready"
+)
+
 // New returns a state model that has heard nothing yet.
 func New() *Model {
-	return &Model{raised: make(chan hooks.Event, raised), marks: map[string]mark{}}
+	return &Model{raised: make(chan hooks.Event, raised), alerts: make(chan Alert, raised), marks: map[string]mark{}}
+}
+
+// Alerts is what the notifier watches (§9). The channel is never closed: the
+// model has no end of its own to signal, and a notifier that stops reading
+// costs itself the Alerts and nothing this model keeps.
+func (m *Model) Alerts() <-chan Alert { return m.alerts }
+
+// emit hands an Alert to the notifier without ever blocking the goroutine that
+// runs the state model on one that is not reading. A dropped Alert here is a
+// notifier that is not keeping up, not a Dashboard that stops drawing over it.
+func (m *Model) emit(a Alert) {
+	select {
+	case m.alerts <- a:
+	default:
+	}
 }
 
 // Watch reports the working set — the registry's, corrected by the cross-check
@@ -165,11 +223,27 @@ func (m *Model) apply(event hooks.Event) {
 		delete(m.marks, event.Session)
 		return
 	case hooks.Finished:
-		held.finished, held.snippet = event.At, event.Snippet
+		held.finished, held.snippet, held.escalated = event.At, event.Snippet, false
 	case hooks.Prompted, hooks.Seen:
-		held.finished, held.snippet = time.Time{}, ""
+		held.finished, held.snippet, held.escalated = time.Time{}, "", false
 	case hooks.Blocked:
+		if held.blocked.IsZero() {
+			// Going Blocked, not staying there: a second permission request
+			// arriving while the first is still open is not a new decision to
+			// ping about, and Alerts style already keeps the first banner up
+			// (§9) — this is what "no re-nagging" means before it ever
+			// reaches the notifier.
+			m.emit(Alert{Kind: AlertBlocked, Session: event.Session, Reason: event.Reason, At: event.At})
+		}
 		held.blocked, held.reason = event.At, event.Reason
+	case hooks.Escalate:
+		// The first-party 60s idle_prompt signal says nothing about whether
+		// this Session is still unseen — only the harness's own seen-tracking
+		// does, which is exactly what finished being non-zero means.
+		if !held.finished.IsZero() && !held.escalated {
+			held.escalated = true
+			m.emit(Alert{Kind: AlertReady, Session: event.Session, Snippet: held.snippet, At: event.At})
+		}
 	default:
 		return
 	}
