@@ -13,13 +13,6 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/config"
 )
 
-// The markers delimit the harness's block in the user's tmux.conf, so a
-// re-install can replace it in place rather than append a second copy.
-const (
-	beginMarker = "# >>> ganymede >>>"
-	endMarker   = "# <<< ganymede <<<"
-)
-
 // Layout locates the files Install touches, and names the harness itself.
 type Layout struct {
 	// Fragment is the harness-owned config file holding the settings.
@@ -62,6 +55,25 @@ set -g extended-keys on
 const seenHook = `
 set -g @ganymede-seen "%s"
 set-hook -g pane-focus-in 'run-shell -b "#{q:@ganymede-seen} seen #{pane_pid}"'
+`
+
+// FindKey is Warp's one surviving muscle memory (§13), bound at Ghostty's own
+// level: Cmd+F sends it directly. It is bound at the root table — the same
+// table PopupToggleKey uses — rather than inside tmux's own prefix, because
+// the harness never touches the user's own tmux prefix (it may not even be
+// the stock C-b) and Ghostty's static keybind has no way to ask a session
+// what its prefix is. Ctrl-] is unbound by tmux itself and by everything
+// else the harness has to share a pane with, so claiming it globally is
+// safe — the same trade PopupToggleKey already makes with Ctrl-backtick.
+const FindKey = "C-]"
+
+// findHook enters copy mode and opens the same incremental search-backward
+// tmux's own emacs keytable already gives C-r, as one chained command rather
+// than a keytable binding — which is what makes the result the same
+// whether the session's mode-keys is emacs or vi, and needs no harness
+// command of its own, so it is installed even when Command is empty.
+const findHook = `
+bind -n ` + FindKey + ` copy-mode \; command-prompt -i -I "#{pane_search_string}" -T search -p "(search up)" { send-keys -X search-backward-incremental -- "%%" }
 `
 
 // PopupToggleKey opens and closes the Popup shell (§8): one no-prefix key,
@@ -134,9 +146,9 @@ set -g status-right "#{` + AttentionOption + `}"
 // only what is under it.
 func fragment(l Layout) string {
 	if l.Command == "" {
-		return settings + strip
+		return settings + strip + findHook
 	}
-	return settings + strip + fmt.Sprintf(seenHook, quoteForOption(l.Command)) + popupHook
+	return settings + strip + findHook + fmt.Sprintf(seenHook, quoteForOption(l.Command)) + popupHook
 }
 
 // quoteForOption writes a path into a tmux double-quoted string. What tmux
@@ -193,56 +205,8 @@ func Install(l Layout) error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read %s: %w", l.UserConf, err)
 	}
-	if err := config.Replace(l.UserConf, []byte(withBlock(string(existing), l.Fragment))); err != nil {
-		return err
-	}
-	return nil
-}
-
-// withBlock returns conf carrying exactly one harness block: the existing one
-// rewritten where it stands if conf already has it, appended otherwise.
-//
-// It works a line at a time and never drops a line it cannot account for. A
-// block whose end marker has gone missing is repaired by replacing the opening
-// marker alone — everything below it is the user's, however it got there.
-func withBlock(conf, fragment string) string {
-	block := []string{beginMarker, fmt.Sprintf("source-file -q %q", fragment), endMarker}
-
-	lines := strings.Split(conf, "\n")
-	trailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
-	if trailingNewline {
-		lines = lines[:len(lines)-1]
-	}
-
-	begin := indexOfLine(lines, beginMarker, 0)
-	if begin < 0 {
-		return join(append(lines, block...))
-	}
-
-	end := indexOfLine(lines, endMarker, begin+1)
-	if end < 0 {
-		end = begin
-	}
-	kept := append(append(append([]string{}, lines[:begin]...), block...), lines[end+1:]...)
-	return join(kept)
-}
-
-// indexOfLine finds the first line at or after start whose content is marker,
-// ignoring the whitespace an editor may have left around it.
-func indexOfLine(lines []string, marker string, start int) int {
-	for i := start; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == marker {
-			return i
-		}
-	}
-	return -1
-}
-
-func join(lines []string) string {
-	if len(lines) == 0 {
-		return ""
-	}
-	return strings.Join(lines, "\n") + "\n"
+	body := config.WithBlock(string(existing), []string{fmt.Sprintf("source-file -q %q", l.Fragment)})
+	return config.Replace(l.UserConf, []byte(body))
 }
 
 // dockBody configures the dock server. The dock is only a frame: it holds the

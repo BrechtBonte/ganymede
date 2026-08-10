@@ -37,8 +37,8 @@ Usage:
                             the current one). Safe to re-run.
   ganymede dashboard        Run the Dashboard in this terminal. The harness
                             runs this for you inside the sidepanel.
-  ganymede install          Install the tmux configuration and the Claude Code
-                            hooks only.
+  ganymede install          Install the tmux configuration, the Ghostty
+                            configuration, and the Claude Code hooks only.
   ganymede hook             Report a hook payload on stdin to the Dashboard.
                             Claude Code runs this for you; the install wires it.
   ganymede seen <pid>       Report the Sessions running inside a process as
@@ -108,12 +108,14 @@ func up(args []string) error {
 	if err := installTmux(); err != nil {
 		return err
 	}
-	// The tmux configuration is what the harness cannot open without. The
-	// hooks only make the Dashboard sharper, and settings the harness will not
-	// rewrite — somebody's hand-edited JSON, a shape it does not know — are
-	// worth saying out loud and nothing more. Refusing to open the window over
-	// them would be the harness holding your day to ransom over a file it only
-	// wanted to add a line to.
+	// The tmux configuration is what the harness cannot open without.
+	// Ghostty's fresh defaults, the hooks, and the notifier below only make
+	// the experience sharper, and are worth saying out loud and nothing more.
+	// Refusing to open the window over any of them would be the harness
+	// holding your day to ransom over a font, a hook, or a notification style.
+	if err := installGhosttyConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: Ghostty is not configured with its fresh defaults or the Cmd+F keybind: %v\n", err)
+	}
 	if err := installHooks(); err != nil {
 		fmt.Fprintf(os.Stderr, "ganymede: the hooks are not installed, so Ready and Blocked reasons will be missing: %v\n", err)
 	}
@@ -122,6 +124,8 @@ func up(args []string) error {
 	// stopped reaching you beyond it.
 	if _, err := exec.LookPath("terminal-notifier"); err != nil {
 		fmt.Fprintln(os.Stderr, "ganymede: terminal-notifier is not installed, so Blocked and Ready will not reach you beyond the Dashboard: brew install terminal-notifier")
+	} else {
+		fmt.Fprintln(os.Stderr, "ganymede: one-time step — set terminal-notifier's style to Alerts in System Settings ▸ Notifications ▸ terminal-notifier, or Blocked will not stay sticky until you see it")
 	}
 	// And the same for the cross-check, which is worth saying here or nowhere:
 	// the Dashboard has no way to show you that it silently went without one,
@@ -319,10 +323,13 @@ func known() dashboard.Tickets {
 	return &ticket.Tickets{Overrides: overrides}
 }
 
-// install puts both halves in place, and reports either one failing. Asked for
+// install puts every piece in place, and reports any one failing. Asked for
 // on its own it is a thing you did on purpose, so nothing here is softened.
 func install() error {
 	if err := installTmux(); err != nil {
+		return err
+	}
+	if err := installGhosttyConfig(); err != nil {
 		return err
 	}
 	return installHooks()
@@ -334,6 +341,14 @@ func installTmux() error {
 		return err
 	}
 	return tmuxconf.Install(layout)
+}
+
+func installGhosttyConfig() error {
+	layout, err := ghostty.DefaultLayout()
+	if err != nil {
+		return err
+	}
+	return ghostty.Install(layout)
 }
 
 // crossCheck asks Claude Code for its Sessions once, to find out whether it

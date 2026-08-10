@@ -19,7 +19,7 @@ go build -o bin/ganymede ./cmd/ganymede
 |---|---|
 | `ganymede up [directory]` | Open the harness for the repo at *directory* (default: the current one) |
 | `ganymede dashboard` | Run the dashboard in the current terminal — what the sidepanel runs for you |
-| `ganymede install` | Install the tmux configuration and the hooks only |
+| `ganymede install` | Install the tmux configuration, the Ghostty configuration, and the hooks only |
 | `ganymede hook` | Report a hook payload on stdin — Claude Code runs this for you |
 | `ganymede seen <pid>` | Report the sessions inside a process as seen — tmux runs this for you |
 | `ganymede notify-click <pid>` | Focus Ghostty and jump to the session a notification was about — a clicked notification runs this for you |
@@ -30,7 +30,7 @@ In the sidepanel, `↑` and `↓` move the selection and `⏎` jumps the working
 
 `g` opens the repo picker over every repo the harness can find. Typing narrows it fuzzily — `gnm` reaches `ganymede` — matching a repo's own name ahead of one that only matches by the directory it is filed under, which is shown at the right to tell two repos of the same name apart. `⏎` takes you to the highlighted repo and puts it on the dashboard; `Esc` leaves everything as it was.
 
-What the harness writes: a config fragment at `~/.config/ganymede/tmux.conf`, sourced from a marked block in your `tmux.conf`; the dock's own config at `~/.config/ganymede/dock.conf`; its event socket at `~/.config/ganymede/events.sock`, owned by one dashboard at a time — a second `ganymede dashboard` refuses to start rather than take it; its own state at `~/.config/ganymede/state.json`, currently the tickets you set by hand and the per-repo activity the working set is built from, written a section at a time so that nothing else in it is disturbed; and its own hook entries in `~/.claude/settings.json`, which are replaced rather than repeated on every install and leave the rest of that file, permissions included, untouched.
+What the harness writes: a config fragment at `~/.config/ganymede/tmux.conf`, sourced from a marked block in your `tmux.conf`; a Ghostty config fragment at `~/.config/ganymede/ghostty.conf` — fresh defaults (JetBrains Mono, a built-in dark theme) and the Cmd+F keybind below — loaded from a marked block in `~/.config/ghostty/config.ghostty`; the dock's own config at `~/.config/ganymede/dock.conf`; its event socket at `~/.config/ganymede/events.sock`, owned by one dashboard at a time — a second `ganymede dashboard` refuses to start rather than take it; its own state at `~/.config/ganymede/state.json`, currently the tickets you set by hand and the per-repo activity the working set is built from, written a section at a time so that nothing else in it is disturbed; and its own hook entries in `~/.claude/settings.json`, which are replaced rather than repeated on every install and leave the rest of that file, permissions included, untouched.
 
 Two things in that fragment are the harness's to own: tmux's global `pane-focus-in` hook, which is how seeing a session clears its Ready badge, and the `@ganymede-seen` option it reads. A `pane-focus-in` hook of your own in `tmux.conf` would be replaced by it.
 
