@@ -97,8 +97,11 @@ func TestXWithNoStopperConfiguredDoesNothing(t *testing.T) {
 func TestInterruptTheGuardCouldNotVerifyFocusesThePane(t *testing.T) {
 	stopper := &stops{err: errors.New("pane does not show an empty input box to interrupt")}
 	jumper := &jumps{}
+	focuser := &focuses{}
 	working := live("ganymede-78", "/repos/ganymede", session.Working)
-	model := withStopper(stopper, jumper, working)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper, Stopper: stopper, Focuser: focuser})
+	model, _ = model.Update(tea.WindowSizeMsg{Width: 40, Height: 45})
+	model, _ = model.Update(dashboard.Sessions{working})
 	model = press(model, tea.KeyDown)
 
 	model = answering(model, "x")
@@ -108,6 +111,9 @@ func TestInterruptTheGuardCouldNotVerifyFocusesThePane(t *testing.T) {
 	}
 	if !strings.Contains(detail(model), "does not show an empty input box") {
 		t.Errorf("SELECTED = %q, want the guard's own mismatch explained", detail(model))
+	}
+	if focuser.n != 0 {
+		t.Errorf("Focus called %d times, want the async fallback to leave keyboard focus alone", focuser.n)
 	}
 }
 

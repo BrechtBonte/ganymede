@@ -362,6 +362,24 @@ func TestEnterOnARepoRowFocusesTheWorkingClient(t *testing.T) {
 	}
 }
 
+// A Focus that fails is ignored — it must never overwrite the notice a
+// successful jump already left blank.
+func TestAFailedFocusDoesNotOverwriteTheNoticeAJumpLeftBlank(t *testing.T) {
+	jumper := &jumps{}
+	focuser := &focuses{err: errors.New("some tmux error")}
+	only := live("ganymede-78", "/repos/ganymede", session.Idle)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper, Focuser: focuser})
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	model, _ = model.Update(dashboard.Sessions{only})
+
+	model = press(model, tea.KeyDown)
+	model = press(model, tea.KeyEnter)
+
+	if strings.Contains(detail(model), "some tmux error") {
+		t.Errorf("SELECTED = %q, want a failed Focus ignored rather than shown as a notice", detail(model))
+	}
+}
+
 // A repo's header row is not a Session; Enter on it has nowhere to go.
 func TestEnterOnARepoHeaderJumpsNowhere(t *testing.T) {
 	jumper := &jumps{}

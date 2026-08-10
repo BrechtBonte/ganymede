@@ -242,8 +242,11 @@ func TestTakeoverGuardMismatchFocusesThePaneAndDoesNotClaim(t *testing.T) {
 	fake := &claims{}
 	stopper := &stops{err: errors.New("pane still shows Claude Code's own prompt after /exit was sent")}
 	jumper := &jumps{}
+	focuser := &focuses{}
 	idle := live("ganymede-78", "/repos/billing", session.Idle)
-	model := withClaimer(fake, stopper, jumper, idle)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper, Claimer: fake, Stopper: stopper, Focuser: focuser})
+	model, _ = model.Update(tea.WindowSizeMsg{Width: 40, Height: 45})
+	model, _ = model.Update(dashboard.Sessions{idle})
 
 	model = types(model, "c")
 	model = sendingKey(model, tea.KeyMsg{Type: tea.KeyEnter})
@@ -253,6 +256,9 @@ func TestTakeoverGuardMismatchFocusesThePaneAndDoesNotClaim(t *testing.T) {
 	}
 	if len(fake.kept) != 0 {
 		t.Errorf("Claimed %v, want no Claim over a Session the guard could not confirm had ended", fake.kept)
+	}
+	if focuser.n != 0 {
+		t.Errorf("Focus called %d times, want the async fallback to leave keyboard focus alone", focuser.n)
 	}
 }
 
