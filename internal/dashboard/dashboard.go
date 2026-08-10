@@ -154,6 +154,9 @@ type Harness struct {
 	// Approver answers a Blocked Session's dialog: the guard's default row,
 	// or the decline (§7.3).
 	Approver Approver
+	// Prompter delivers a prompt into a Session's own input box, on an Idle,
+	// Ready or Working row (§7.3).
+	Prompter Prompter
 }
 
 // Model is the Dashboard's bubbletea model.
@@ -213,6 +216,8 @@ type Model struct {
 	setting *setting
 	// spawning is the worktree-spawn dialog, and nil when none is open.
 	spawning *spawning
+	// prompting is the prompt-from-dashboard input, and nil when none is open.
+	prompting *prompting
 	// pending is which Sessions, by pid, have a guarded answer in flight —
 	// sent off the main loop and not yet back — so a second y or n on the
 	// same row before the first lands cannot fire a second send at the pane
@@ -335,6 +340,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// pane wondering.
 			m.notice = msg.err.Error()
 			return m.jumpTo(msg.session), nil
+		}
+		return m, nil
+	case sent:
+		delete(m.pending, msg.pid)
+		if msg.err != nil {
+			// The guard's own mismatch: focus the pane and say why. Unlike a
+			// mismatched approve or deny, this must not count as seen —
+			// sending is what earns a Ready Session its clear ("Sending
+			// counts as a prompt, so it clears Ready"), and a send the guard
+			// never verified has not earned it, even once the pane it could
+			// not confirm is the one now in front of you.
+			m.notice = msg.err.Error()
+			return m.focusPane(msg.pid), nil
+		}
+		// Sending counts as a prompt, so it clears Ready the same way seeing
+		// the Session does (CONTEXT.md: "Ready -> Idle: seen ... or new
+		// prompt") — the registry catches up to Working on its own.
+		if m.harness.Seen != nil {
+			m.harness.Seen(msg.id)
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -705,6 +729,8 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case msg.Type == tea.KeyCtrlC:
 	case m.spawning != nil:
 		return m.spawningKey(msg), nil
+	case m.prompting != nil:
+		return m.promptKey(msg)
 	case m.setting != nil:
 		return m.typed(msg), nil
 	case m.picker.open:
@@ -743,6 +769,8 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.opening()
 		case "w":
 			m = m.spawn()
+		case "p":
+			m = m.startPrompt()
 		case "y":
 			return m.approve()
 		case "n":
@@ -892,6 +920,20 @@ func (m Model) jumpTo(s session.Session) Model {
 	}
 	if m.harness.Seen != nil {
 		m.harness.Seen(s.ID)
+	}
+	return m
+}
+
+// focusPane puts pid's own pane in front of you without counting it as seen
+// — the honest fallback for a prompt-send the guard could not verify
+// (§7.2). Sending is what earns a Ready Session its Ready clear, not merely
+// being shown the pane after a delivery nobody could confirm, so unlike
+// jumpTo this never touches Seen; and the notice already on show is the
+// guard's own explanation of what went wrong, so a jump that also fails is
+// left unsaid rather than overwriting it.
+func (m Model) focusPane(pid int) Model {
+	if m.harness.Jumper != nil {
+		_ = m.harness.Jumper.Jump(pid)
 	}
 	return m
 }
@@ -1216,6 +1258,9 @@ func (m Model) selected() []string {
 	if m.spawning != nil {
 		return m.spawningView()
 	}
+	if m.prompting != nil {
+		return m.promptingView()
+	}
 	if m.setting != nil {
 		// The box is the input for as long as one is open. It says what is
 		// being corrected rather than what is selected, because the two come
@@ -1310,8 +1355,13 @@ func (m Model) carrying(c repo.Caution) []string {
 // nothing on this row to say yes or no to.
 func offering(r row) string {
 	keys := []string{"⏎ jump"}
-	if r.session.State == session.Blocked {
+	switch r.session.State {
+	case session.Blocked:
 		keys = append(keys, "y approve", "n deny")
+	case session.Idle, session.Ready:
+		keys = append(keys, "p prompt")
+	case session.Working:
+		keys = append(keys, "p queue")
 	}
 	keys = append(keys, "t ticket")
 	if r.ticket != "" {
