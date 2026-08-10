@@ -10,7 +10,10 @@
 // why it sits below every one of them.
 package session
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // State is what a Session is doing.
 type State string
@@ -130,6 +133,19 @@ type Session struct {
 // Attention is the union of Blocked and Ready: everything waiting on you.
 func (s Session) Attention() bool {
 	return s.State == Blocked || s.State == Ready
+}
+
+// PermissionPrefix is how a Blocked Reason says it is a permission request —
+// the one phrasing the registry and the PermissionRequest hook are both kept
+// in step with (hooks.permissionReason, registry.reasonOf), so a row reads
+// the same whichever of the two got there first.
+const PermissionPrefix = "permission: "
+
+// ToolOf reads the tool name back out of a Reason phrased with
+// PermissionPrefix, and says whether there was one to read.
+func ToolOf(reason string) (string, bool) {
+	tool, ok := strings.CutPrefix(reason, PermissionPrefix)
+	return tool, ok && tool != ""
 }
 
 // Attention is how much of a working set is waiting on you, counted by tier.
