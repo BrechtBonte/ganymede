@@ -206,9 +206,10 @@ func TestTheClickCommandCarriesThePid(t *testing.T) {
 	}
 }
 
-// An Alert for a Session the working set has never mentioned — a race between
-// it ending and the Alert arriving — must not panic, and has no pid to jump
-// to.
+// An Alert for a Session the working set has never mentioned — the hooks run
+// ahead of the registry, so an Alert can arrive before its own Session does —
+// must not panic, has no pid to jump to, and must not guess at a repo. A
+// blank title beats a confidently wrong one.
 func TestAnAlertForASessionNotInTheWorkingSetIsHarmless(t *testing.T) {
 	sender := recorder()
 	sessions, alerts := run(t, notifier.Notifier{
@@ -219,9 +220,51 @@ func TestAnAlertForASessionNotInTheWorkingSetIsHarmless(t *testing.T) {
 
 	send(t, alerts, state.Alert{Kind: state.AlertBlocked, Session: "gone", Reason: "permission: Bash"})
 
-	if shown := sender.shown(t); len(shown.Click) != 0 {
+	shown := sender.shown(t)
+	if len(shown.Click) != 0 {
 		t.Errorf("click = %v, want none for a Session with no pid", shown.Click)
 	}
+	if shown.Title != "" {
+		t.Errorf("title = %q, want none for a Session this Notifier has never seen", shown.Title)
+	}
+}
+
+// blockingSender stands in for a Sender whose OS call has stalled — a
+// terminal-notifier hung on a first-run permission dialog, say.
+type blockingSender struct {
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (b *blockingSender) Send(notifier.Notification) error {
+	close(b.entered)
+	<-b.release
+	return nil
+}
+
+// A stuck Send must not stop the Notifier from taking the next working set.
+// sessions and alerts are fed from the same fan-out as the Dashboard's own
+// channel (main.go's fanned): a Notifier that cannot keep reading would back
+// that fan-out up all the way to the state model, freezing session updates
+// along with notifications — not just the notification that is stuck.
+func TestAStuckSendDoesNotBlockLaterSessionUpdates(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	sender := &blockingSender{entered: make(chan struct{}), release: release}
+
+	sessions, alerts := run(t, notifier.Notifier{Send: sender})
+	send(t, sessions, []session.Session{blockedSession})
+	send(t, alerts, state.Alert{Kind: state.AlertBlocked, Session: "s1", Reason: "permission: Bash"})
+
+	select {
+	case <-sender.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send was never called")
+	}
+
+	// If fire ran inline in the Notifier's select loop, this would time out:
+	// the loop would still be inside the stuck Send call above.
+	send(t, sessions, []session.Session{{PID: 9999, ID: "s2", Dir: "/repos/service-ai-assistant"}})
 }
 
 // A Notifier given no Sender still decides — it just has nothing to hand the

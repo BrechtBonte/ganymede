@@ -95,7 +95,15 @@ func (n Notifier) Run(ctx context.Context, sessions <-chan []session.Session, al
 			if !ok {
 				return
 			}
-			n.fire(alert, known[alert.Session])
+			// fire shells out — to osascript by way of Frontmost, then to
+			// terminal-notifier — and neither is guaranteed to be quick (a
+			// first-run permission dialog can leave one hanging). Running it
+			// inline would leave this loop unable to read the next Session
+			// snapshot until it returned, and that snapshot is the one thing
+			// standing between the state model and the Dashboard: fanned()
+			// only moves on to the next value once every reader, this one
+			// included, has taken the last one.
+			go n.fire(alert, known[alert.Session])
 		}
 	}
 }
@@ -148,6 +156,15 @@ func (n Notifier) fire(alert state.Alert, s session.Session) {
 // belongs to, and its ticket when it has one — the same anatomy §9 asks for,
 // "service-ai-assistant · FIRE-1234".
 func (n Notifier) title(s session.Session) string {
+	if s.Dir == "" {
+		// The working set has not caught up with this Session yet — the
+		// hooks run ahead of the registry, and an Alert can arrive before its
+		// own row does. repo.Root("") would answer with wherever this binary
+		// happens to be running rather than "no Session found" (the same
+		// hazard dashboard.rootOf guards against), so this says nothing
+		// rather than something wrong.
+		return ""
+	}
 	root := repo.Root(s.Dir)
 	name := filepath.Base(root)
 	if n.Tickets == nil {
