@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 
+	"github.com/BrechtBonte/ganymede/internal/claim"
 	"github.com/BrechtBonte/ganymede/internal/config"
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
 	"github.com/BrechtBonte/ganymede/internal/ghostty"
@@ -210,6 +211,16 @@ func runDashboard() error {
 		Jumper: harness, Opener: harness, Strip: harness, Spawner: harness, Popups: harness, Approver: harness,
 		Prompter: harness, Stopper: harness, Seen: model.Seen, Tickets: tickets,
 	}
+	// Root Claims, like the tickets set by hand: a state file that cannot be
+	// read costs the Claims in it and nothing else, and the Dashboard is not
+	// held up over a sidecar file.
+	claimed, err := whatIsClaimed()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: %v\n", err)
+	}
+	if claimed != nil {
+		hands.Claimer = claimed
+	}
 	// Where the harness looks for repos, and what it remembers about the ones
 	// it has been in. Neither is worth holding the Dashboard up over: a picker
 	// with nothing behind it costs you the repos you are not already working
@@ -301,6 +312,25 @@ func whereYouHaveBeen() (*workingset.Activity, error) {
 		return activity, fmt.Errorf("the repos you were working in cannot be read: %w", err)
 	}
 	return activity, nil
+}
+
+// whatIsClaimed is which Main roots you have reserved, and the note each was
+// claimed with.
+//
+// Like the tickets and the working set's own activity, a state file that
+// cannot be read costs the Claims in it and nothing else: the Dashboard
+// still shows every live Session, and a root you had claimed is a keystroke
+// away to claim again.
+func whatIsClaimed() (*claim.Claims, error) {
+	sidecar, err := config.DefaultSidecar()
+	if err != nil {
+		return nil, fmt.Errorf("Claims will not survive a restart: %w", err)
+	}
+	claimed, err := claim.Load(sidecar)
+	if err != nil {
+		return claimed, fmt.Errorf("the roots you had claimed cannot be read: %w", err)
+	}
+	return claimed, nil
 }
 
 // known is which ticket each Session is about: what the branches and worktree
