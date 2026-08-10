@@ -139,7 +139,7 @@ func (h Harness) ensureDock(working string) error {
 		"-x", strconv.Itoa(SidepanelWidth)); err != nil {
 		return fmt.Errorf("size the sidepanel: %w", err)
 	}
-	return h.dock().run("select-pane", "-t", "="+DockSession+":0.1")
+	return h.Focus()
 }
 
 // pointWorkingClient aims the existing dock's right-hand pane at session.
