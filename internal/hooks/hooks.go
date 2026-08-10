@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/BrechtBonte/ganymede/internal/session"
 )
 
 // Kind is what an event tells the harness. It is the harness's own vocabulary
@@ -165,7 +167,7 @@ func permissionReason(tool string) string {
 	if tool == "" {
 		return "permission"
 	}
-	return "permission: " + oneLine(tool, reasonLimit)
+	return session.PermissionPrefix + oneLine(tool, reasonLimit)
 }
 
 // oneLine flattens text into something a row can hold: one line, no runs of

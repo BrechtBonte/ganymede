@@ -151,6 +151,9 @@ type Harness struct {
 	// Popups is the Popup shell's busy status and the harness's memory of
 	// where the cursor is.
 	Popups Popups
+	// Approver answers a Blocked Session's dialog: the guard's default row,
+	// or the decline (§7.3).
+	Approver Approver
 }
 
 // Model is the Dashboard's bubbletea model.
@@ -210,6 +213,11 @@ type Model struct {
 	setting *setting
 	// spawning is the worktree-spawn dialog, and nil when none is open.
 	spawning *spawning
+	// pending is which Sessions, by pid, have a guarded answer in flight —
+	// sent off the main loop and not yet back — so a second y or n on the
+	// same row before the first lands cannot fire a second send at the pane
+	// the first is still verifying.
+	pending map[int]bool
 }
 
 // setting is a ticket being set by hand: the checkout it is about, the name it
@@ -316,6 +324,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(ticking(), m.reading(), m.sweepingPopups())
 	case Discovered:
 		m.picker = m.picker.found(msg)
+		return m, nil
+	case answered:
+		delete(m.pending, msg.session.PID)
+		if msg.err != nil {
+			// The guard's own mismatch: the gate passed but tmux could not verify
+			// the send. Said before the fallback jump, which is silent on success
+			// and would otherwise overwrite it with nothing — a y or n that did
+			// not go through has to say why, not just leave you looking at the
+			// pane wondering.
+			m.notice = msg.err.Error()
+			return m.jumpTo(msg.session), nil
+		}
 		return m, nil
 	case tea.KeyMsg:
 		return m.pressed(msg)
@@ -723,6 +743,10 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.opening()
 		case "w":
 			m = m.spawn()
+		case "y":
+			return m.approve()
+		case "n":
+			return m.deny()
 		}
 	}
 	return m.noting(), nil
@@ -848,17 +872,26 @@ func (m Model) jump() Model {
 	if selected.session == nil {
 		return m.goTo(selected.root)
 	}
+	return m.jumpTo(*selected.session)
+}
+
+// jumpTo puts s in front of you: the pane it is running in, and the moment
+// it counts as seen. It is jump's own work over the selected row, factored
+// out so the guard's asynchronous fallback (§7.2) can focus the exact
+// Session it tried to answer, by the Session itself rather than whichever
+// row the cursor has since moved to.
+func (m Model) jumpTo(s session.Session) Model {
 	if m.harness.Jumper == nil {
 		return m
 	}
-	if err := m.harness.Jumper.Jump(selected.session.PID); err != nil {
+	if err := m.harness.Jumper.Jump(s.PID); err != nil {
 		// A jump that could not be made left you where you were, so the
 		// Session has not been seen and its badge stays.
 		m.notice = err.Error()
 		return m
 	}
 	if m.harness.Seen != nil {
-		m.harness.Seen(selected.session.ID)
+		m.harness.Seen(s.ID)
 	}
 	return m
 }
@@ -1272,9 +1305,15 @@ func (m Model) carrying(c repo.Caution) []string {
 
 // offering is what the selected row can be asked to do. A Session about no
 // ticket is not offered a link to open, since there is none — but it is always
-// offered the key that gives it one.
+// offered the key that gives it one. Approve and deny only ever apply to a
+// Session that cannot continue without you (§7.3) — anything else has
+// nothing on this row to say yes or no to.
 func offering(r row) string {
-	keys := []string{"⏎ jump", "t ticket"}
+	keys := []string{"⏎ jump"}
+	if r.session.State == session.Blocked {
+		keys = append(keys, "y approve", "n deny")
+	}
+	keys = append(keys, "t ticket")
 	if r.ticket != "" {
 		keys = append(keys, "o open")
 	}
