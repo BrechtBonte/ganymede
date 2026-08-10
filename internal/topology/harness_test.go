@@ -21,16 +21,18 @@ func testHarness(t *testing.T, workingDir string) topology.Harness {
 
 	prefix := "ganymede-test-" + strings.ReplaceAll(t.Name(), "/", "-")
 	h := topology.Harness{
-		Socket:     prefix + "-sessions",
-		DockSocket: prefix + "-dock",
-		DockConf:   filepath.Join(t.TempDir(), "dock.conf"),
-		Fragment:   fragmentFor(t),
-		Dashboard:  []string{"sleep", "300"},
-		WorkingDir: workingDir,
+		Socket:      prefix + "-sessions",
+		DockSocket:  prefix + "-dock",
+		DockConf:    filepath.Join(t.TempDir(), "dock.conf"),
+		PopupSocket: prefix + "-popup",
+		Fragment:    fragmentFor(t),
+		Dashboard:   []string{"sleep", "300"},
+		WorkingDir:  workingDir,
 	}
 	t.Cleanup(func() {
 		_ = exec.Command("tmux", "-L", h.Socket, "kill-server").Run()
 		_ = exec.Command("tmux", "-L", h.DockSocket, "kill-server").Run()
+		_ = exec.Command("tmux", "-L", h.PopupSocket, "kill-server").Run()
 	})
 	return h
 }
