@@ -26,6 +26,38 @@ type Emulator struct {
 	Binary string
 	// Width and Height size the window in cells. Zero leaves it to Ghostty.
 	Width, Height int
+	// FrontApp is how Frontmost asks which application is in front of you.
+	// Empty means System Events' own answer.
+	FrontApp func() (string, error)
+}
+
+// frontmostName is what System Events calls Ghostty's own process.
+const frontmostName = "Ghostty"
+
+// Frontmost reports whether Ghostty is the application in front of you — the
+// one signal the notifier gates every banner on (§9): no banner fires while
+// the sidepanel is already telling you the same thing.
+func (e Emulator) Frontmost() (bool, error) {
+	query := e.FrontApp
+	if query == nil {
+		query = frontApp
+	}
+	name, err := query()
+	if err != nil {
+		return false, err
+	}
+	return name == frontmostName, nil
+}
+
+// frontApp asks System Events which application is in front — the one place
+// macOS answers this from outside the application itself.
+func frontApp() (string, error) {
+	out, err := exec.Command("osascript", "-e",
+		`tell application "System Events" to name of first application process whose frontmost is true`).Output()
+	if err != nil {
+		return "", fmt.Errorf("ask which application is frontmost: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // Activate brings the emulator's existing window forward. Use it in place of
