@@ -42,12 +42,35 @@ func TestMainRootIsInUseByAgentWhileASessionIsWorkingInItAndFreeOtherwise(t *tes
 	const worktree = root + "/.claude/worktrees/FIRE-2841-paging"
 
 	for _, working := range [][]string{nil, {worktree}} {
-		if got := repo.StateOf(root, working); got != repo.Free {
-			t.Errorf("StateOf(%q, %q) = %q, want %q", root, working, got, repo.Free)
+		if got := repo.StateOf(root, working, false); got != repo.Free {
+			t.Errorf("StateOf(%q, %q, false) = %q, want %q", root, working, got, repo.Free)
 		}
 	}
 	working := []string{worktree, root}
-	if got := repo.StateOf(root, working); got != repo.InUse {
-		t.Errorf("StateOf(%q, %q) = %q, want %q", root, working, got, repo.InUse)
+	if got := repo.StateOf(root, working, false); got != repo.InUse {
+		t.Errorf("StateOf(%q, %q, false) = %q, want %q", root, working, got, repo.InUse)
+	}
+}
+
+// A root reserved by you and held by nobody is Claimed — the third state,
+// distinct from Free because a PR should not be checked out over a review
+// already under way in it.
+func TestMainRootIsClaimedWhenReservedAndHeldByNobody(t *testing.T) {
+	const root = "/repos/billing"
+
+	if got := repo.StateOf(root, nil, true); got != repo.Claimed {
+		t.Errorf("StateOf(%q, nil, true) = %q, want %q", root, got, repo.Claimed)
+	}
+}
+
+// A claim never overrules a live occupant: a Session actually holding the
+// root is what "In use by agent" means, and it stays true whether or not you
+// have also reserved the root — the one thing this must never say is that a
+// root is safe to review in while an agent is still sitting in it.
+func TestAClaimNeverOverrulesALiveOccupant(t *testing.T) {
+	const root = "/repos/billing"
+
+	if got := repo.StateOf(root, []string{root}, true); got != repo.InUse {
+		t.Errorf("StateOf(%q, %q, true) = %q, want %q", root, []string{root}, got, repo.InUse)
 	}
 }
