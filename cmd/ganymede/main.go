@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 
 	"github.com/BrechtBonte/ganymede/internal/config"
@@ -15,9 +16,11 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/ghostty"
 	"github.com/BrechtBonte/ganymede/internal/hooks"
 	"github.com/BrechtBonte/ganymede/internal/inventory"
+	"github.com/BrechtBonte/ganymede/internal/notifier"
 	"github.com/BrechtBonte/ganymede/internal/popup"
 	"github.com/BrechtBonte/ganymede/internal/reconciler"
 	"github.com/BrechtBonte/ganymede/internal/registry"
+	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/state"
 	"github.com/BrechtBonte/ganymede/internal/ticket"
 	"github.com/BrechtBonte/ganymede/internal/tmuxconf"
@@ -41,6 +44,10 @@ Usage:
   ganymede seen <pid>       Report the Sessions running inside a process as
                             seen, which clears Ready. tmux runs this for you
                             when focus lands on a pane.
+  ganymede notify-click <pid>
+                            Focus Ghostty and jump the Dashboard to the
+                            Session a notification was about. A clicked
+                            notification runs this for you.
   ganymede popup open <dir> <session> <pane>
                             Open the Popup shell over pane, started in dir —
                             or the Dashboard's own selection when session is
@@ -73,6 +80,8 @@ func run(args []string) error {
 		return report(os.Stdin)
 	case "seen":
 		return seen(args[1:])
+	case "notify-click":
+		return notifyClick(args[1:])
 	case "popup":
 		return popupCommand(args[1:])
 	case "-h", "--help", "help":
@@ -107,6 +116,12 @@ func up(args []string) error {
 	// wanted to add a line to.
 	if err := installHooks(); err != nil {
 		fmt.Fprintf(os.Stderr, "ganymede: the hooks are not installed, so Ready and Blocked reasons will be missing: %v\n", err)
+	}
+	// The notifier's OS channel, worth saying here or nowhere for the same
+	// reason: a Dashboard running fine gives no sign that attention has
+	// stopped reaching you beyond it.
+	if _, err := exec.LookPath("terminal-notifier"); err != nil {
+		fmt.Fprintln(os.Stderr, "ganymede: terminal-notifier is not installed, so Blocked and Ready will not reach you beyond the Dashboard: brew install terminal-notifier")
 	}
 	// And the same for the cross-check, which is worth saying here or nowhere:
 	// the Dashboard has no way to show you that it silently went without one,
@@ -170,14 +185,26 @@ func runDashboard() error {
 	checked := reconciler.Reconciler{}.Watch(ctx)
 
 	model := state.New()
-	working := model.Watch(ctx, watch, checked, reported)
+	merged := model.Watch(ctx, watch, checked, reported)
+	// The notifier watches the same working set the Dashboard draws, so it
+	// can put a name and a pid to whatever the model's Alerts are about — but
+	// a channel has one reader, and the Dashboard's is the tea.Program's own
+	// goroutine, so each gets its own tap rather than racing for values meant
+	// for both.
+	dashboardSessions, notifierSessions := fanned(ctx, merged)
+
+	// Tickets are asked about from both the Dashboard's rows and the
+	// notifier's titles, and the two must read the same answer — including
+	// the same corrections you have set by hand.
+	tickets := known()
+	runNotifier(ctx, notifierSessions, model.Alerts(), tickets)
 
 	// The harness is every hand the Dashboard has on tmux: it steers the
 	// working client to a Session or to a repo, and it carries the counts to
 	// that client's status line.
 	hands := dashboard.Harness{
 		Jumper: harness, Opener: harness, Strip: harness, Spawner: harness, Popups: harness, Approver: harness,
-		Seen: model.Seen, Tickets: known(),
+		Seen: model.Seen, Tickets: tickets,
 	}
 	// Where the harness looks for repos, and what it remembers about the ones
 	// it has been in. Neither is worth holding the Dashboard up over: a picker
@@ -196,8 +223,62 @@ func runDashboard() error {
 		}
 	}
 
-	_, err = tea.NewProgram(dashboard.New(working, hands), tea.WithAltScreen()).Run()
+	_, err = tea.NewProgram(dashboard.New(dashboardSessions, hands), tea.WithAltScreen()).Run()
 	return err
+}
+
+// fanned splits one stream of working sets into two, so the Dashboard and the
+// notifier can each watch it on their own goroutine without racing each other
+// for values meant for both.
+func fanned(ctx context.Context, in <-chan []session.Session) (a, b <-chan []session.Session) {
+	toA := make(chan []session.Session)
+	toB := make(chan []session.Session)
+	go func() {
+		defer close(toA)
+		defer close(toB)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case set, ok := <-in:
+				if !ok {
+					return
+				}
+				for _, out := range [](chan<- []session.Session){toA, toB} {
+					select {
+					case out <- set:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}
+	}()
+	return toA, toB
+}
+
+// runNotifier turns the model's Alerts into notifications beyond the
+// Dashboard (§9), on its own goroutine so a Session going Blocked never waits
+// on the Dashboard's own redraw.
+//
+// Wiring it up is best effort: a notifier missing terminal-notifier still
+// lets the Dashboard run, since the sidepanel already shows every state it
+// would have banked a notification for.
+func runNotifier(ctx context.Context, sessions <-chan []session.Session, alerts <-chan state.Alert, tickets notifier.Tickets) {
+	self, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: attention will not reach you beyond the Dashboard: %v\n", err)
+		return
+	}
+	notif := notifier.Notifier{
+		Send:      notifier.TerminalNotifier{},
+		Frontmost: ghostty.Emulator{}.Frontmost,
+		Tickets:   tickets,
+		Click: func(pid int) []string {
+			return []string{self, "notify-click", strconv.Itoa(pid)}
+		},
+	}
+	go notif.Run(ctx, sessions, alerts)
 }
 
 // whereYouHaveBeen is the harness's memory of which repos you have been working
@@ -340,6 +421,34 @@ func seen(args []string) error {
 		}
 	}
 	return nil
+}
+
+// notifyClick is what a clicked notification runs (§9): it brings Ghostty
+// forward and puts the Session the notification was about back in front of
+// you, the same jump ⏎ does on the Dashboard. Like the hook and seen
+// commands, it must work with no Dashboard running — terminal-notifier can
+// run this long after the process that sent the notification has ended.
+func notifyClick(args []string) error {
+	if len(args) != 1 {
+		return errors.New("notify-click takes the pid the notification was about")
+	}
+	pid, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("not a pid: %s", args[0])
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("locate the current directory: %w", err)
+	}
+	harness, err := topology.Default(dir)
+	if err != nil {
+		return err
+	}
+	if err := (ghostty.Emulator{}).Activate(); err != nil {
+		return err
+	}
+	return harness.Jump(pid)
 }
 
 // popupCommand dispatches the Popup shell's own subcommands. There is only
