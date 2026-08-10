@@ -336,6 +336,61 @@ func TestNoCommandBindsNoPopupToggle(t *testing.T) {
 	}
 }
 
+// Warp's one surviving muscle memory (§13): Ghostty's Cmd+F sends FindKey
+// directly, so it has to be bound at the root table — not behind whatever
+// prefix the session happens to have, which the harness never touches and a
+// static Ghostty keybind has no way to know.
+func TestInstalledConfigBindsFindKeyAtTheRootTable(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	tmux := tmuxWithConf(t, layout.UserConf)
+
+	bound := tmux("list-keys", "-T", "root")
+	if !strings.Contains(bound, tmuxconf.FindKey) {
+		t.Errorf("root table = %q, want %q bound in it", bound, tmuxconf.FindKey)
+	}
+	if !strings.Contains(bound, "copy-mode") || !strings.Contains(bound, "search-backward") {
+		t.Errorf("root table = %q, want it to enter copy mode and search backward", bound)
+	}
+}
+
+// FindKey has to be bound even when the harness cannot say where it lives:
+// unlike the seen and popup hooks, it needs no command of its own to run.
+func TestFindKeyIsBoundWithNoCommand(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	tmux := tmuxWithConf(t, layout.UserConf)
+
+	if bound := tmux("list-keys", "-T", "root"); !strings.Contains(bound, tmuxconf.FindKey) {
+		t.Errorf("root table = %q, want %q bound in it even with no harness command", bound, tmuxconf.FindKey)
+	}
+}
+
+// The whole path, through real tmux: FindKey has to reach the session
+// whatever the session's own tmux prefix is (the harness never touches it),
+// which a root-table binding guarantees and a prefixed one could not.
+func TestPressingFindKeyEntersCopyMode(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	tmux := tmuxWithConf(t, layout.UserConf)
+	socket := sessionsSocket(t)
+
+	attach(t, socket)
+
+	if !settled(func() bool {
+		pressKey(t, socket, tmuxconf.FindKey)
+		return tmux("display-message", "-p", "-t", "=probe:0.0", "#{pane_in_mode}") == "1"
+	}) {
+		t.Fatalf("pane_in_mode = %q, want copy mode entered after pressing %s", tmux("display-message", "-p", "-t", "=probe:0.0", "#{pane_in_mode}"), tmuxconf.FindKey)
+	}
+}
+
 // The whole path, through real tmux: the Alt-chord fallback is what a plain
 // terminal can transmit distinctly, so it stands in here for "the toggle was
 // pressed" — proving the root-table binding actually reaches the harness with

@@ -57,6 +57,25 @@ set -g @ganymede-seen "%s"
 set-hook -g pane-focus-in 'run-shell -b "#{q:@ganymede-seen} seen #{pane_pid}"'
 `
 
+// FindKey is Warp's one surviving muscle memory (§13), bound at Ghostty's own
+// level: Cmd+F sends it directly. It is bound at the root table — the same
+// table PopupToggleKey uses — rather than inside tmux's own prefix, because
+// the harness never touches the user's own tmux prefix (it may not even be
+// the stock C-b) and Ghostty's static keybind has no way to ask a session
+// what its prefix is. Ctrl-] is unbound by tmux itself and by everything
+// else the harness has to share a pane with, so claiming it globally is
+// safe — the same trade PopupToggleKey already makes with Ctrl-backtick.
+const FindKey = "C-]"
+
+// findHook enters copy mode and opens the same incremental search-backward
+// tmux's own emacs keytable already gives C-r, as one chained command rather
+// than a keytable binding — which is what makes the result the same
+// whether the session's mode-keys is emacs or vi, and needs no harness
+// command of its own, so it is installed even when Command is empty.
+const findHook = `
+bind -n ` + FindKey + ` copy-mode \; command-prompt -i -I "#{pane_search_string}" -T search -p "(search up)" { send-keys -X search-backward-incremental -- "%%" }
+`
+
 // PopupToggleKey opens and closes the Popup shell (§8): one no-prefix key,
 // bound at the root table so it reaches every pane on every Session. Ghostty's
 // kitty keyboard protocol is what lets it transmit Ctrl+backtick distinctly
@@ -127,9 +146,9 @@ set -g status-right "#{` + AttentionOption + `}"
 // only what is under it.
 func fragment(l Layout) string {
 	if l.Command == "" {
-		return settings + strip
+		return settings + strip + findHook
 	}
-	return settings + strip + fmt.Sprintf(seenHook, quoteForOption(l.Command)) + popupHook
+	return settings + strip + findHook + fmt.Sprintf(seenHook, quoteForOption(l.Command)) + popupHook
 }
 
 // quoteForOption writes a path into a tmux double-quoted string. What tmux
