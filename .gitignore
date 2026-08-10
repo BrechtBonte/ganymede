@@ -36,3 +36,6 @@ go.work.sum
 
 # Superpowers scratch workspace (ledgers, briefs, review packages)
 /.superpowers/
+
+# Git worktrees
+/.worktrees/
