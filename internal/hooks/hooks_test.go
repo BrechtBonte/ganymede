@@ -67,20 +67,19 @@ func TestAPermissionRequestSaysWhichToolIsWaiting(t *testing.T) {
 }
 
 // Not every notification means a Session is stuck. The ones that do are the
-// ones that put a dialog in the pane; the rest are none of the harness's
-// business, and a row that flipped to Blocked over an auth message would be a
-// lie the whole Attention ordering is built on.
+// ones that put a dialog in the pane; idle_prompt means something else
+// entirely — the state model's escalation signal (§9) — and the rest are none
+// of the harness's business. A row that flipped to Blocked over an auth
+// message would be a lie the whole Attention ordering is built on.
 func TestOnlyTheNotificationsThatStopASessionBlockIt(t *testing.T) {
 	for _, c := range []struct {
-		kind    string
-		blocked bool
+		kind string
+		want hooks.Kind
 	}{
-		{"permission_prompt", true},
-		{"elicitation_dialog", true},
-		{"agent_needs_input", true},
-		{"idle_prompt", false},
-		{"auth_success", false},
-		{"agent_completed", false},
+		{"permission_prompt", hooks.Blocked},
+		{"elicitation_dialog", hooks.Blocked},
+		{"agent_needs_input", hooks.Blocked},
+		{"idle_prompt", hooks.Escalate},
 	} {
 		t.Run(c.kind, func(t *testing.T) {
 			payload := `{"session_id":"s1","hook_event_name":"Notification",
@@ -88,19 +87,32 @@ func TestOnlyTheNotificationsThatStopASessionBlockIt(t *testing.T) {
 
 			event, ok := hooks.Parse([]byte(payload))
 
-			if !c.blocked {
-				if ok {
-					t.Errorf("a %s notification reads as %s, want the harness to pass it over", c.kind, event.Kind)
-				}
-				return
+			if !ok || event.Kind != c.want {
+				t.Fatalf("a %s notification reads as %v (ok=%v), want %s", c.kind, event.Kind, ok, c.want)
 			}
-			if !ok || event.Kind != hooks.Blocked {
-				t.Fatalf("a %s notification does not Block the Session (%+v, ok=%v)", c.kind, event, ok)
-			}
-			if event.Reason == "" {
+			if c.want == hooks.Blocked && event.Reason == "" {
 				t.Errorf("a %s notification Blocks the Session without saying why", c.kind)
 			}
 		})
+	}
+
+	for _, kind := range []string{"auth_success", "agent_completed"} {
+		t.Run(kind, func(t *testing.T) {
+			payload := `{"session_id":"s1","hook_event_name":"Notification","notification_type":"` + kind + `"}`
+			if !ignored(t, payload) {
+				t.Errorf("a %s notification was acted on, want the harness to pass it over", kind)
+			}
+		})
+	}
+}
+
+// idle_prompt names the Session it is about like every other event, so the
+// state model can look up whether that Session is still unseen.
+func TestIdlePromptNamesItsSession(t *testing.T) {
+	event := parse(t, `{"session_id":"s1","hook_event_name":"Notification","notification_type":"idle_prompt"}`)
+
+	if event.Session != "s1" {
+		t.Errorf("the event names Session %q, want %q", event.Session, "s1")
 	}
 }
 
