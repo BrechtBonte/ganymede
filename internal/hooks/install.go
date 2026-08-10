@@ -45,6 +45,12 @@ func Command(binary string) string {
 // second install replaces the first rather than doubling it, and a command
 // left behind by a binary that has since moved goes with them.
 //
+// The harness's notifier is also made the single OS channel (§9): Claude
+// Code's own built-in desktop notification is turned off, and any existing
+// osascript wiring that put a notification up itself is absorbed alongside
+// the harness's own stale entries — otherwise a Blocked or Ready Session would
+// bank a notification twice over.
+//
 // Everything else in the file is the user's — their model, their permissions,
 // their own hooks, their secrets. It is read as an unopened tree and written
 // back whole, so a key this harness has never heard of survives it.
@@ -74,6 +80,10 @@ func Install(settings, command string) error {
 		installed[event] = append(without(groups), group(command))
 	}
 	doc["hooks"] = installed
+	// The one setting outside "hooks" this harness ever touches: unconditional,
+	// because the notifier being the sole channel is not a preference this
+	// harness offers a way out of (§9).
+	doc["preferredNotifChannel"] = "notifications_disabled"
 
 	body, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -128,7 +138,7 @@ func without(groups []any) []any {
 
 		remaining := make([]any, 0, len(handlers))
 		for _, handler := range handlers {
-			if !isOurs(handler) {
+			if !isOurs(handler) && !isNotificationWiring(handler) {
 				remaining = append(remaining, handler)
 			}
 		}
@@ -162,6 +172,26 @@ func isOurs(handler any) bool {
 		return false
 	}
 	return filepath.Base(unquote(binary)) == "ganymede"
+}
+
+// isNotificationWiring reports whether a hook handler is the osascript
+// recipe for a desktop notification — the one Claude Code's own docs suggest,
+// and the one this machine already had wired on Stop and Notification before
+// the harness existed. The harness's notifier is now the sole OS channel
+// (§9), so this is absorbed alongside the harness's own stale entries rather
+// than left beside it, doubling every Blocked and Ready banner.
+//
+// It goes by the shape of the command — osascript told to display a
+// notification — rather than by the binary alone: an osascript hook doing
+// something else entirely (a Finder command, a dialog) is none of the
+// harness's business.
+func isNotificationWiring(handler any) bool {
+	found, ok := handler.(map[string]any)
+	if !ok {
+		return false
+	}
+	command, _ := found["command"].(string)
+	return strings.Contains(command, "osascript") && strings.Contains(command, "display notification")
 }
 
 // unquote takes off the shell quoting Command put on.

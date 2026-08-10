@@ -138,7 +138,7 @@ func TestInstallKeepsEverythingElseInTheUsersSettings(t *testing.T) {
 	  "hooks": {
 	    "Stop": [
 	      {"hooks": [
-	        {"type": "command", "command": "osascript -e 'display notification \"done\"'"}
+	        {"type": "command", "command": "/Users/b/bin/notify-done.sh"}
 	      ]}
 	    ],
 	    "PreToolUse": [
@@ -155,7 +155,7 @@ func TestInstallKeepsEverythingElseInTheUsersSettings(t *testing.T) {
 	after := body(t, path)
 	for _, kept := range []string{
 		"sk-not-a-real-secret", "opus[1m]", "Read(~/.claude/memory/*)",
-		"osascript", "node block-dangerous.js", "cow-sync.sh",
+		"notify-done.sh", "node block-dangerous.js", "cow-sync.sh",
 	} {
 		if !strings.Contains(after, kept) {
 			t.Errorf("Install lost %q from the user's settings:\n%s", kept, after)
@@ -261,7 +261,9 @@ func TestTheHookCommandSurvivesASpaceInThePath(t *testing.T) {
 // Hooks the harness did not write are the user's, whatever they are called.
 // Installing over a wrapper script that merely has "ganymede" in its name — or
 // a ganymede of an older vintage taking a different subcommand — would delete
-// it from the user's settings with no backup and nothing said.
+// it from the user's settings with no backup and nothing said. The one
+// exception is the user's own osascript notification wiring (§9), which
+// TestInstallAbsorbsExistingOsascriptNotificationWiring covers on its own.
 func TestInstallLeavesHooksTheHarnessDidNotWrite(t *testing.T) {
 	path := settingsWith(t, `{"hooks": {"Stop": [{"hooks": [
 	  {"type": "command", "command": "/Users/b/bin/ganymede-notify hook"},
@@ -272,13 +274,95 @@ func TestInstallLeavesHooksTheHarnessDidNotWrite(t *testing.T) {
 	install(t, path)
 
 	kept := body(t, path)
-	for _, want := range []string{"ganymede-notify hook", "ganymede report", "osascript"} {
+	for _, want := range []string{"ganymede-notify hook", "ganymede report"} {
 		if !strings.Contains(kept, want) {
 			t.Errorf("Install deleted a hook it did not write (%q):\n%s", want, kept)
 		}
 	}
-	if got := len(handlers(t, path, "Stop")); got != 4 {
-		t.Errorf("Stop has %d handlers, want the user's three and the harness's one", got)
+	if strings.Contains(kept, "display notification") {
+		t.Errorf("Install left the user's osascript notification wiring in place, want it absorbed:\n%s", kept)
+	}
+	if got := len(handlers(t, path, "Stop")); got != 3 {
+		t.Errorf("Stop has %d handlers, want the user's two near-misses and the harness's one", got)
+	}
+}
+
+// The harness's own notifier is the sole OS channel (§9): a machine that
+// already fans Stop and Notification out to osascript desktop notifications —
+// the recipe Claude Code's own docs suggest — would otherwise show every
+// Blocked and Ready Session twice over. Install absorbs that wiring rather
+// than leaving it beside its own.
+func TestInstallAbsorbsExistingOsascriptNotificationWiring(t *testing.T) {
+	path := settingsWith(t, `{"hooks": {
+	  "Stop": [
+	    {"hooks": [
+	      {"type": "command", "command": "python3 ~/.claude/hooks/langfuse_hook.py"},
+	      {"type": "command", "command": "osascript -e 'display notification \"Claude is done and waiting for your input.\" with title \"Claude Code\" sound name \"Ping\"'"}
+	    ]},
+	    {"hooks": [
+	      {"type": "command", "command": "~/.claude/hooks/notify.sh"}
+	    ]}
+	  ],
+	  "Notification": [
+	    {"hooks": [
+	      {"type": "command", "command": "osascript -e 'display notification \"Claude requires your attention.\" with title \"Claude Code\" sound name \"Ping\"'"}
+	    ]}
+	  ]
+	}}`)
+
+	install(t, path)
+
+	after := body(t, path)
+	if strings.Contains(after, "display notification") {
+		t.Errorf("Install left the osascript notification wiring in place:\n%s", after)
+	}
+	for _, kept := range []string{"langfuse_hook.py", "notify.sh"} {
+		if !strings.Contains(after, kept) {
+			t.Errorf("Install deleted a hook that was not notification wiring (%q):\n%s", kept, after)
+		}
+	}
+	if commands := harnessCommands(t, path, "Notification"); len(commands) != 1 {
+		t.Errorf("Notification runs the harness %d times, want once: %v", len(commands), commands)
+	}
+	// The absorbed group held nothing else, so it goes with it rather than
+	// leaving an empty {"hooks": []} behind.
+	if got := len(handlers(t, path, "Notification")); got != 1 {
+		t.Errorf("Notification has %d handlers, want only the harness's:\n%s", got, after)
+	}
+}
+
+// An osascript command that is not the notification recipe is none of the
+// harness's business — going by the shape of the command, not merely the
+// binary it runs, is what keeps this from being a blunt "delete every
+// osascript hook" rule.
+func TestInstallLeavesOsascriptHooksThatAreNotNotificationWiring(t *testing.T) {
+	path := settingsWith(t, `{"hooks": {"Stop": [{"hooks": [
+	  {"type": "command", "command": "osascript -e 'tell application \"Finder\" to empty trash'"}
+	]}]}}`)
+
+	install(t, path)
+
+	if after := body(t, path); !strings.Contains(after, "empty trash") {
+		t.Errorf("Install deleted an osascript hook that was not notification wiring:\n%s", after)
+	}
+}
+
+// The harness's notifier is the only OS channel (§9): Claude Code's own
+// built-in desktop notification has to be off, or a Blocked Session would
+// bank twice — once from Claude Code, once from the harness.
+func TestInstallDisablesClaudeCodesOwnNotificationChannel(t *testing.T) {
+	path := settingsWith(t, `{"model": "opus[1m]"}`)
+
+	install(t, path)
+
+	var settings struct {
+		PreferredNotifChannel string `json:"preferredNotifChannel"`
+	}
+	if err := json.Unmarshal([]byte(body(t, path)), &settings); err != nil {
+		t.Fatalf("settings are not valid JSON after Install: %v", err)
+	}
+	if settings.PreferredNotifChannel != "notifications_disabled" {
+		t.Errorf("preferredNotifChannel = %q, want %q", settings.PreferredNotifChannel, "notifications_disabled")
 	}
 }
 
