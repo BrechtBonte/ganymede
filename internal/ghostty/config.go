@@ -26,6 +26,13 @@ const (
 // shell's own toggle, so no prefix is involved at all.
 const FindKeybind = `keybind = super+f=text:\x1d`
 
+// OptionAsAlt forces Option to behave as Alt rather than macOS's own Unicode
+// compose key. Ghostty's default for this varies by keyboard layout — true
+// only for U.S. Standard/International — so on other layouts (e.g. Belgian
+// AZERTY) Option+G types "©" instead of sending the M-g tmux's dock config
+// binds at the root table (tmuxconf.FocusKey).
+const OptionAsAlt = "macos-option-as-alt = true"
+
 // Layout locates the files Install touches.
 type Layout struct {
 	// Fragment is the harness-owned config file holding the settings.
@@ -41,6 +48,7 @@ type Layout struct {
 const fragment = "# Managed by ganymede. Edit ganymede, not this file.\n" +
 	`font-family = "` + Font + "\"\n" +
 	`theme = "` + Theme + "\"\n" +
+	OptionAsAlt + "\n" +
 	FindKeybind + "\n"
 
 // DefaultLayout resolves the standard locations: the fragment under the
