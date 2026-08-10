@@ -77,7 +77,7 @@ func Install(settings, command string) error {
 			}
 			groups = listed
 		}
-		installed[event] = append(without(groups), group(command))
+		installed[event] = append(without(groups, event), group(command))
 	}
 	doc["hooks"] = installed
 	// The one setting outside "hooks" this harness ever touches: unconditional,
@@ -122,7 +122,15 @@ func group(command string) map[string]any {
 // exactly where it stands: settings are the user's file, and a shape this
 // harness cannot read is more likely a Claude Code newer than it than a
 // mistake.
-func without(groups []any) []any {
+//
+// event narrows which osascript notification wiring is absorbed alongside the
+// harness's own stale entries: only on Stop and Notification, the two events
+// Claude Code's own notification recipe actually wires (§9). A handler shaped
+// the same way but wired to some other event this harness also reads — say,
+// the user's own thing on SessionStart — is theirs to keep; deleting it would
+// be reading absorption into a scope the spec never gave it.
+func without(groups []any, event string) []any {
+	absorbNotifications := event == "Stop" || event == "Notification"
 	kept := make([]any, 0, len(groups))
 	for _, entry := range groups {
 		found, isGroup := entry.(map[string]any)
@@ -138,7 +146,7 @@ func without(groups []any) []any {
 
 		remaining := make([]any, 0, len(handlers))
 		for _, handler := range handlers {
-			if !isOurs(handler) && !isNotificationWiring(handler) {
+			if !isOurs(handler) && !(absorbNotifications && isNotificationWiring(handler)) {
 				remaining = append(remaining, handler)
 			}
 		}

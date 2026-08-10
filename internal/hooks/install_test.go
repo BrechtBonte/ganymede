@@ -347,6 +347,21 @@ func TestInstallLeavesOsascriptHooksThatAreNotNotificationWiring(t *testing.T) {
 	}
 }
 
+// The notification recipe is only ever wired to Stop and Notification (§9).
+// The same command shaped identically but wired to another event this
+// harness also reads is the user's own, whatever it is for.
+func TestInstallOnlyAbsorbsNotificationWiringOnStopAndNotification(t *testing.T) {
+	path := settingsWith(t, `{"hooks": {"SessionStart": [{"hooks": [
+	  {"type": "command", "command": "osascript -e 'display notification \"new session\"'"}
+	]}]}}`)
+
+	install(t, path)
+
+	if after := body(t, path); !strings.Contains(after, "display notification") {
+		t.Errorf("Install absorbed an osascript notification wired to an event outside Claude Code's own recipe:\n%s", after)
+	}
+}
+
 // The harness's notifier is the only OS channel (§9): Claude Code's own
 // built-in desktop notification has to be off, or a Blocked Session would
 // bank twice — once from Claude Code, once from the harness.
