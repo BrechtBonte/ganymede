@@ -233,11 +233,23 @@ func recorder(t *testing.T) (command, record string) {
 	}
 	command = filepath.Join(dir, "gan ymede")
 	record = filepath.Join(dir, "seen.txt")
-	body := "#!/bin/sh\nprintf '%s ' \"$@\" >> \"" + record + "\"\n"
+	// record is written inside the recorder script's own double quotes, so it
+	// needs the same four characters escaped that any double-quoted shell
+	// string does — and hostile carries three of them, including a lone
+	// backtick that would otherwise open a command substitution the script
+	// never closes.
+	body := "#!/bin/sh\nprintf '%s ' \"$@\" >> \"" + dquote(record) + "\"\n"
 	if err := os.WriteFile(command, []byte(body), 0o755); err != nil {
 		t.Fatalf("write the recorder: %v", err)
 	}
 	return command, record
+}
+
+// dquote escapes s for use inside a double-quoted POSIX shell string: a
+// backslash before each of the characters double quotes still leave special.
+func dquote(s string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`")
+	return replacer.Replace(s)
 }
 
 // installedWithRecorder installs a fragment whose harness is the recorder.
@@ -270,6 +282,108 @@ func TestTheInstalledConfigAsksTmuxToReportFocus(t *testing.T) {
 	}
 	if !strings.Contains(hook, "#{pane_pid}") {
 		t.Errorf("the pane was decided when the config was read, not when the focus lands: %q", hook)
+	}
+}
+
+// extended-keys is what lets tmux tell Ctrl+backtick apart from the NUL byte
+// most terminals collapse it to — without it, the Popup shell's primary
+// toggle would be indistinguishable from Ctrl+Space on any terminal that
+// bothered to send the distinction at all.
+func TestInstalledConfigTurnsOnExtendedKeys(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	tmux := tmuxWithConf(t, layout.UserConf)
+	if got := tmux("show-options", "-A", "-s", "-v", "extended-keys"); got != "on" {
+		t.Errorf("extended-keys = %q, want %q", got, "on")
+	}
+}
+
+// The Popup shell's toggle has no prefix of its own to hide behind (§8), so
+// both the primary key and the Alt-chord fallback have to be bound at the
+// root table — reachable from every pane on every Session, the same way the
+// seen-tracking hook above is installed for all of them at once.
+func TestInstalledConfigBindsThePopupToggleKeysAtTheRootTable(t *testing.T) {
+	layout, _ := installedWithRecorder(t)
+	tmux := tmuxWithConf(t, layout.UserConf)
+
+	bound := tmux("list-keys", "-T", "root")
+	for _, key := range []string{tmuxconf.PopupToggleKey, tmuxconf.PopupToggleFallbackKey} {
+		if !strings.Contains(bound, key) {
+			t.Errorf("root table = %q, want %q bound in it", bound, key)
+		}
+	}
+	if strings.Count(bound, "popup open") != 2 {
+		t.Errorf("root table = %q, want both keys opening the popup", bound)
+	}
+}
+
+// A harness that cannot say where it lives installs no hook at all (see
+// seenHook) — and the popup toggle is no exception: a binding that ran a
+// command nobody could name would leave every press of it doing nothing
+// silently, which is worse than the key not being bound.
+func TestNoCommandBindsNoPopupToggle(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	tmux := tmuxWithConf(t, layout.UserConf)
+	if bound := tmux("list-keys", "-T", "root"); strings.Contains(bound, "popup open") {
+		t.Errorf("root table = %q, want no popup binding with no harness command to run", bound)
+	}
+}
+
+// The whole path, through real tmux: the Alt-chord fallback is what a plain
+// terminal can transmit distinctly, so it stands in here for "the toggle was
+// pressed" — proving the root-table binding actually reaches the harness with
+// the pressed pane's own context, which is what decides where the popup
+// opens. Ctrl+backtick binds the same command (proven statically above) but
+// is not exercised live: disambiguating it from the NUL every terminal
+// collapses it to needs a kitty-protocol client, which send-keys is not.
+func TestPopupToggleFallbackRunsPopupOpen(t *testing.T) {
+	layout, record := installedWithRecorder(t)
+	tmux := tmuxWithConf(t, layout.UserConf)
+	pane := tmux("display-message", "-p", "-t", "=probe:0.0", "#{pane_id}")
+
+	attach(t, sessionsSocket(t))
+
+	// Pressed inside the poll rather than once before it: the emulator's
+	// nested client can take a moment past attach returning before it is
+	// actually reading its pty, and a key sent into that gap is a key the
+	// client was never there to receive.
+	if !settled(func() bool {
+		pressKey(t, sessionsSocket(t), tmuxconf.PopupToggleFallbackKey)
+		return strings.Contains(read(t, record), "popup open")
+	}) {
+		t.Fatalf("recorder got %q, want a popup open invocation", read(t, record))
+	}
+	got := read(t, record)
+	for _, want := range []string{"popup open", pane, "probe"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("recorder got %q, want it to contain %q", got, want)
+		}
+	}
+}
+
+// pressKey sends key into the client attach opened on socket, the way a real
+// keypress reaches it: written into the emulator's own pane rather than
+// asked of the Sessions server directly, since send-keys writes straight to
+// a pane's input and never goes through a key table at all — only an
+// attached client's own input loop does that, and attach's nested tmux
+// process is standing in for one.
+func pressKey(t *testing.T, socket, key string) {
+	t.Helper()
+	emulator := socket + "-emulator"
+	out, err := exec.Command("tmux", "-L", emulator, "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		t.Fatalf("list the emulator's session: %v", err)
+	}
+	target := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+	if out, err := exec.Command("tmux", "-L", emulator, "send-keys", "-t", target, key).CombinedOutput(); err != nil {
+		t.Fatalf("send-keys %s: %v\n%s", key, err, out)
 	}
 }
 
@@ -319,7 +433,11 @@ func TestTheStripShowsWhatTheDashboardHasWrittenAndNothingBefore(t *testing.T) {
 func TestFocusLandingOnAPaneRunsTheHarnessForIt(t *testing.T) {
 	layout, record := installedWithRecorder(t)
 	tmux := tmuxWithConf(t, layout.UserConf)
-	pane := tmux("display-message", "-p", "-t", "=probe", "#{pane_pid}")
+	// The window.pane suffix matters: a bare session target leaves
+	// display-message with no pane to read #{pane_pid} off, and prints
+	// nothing rather than failing — which would make this check pass
+	// whatever the recorder actually received.
+	pane := tmux("display-message", "-p", "-t", "=probe:0.0", "#{pane_pid}")
 
 	// A client with a pty of its own, the way the dock attaches to a Session.
 	// Only an attached client has a focus to land anywhere.

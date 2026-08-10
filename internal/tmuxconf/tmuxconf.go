@@ -39,6 +39,7 @@ type Layout struct {
 const settings = `# Managed by ganymede. Edit ganymede, not this file.
 set -g allow-passthrough on
 set -g focus-events on
+set -g extended-keys on
 `
 
 // seenHook is what turns tmux's focus into the harness's seen-tracking, and
@@ -62,6 +63,48 @@ const seenHook = `
 set -g @ganymede-seen "%s"
 set-hook -g pane-focus-in 'run-shell -b "#{q:@ganymede-seen} seen #{pane_pid}"'
 `
+
+// PopupToggleKey opens and closes the Popup shell (§8): one no-prefix key,
+// bound at the root table so it reaches every pane on every Session. Ghostty's
+// kitty keyboard protocol is what lets it transmit Ctrl+backtick distinctly
+// from the NUL byte most terminals collapse it to — extended-keys, in
+// settings above, is what tells tmux to make use of that when it is there.
+const PopupToggleKey = "C-`"
+
+// PopupToggleFallbackKey is bound to the same action as PopupToggleKey, for an
+// emulator that cannot transmit Ctrl+backtick distinctly and would otherwise
+// leave the Popup shell with no way to open at all.
+const PopupToggleFallbackKey = "M-`"
+
+// popupHook is the toggle's opening half. Closing is not this fragment's
+// concern: it is bound on the popup's own hidden tmux server (see
+// topology.Harness), which this fragment's server never reaches once a
+// popup has taken the pane over.
+//
+// It reads the harness's own path out of @ganymede-seen rather than carrying
+// a second copy of it: that option exists to answer exactly this question —
+// where the binary these hooks run is — for the seen-tracking hook above,
+// and a fragment naming its own harness twice is one hook install away from
+// naming it two different ways.
+//
+// Both keys run the same command, carrying the three things "ganymede popup
+// open" needs to decide where the popup belongs: the directory of the pane
+// the key was pressed in, the Session that pane is part of (the rail asks for
+// the Dashboard's own selection instead of its own directory — see the popup
+// package), and the pane itself, which is where the overlay is drawn. All
+// three are left as formats for run-shell to expand when the key is actually
+// pressed, for the same reason #{pane_pid} is in seenHook: expanded now, they
+// would name whichever pane this config happened to be loaded from, forever.
+const popupHook = `
+bind -n ` + PopupToggleKey + ` run-shell -b "#{q:@ganymede-seen} popup open #{q:pane_current_path} #{q:session_name} #{q:pane_id}"
+bind -n ` + PopupToggleFallbackKey + ` run-shell -b "#{q:@ganymede-seen} popup open #{q:pane_current_path} #{q:session_name} #{q:pane_id}"
+`
+
+// PopupDirOption is where the Dashboard writes which directory its cursor is
+// on, which is where a popup opens when the toggle is pressed with focus on
+// the rail rather than a Session's own pane — the rail has no pane of its
+// own to answer that question, so the harness asks the Dashboard instead.
+const PopupDirOption = "@ganymede-popup-dir"
 
 // AttentionOption is where the Dashboard writes the ambient attention strip.
 // tmux only places the option in the status line; everything the strip says is
@@ -93,7 +136,7 @@ func fragment(l Layout) string {
 	if l.Command == "" {
 		return settings + strip
 	}
-	return settings + strip + fmt.Sprintf(seenHook, quoteForOption(l.Command))
+	return settings + strip + fmt.Sprintf(seenHook, quoteForOption(l.Command)) + popupHook
 }
 
 // quoteForOption writes a path into a tmux double-quoted string. What tmux

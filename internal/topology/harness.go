@@ -38,6 +38,11 @@ type Harness struct {
 	// clients side by side.
 	DockSocket string
 	DockConf   string
+	// PopupSocket carries the Popup shell's hidden sessions (§8), one per
+	// owner directory — its own server so a popup can never take a name a
+	// repo's own Session might want, and so killing it takes every popup with
+	// it rather than any repo's own history.
+	PopupSocket string
 	// Worktree is the command a spawned Worktree session runs, given the name
 	// a spawn dialog derived and the first prompt when there is one. nil
 	// means WorktreeCommand — a test substitutes something else so Spawn need
@@ -77,7 +82,14 @@ func (h Harness) Ensure() error {
 	if err := h.ensureSession(working, h.WorkingDir, nil); err != nil {
 		return err
 	}
-	return h.ensureDock(working)
+	if err := h.ensureDock(working); err != nil {
+		return err
+	}
+	// Best effort, like turning off the Dashboard's own status line above: a
+	// harness that could not bind the popup socket's toggle still opens, with
+	// the Popup shell simply not closing again until the next Ensure.
+	h.ensurePopups()
+	return nil
 }
 
 // AttachCommand is what the emulator runs: the whole harness is behind it.
@@ -203,6 +215,7 @@ type server struct{ socket string }
 
 func (h Harness) sessions() server { return server{h.Socket} }
 func (h Harness) dock() server     { return server{h.DockSocket} }
+func (h Harness) popups() server   { return server{h.PopupSocket} }
 
 func (s server) args(args ...string) []string {
 	if s.socket == "" {
@@ -239,12 +252,13 @@ func Default(workingDir string) (Harness, error) {
 		// server the user's plain `tmux` reaches — named rather than implied,
 		// because the dock's panes clear $TMUX and would otherwise land on a
 		// different server than these commands do.
-		Socket:     "default",
-		Fragment:   layout.Fragment,
-		Dashboard:  []string{self, "dashboard"},
-		WorkingDir: workingDir,
-		DockSocket: "ganymede-dock",
-		DockConf:   filepath.Join(config.Home(home), "ganymede", "dock.conf"),
-		Worktree:   WorktreeCommand,
+		Socket:      "default",
+		Fragment:    layout.Fragment,
+		Dashboard:   []string{self, "dashboard"},
+		WorkingDir:  workingDir,
+		DockSocket:  "ganymede-dock",
+		DockConf:    filepath.Join(config.Home(home), "ganymede", "dock.conf"),
+		PopupSocket: "ganymede-popup",
+		Worktree:    WorktreeCommand,
 	}, nil
 }

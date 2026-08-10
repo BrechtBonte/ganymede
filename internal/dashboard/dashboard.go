@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BrechtBonte/ganymede/internal/popup"
 	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/ticket"
@@ -28,6 +29,11 @@ import (
 // whatever it is cautioning about.
 const caution = "⚠"
 
+// popupBusy is the mark a row carries while its own hidden Popup shell is
+// running something (§8) — never while it is only open and sitting at its
+// prompt, which is not worth a word.
+const popupBusy = "⏵"
+
 // Sessions is a fresh account of the working set, as the state model reports
 // it.
 type Sessions []session.Session
@@ -41,6 +47,15 @@ type Sessions []session.Session
 // part of a second to answer it, and a sidepanel that stopped taking keystrokes
 // for that long every half minute would be a sidepanel you stop reaching for.
 type Cautions map[string]repo.Caution
+
+// PopupStatuses is what every hidden Popup shell is doing, by the directory
+// it opened in, as the harness last swept them.
+//
+// Like Cautions, it arrives as a message rather than being read where it is
+// drawn: finding out costs a tmux round trip per sweep, not per directory,
+// but it is still a subprocess the goroutine drawing the tree must not wait
+// on.
+type PopupStatuses map[string]popup.Status
 
 // watchEnded says the state model has stopped reporting. The Dashboard keeps
 // showing what it last drew rather than blanking the tree.
@@ -102,6 +117,18 @@ type Tickets interface {
 	Open(key ticket.Key) error
 }
 
+// Popups is everything the Dashboard needs from the Popup shell (§8): which
+// owners are busy, for the marker on their row, and where its own cursor is
+// standing, for a popup opened with focus on the rail to know which repo it
+// belongs to — the rail has no pane of its own to answer that.
+type Popups interface {
+	// Sweep kills every popup whose directory has no live Session left in
+	// it, and reports the status of the ones that survive.
+	Sweep(liveDirs []string) (map[string]popup.Status, error)
+	// Selected tells the harness which directory the cursor is on.
+	Selected(dir string) error
+}
+
 // Harness is everything the Dashboard reaches the rest of the world through.
 // Any of them may be absent: a Dashboard missing one does less, and still
 // draws.
@@ -121,6 +148,9 @@ type Harness struct {
 	Activity Activity
 	// Spawner starts a background Worktree session for a repo.
 	Spawner Spawner
+	// Popups is the Popup shell's busy status and the harness's memory of
+	// where the cursor is.
+	Popups Popups
 }
 
 // Model is the Dashboard's bubbletea model.
@@ -151,6 +181,15 @@ type Model struct {
 	// cleared, only laid over by the next answer: a marker that blinked out
 	// while git was being asked again would be a marker you cannot read.
 	cautions Cautions
+	// popups is what the harness last said every hidden Popup shell is doing,
+	// by the directory it opened in. Like cautions, never cleared on its
+	// own — a sweep that found nothing new to report leaves the last one
+	// standing rather than blanking a marker mid-command.
+	popups PopupStatuses
+	// selectedWritten is the directory last told to the harness as the
+	// cursor's own, so that a redraw the cursor has not moved through does
+	// not tell it the same thing again.
+	selectedWritten string
 	// awaiting says a read of the roots is already in flight. The working set is
 	// rebuilt several times a second while an agent is working, and the read is
 	// the most expensive thing here — so the Dashboard asks once and waits for
@@ -261,6 +300,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+	case PopupStatuses:
+		m.popups = msg
+		m = m.rebuilt()
+		return m, nil
 	case watchEnded:
 		return m, nil
 	case Tick:
@@ -270,7 +313,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// older than this one's will be — and it is bounded to once every half
 		// minute, which is the point of hanging it on the tick.
 		m.awaiting = true
-		return m, tea.Batch(ticking(), m.reading())
+		return m, tea.Batch(ticking(), m.reading(), m.sweepingPopups())
 	case Discovered:
 		m.picker = m.picker.found(msg)
 		return m, nil
@@ -336,6 +379,7 @@ func (m Model) rebuilt() Model {
 		checkout: m.checkoutOf,
 		ticket:   m.ticketOf,
 		caution:  m.cautionOf,
+		popup:    m.popupOf,
 	})
 	m.waiting = session.AttentionIn(m.set)
 	m.cursor = 0
@@ -345,7 +389,7 @@ func (m Model) rebuilt() Model {
 			break
 		}
 	}
-	return m
+	return m.noting()
 }
 
 // workingSet is the repos the Dashboard shows: the ones with a Session running
@@ -416,6 +460,46 @@ func (m Model) reading() tea.Cmd {
 		}
 		return read
 	}
+}
+
+// sweepingPopups asks the harness which hidden Popup shells are busy, on the
+// same half-minute clock the cautions are re-read on — asking tmux is the
+// same size of question as asking git, and deserves the same one. It is also
+// where a popup whose owning Session has gone Gone is killed (§8): Sweep
+// does both in the one round trip, since telling the two apart costs
+// nothing once the live directories are already in hand.
+func (m Model) sweepingPopups() tea.Cmd {
+	if m.harness.Popups == nil {
+		return nil
+	}
+	sweep := m.harness.Popups.Sweep
+	// Live is a Session's own directory and a repo header's Main root alike:
+	// a repo can be on the rail on Activity alone, with no live Session in
+	// it at all, and a popup opened over its header row is exactly as live
+	// as one opened over a Session's own pane.
+	liveDirs := append(dirsOf(m.set), m.working...)
+	return func() tea.Msg {
+		statuses, err := sweep(liveDirs)
+		if err != nil {
+			// A sweep that failed said nothing about any popup, busy or
+			// not — unlike Cautions, which always has an answer worth
+			// laying over the last one, there is nothing here to lay
+			// anywhere. Reporting no message at all leaves m.popups
+			// exactly as it was, which is the only account of a running
+			// popup that could still be true.
+			return nil
+		}
+		return PopupStatuses(statuses)
+	}
+}
+
+// dirsOf is the directory every live Session is working in.
+func dirsOf(sessions []session.Session) []string {
+	dirs := make([]string, len(sessions))
+	for i, s := range sessions {
+		dirs[i] = s.Dir
+	}
+	return dirs
 }
 
 // readingUnread asks git about the roots on the rail if any of them has never
@@ -532,6 +616,46 @@ func (m Model) checkoutOf(dir string) string {
 // yet carries nothing, and says so until the answer arrives.
 func (m Model) cautionOf(root string) repo.Caution { return m.cautions[root] }
 
+// popupOf is what the harness last swept a directory's hidden Popup shell
+// doing. Like cautionOf, it is not asked here: a directory with no popup at
+// all, or one the harness has not swept yet, reads as idle rather than busy.
+func (m Model) popupOf(dir string) popup.Status { return m.popups[dir] }
+
+// selectedDir is the directory the cursor is currently on: a Session's own
+// on a Session row, or a repo header's Main root when it is not on one. It
+// is what a popup opened with focus on the rail has to be told, since the
+// rail has no pane of its own to answer that question.
+func (m Model) selectedDir() string {
+	if m.cursor >= len(m.rows) {
+		return ""
+	}
+	if r := m.rows[m.cursor]; r.session != nil {
+		return r.session.Dir
+	}
+	return m.rows[m.cursor].root
+}
+
+// noting tells the harness which directory the cursor is on, so that a popup
+// opened from the rail opens in the right one.
+//
+// Skipped when nothing has moved: the tree is rebuilt several times a second
+// while an agent is working, and telling tmux the same directory it was just
+// told would be the same waste the strip's own write-guard exists to avoid.
+func (m Model) noting() Model {
+	if m.harness.Popups == nil {
+		return m
+	}
+	dir := m.selectedDir()
+	if dir == "" || dir == m.selectedWritten {
+		return m
+	}
+	if err := m.harness.Popups.Selected(dir); err != nil {
+		return m
+	}
+	m.selectedWritten = dir
+	return m
+}
+
 // ticketOf is which ticket a Session's checkout is about, remembering what it
 // answered — for the same reason as the root, and unlike a root only until the
 // next tick: a branch is checked out and switched away from all day, and the
@@ -601,7 +725,7 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.spawn()
 		}
 	}
-	return m, nil
+	return m.noting(), nil
 }
 
 // setTicket opens the inline input over the selected Session.
@@ -903,12 +1027,24 @@ func (m Model) line(i int) string {
 	const indent = "  "
 	glyph := r.session.State.Glyph()
 	age := ageOf(*r.session)
-	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" ")-lipgloss.Width(about(r.ticket)+" "+age)-1)
+	mark := busyMark(r)
+	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" "+mark)-lipgloss.Width(about(r.ticket)+" "+age)-1)
 	if i == m.cursor {
-		return selectedStyle.Width(m.width).Render(spread(indent+glyph+" "+name, about(r.ticket)+" "+age, m.width))
+		return selectedStyle.Width(m.width).Render(spread(indent+glyph+" "+mark+name, about(r.ticket)+" "+age, m.width))
 	}
-	return spread(indent+styleOf(r.session.State).Render(glyph)+" "+name,
+	return spread(indent+styleOf(r.session.State).Render(glyph)+" "+mark+name,
 		ticketStyle(r.ticket).Render(about(r.ticket))+" "+quietStyle.Render(age), m.width)
+}
+
+// busyMark is a row's own busy-popup marker, with the trailing space that
+// separates it from whatever comes next — empty when its hidden Popup shell
+// is not running anything worth mentioning (§8), so a row with no popup at
+// all costs the layout nothing.
+func busyMark(r row) string {
+	if !r.popup.Busy {
+		return ""
+	}
+	return popupBusy + " "
 }
 
 // repoLine draws a repo's header row: its name, and at the far end the mark of
@@ -920,10 +1056,12 @@ func (m Model) line(i int) string {
 // are read in that order: what the root is, then what is in it.
 func (m Model) repoLine(r row, selected bool) string {
 	glyph := r.state.Glyph()
-	// What the row has left for a caution once the name and the mark have had
-	// their columns. Where that leaves too little, the caution says less rather
-	// than nothing, and the name is truncated to make room for what is left.
-	warning := carrying(r.caution, m.width-lipgloss.Width(r.label()+glyph)-2)
+	mark := strings.TrimRight(busyMark(r), " ")
+	// What the row has left for a caution once the name, the mark and the
+	// state glyph have had their columns. Where that leaves too little, the
+	// caution says less rather than nothing, and the name is truncated to
+	// make room for what is left.
+	warning := carrying(r.caution, m.width-lipgloss.Width(r.label()+glyph+mark)-2)
 	// Nothing is styled until there is something to style: a style applied to an
 	// empty string is escape codes around nothing, which is empty to the eye and
 	// a string with something in it to everything that measures one.
@@ -932,11 +1070,17 @@ func (m Model) repoLine(r row, selected bool) string {
 		if warning != "" {
 			marks = warning + " " + glyph
 		}
+		if mark != "" {
+			marks += " " + mark
+		}
 		return selectedStyle.Width(m.width).Render(spread(r.label(), marks, m.width))
 	}
 	marks = rootStyle(r.state).Render(glyph)
 	if warning != "" {
 		marks = cautionStyle.Render(warning) + " " + marks
+	}
+	if mark != "" {
+		marks += " " + mark
 	}
 	return spread(repoStyle.Render(r.label()), marks, m.width)
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/ghostty"
 	"github.com/BrechtBonte/ganymede/internal/hooks"
 	"github.com/BrechtBonte/ganymede/internal/inventory"
+	"github.com/BrechtBonte/ganymede/internal/popup"
 	"github.com/BrechtBonte/ganymede/internal/reconciler"
 	"github.com/BrechtBonte/ganymede/internal/registry"
 	"github.com/BrechtBonte/ganymede/internal/state"
@@ -40,6 +41,12 @@ Usage:
   ganymede seen <pid>       Report the Sessions running inside a process as
                             seen, which clears Ready. tmux runs this for you
                             when focus lands on a pane.
+  ganymede popup open <dir> <session> <pane>
+                            Open the Popup shell over pane, started in dir —
+                            or the Dashboard's own selection when session is
+                            the Dashboard's. tmux's root-table toggle runs
+                            this for you; closing is the popup socket's own
+                            business and never reaches here.
 `
 
 func main() {
@@ -66,6 +73,8 @@ func run(args []string) error {
 		return report(os.Stdin)
 	case "seen":
 		return seen(args[1:])
+	case "popup":
+		return popupCommand(args[1:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return nil
@@ -167,7 +176,7 @@ func runDashboard() error {
 	// working client to a Session or to a repo, and it carries the counts to
 	// that client's status line.
 	hands := dashboard.Harness{
-		Jumper: harness, Opener: harness, Strip: harness, Spawner: harness,
+		Jumper: harness, Opener: harness, Strip: harness, Spawner: harness, Popups: harness,
 		Seen: model.Seen, Tickets: known(),
 	}
 	// Where the harness looks for repos, and what it remembers about the ones
@@ -331,4 +340,41 @@ func seen(args []string) error {
 		}
 	}
 	return nil
+}
+
+// popupCommand dispatches the Popup shell's own subcommands. There is only
+// one: closing is the popup socket's own root table (topology.Harness),
+// which never reaches this binary at all.
+func popupCommand(args []string) error {
+	if len(args) == 0 || args[0] != "open" {
+		return errors.New("popup takes one subcommand: open <dir> <session> <pane>")
+	}
+	return popupOpen(args[1:])
+}
+
+// popupOpen shows the Popup shell over pane: the pressed pane's own
+// directory, unless session names the Dashboard, which has none of its own
+// to offer — the rail asks the harness what the Dashboard last selected
+// instead (see popup.TargetDir). tmux's root-table toggle runs this for
+// you; see tmuxconf's popupHook.
+func popupOpen(args []string) error {
+	if len(args) != 3 {
+		return errors.New("popup open takes the pane's directory, session name, and pane id")
+	}
+	paneDir, session, pane := args[0], args[1], args[2]
+
+	harness, err := topology.Default(paneDir)
+	if err != nil {
+		return err
+	}
+	// Asked only when the toggle was pressed on the Dashboard's own pane:
+	// every other press is the ordinary case, and TargetDir never looks at
+	// this value for it, so asking anyway would be a tmux round trip paid
+	// on every single popup for an answer that is always thrown away.
+	selected := ""
+	if session == topology.DashboardSession {
+		selected = harness.SelectedDir()
+	}
+	dir := popup.TargetDir(session, topology.DashboardSession, paneDir, selected)
+	return harness.OpenPopup(dir, pane)
 }
