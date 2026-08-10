@@ -37,6 +37,10 @@ type spawning struct {
 	root, label            string
 	field                  spawnField
 	ticket, suffix, prompt string
+	// claimWarning is the mention this dialog carries when the repo has a
+	// Claim on it (§4.2: "warns agent spawns away") — empty on the ordinary
+	// Free or InUse root.
+	claimWarning string
 }
 
 // name is the worktree name the fields ask for (§6): the ticket and the
@@ -134,7 +138,7 @@ func (m Model) spawn() Model {
 	if r.session != nil {
 		return m
 	}
-	m.spawning = &spawning{root: r.root, label: r.label()}
+	m.spawning = &spawning{root: r.root, label: r.label(), claimWarning: m.claimedWarning(r.root)}
 	return m
 }
 
@@ -144,7 +148,7 @@ func (m Model) spawn() Model {
 // what spawning into it from here is for.
 func (m Model) spawnInto(dir string) Model {
 	m.picker = m.picker.closed()
-	m.spawning = &spawning{root: dir, label: filepath.Base(dir)}
+	m.spawning = &spawning{root: dir, label: filepath.Base(dir), claimWarning: m.claimedWarning(dir)}
 	return m
 }
 
@@ -227,12 +231,15 @@ func (m Model) spawningView() []string {
 	if preview := s.name(); preview != "" {
 		first = s.label + " → " + preview
 	}
-	return []string{
-		elide(first, m.width),
+	lines := []string{elide(first, m.width)}
+	if s.claimWarning != "" {
+		lines = append(lines, claimedStyle.Render(truncate("⚑ "+s.claimWarning, m.width)))
+	}
+	return append(lines,
 		fieldLine("ticket", s.ticket, s.field == fieldTicket, m.width),
 		fieldLine("suffix", s.suffix, s.field == fieldSuffix, m.width),
 		fieldLine("prompt", s.prompt, s.field == fieldPrompt, m.width),
 		quietStyle.Render(shorten(s.root, m.width)),
 		quietStyle.Render(truncate("tab next field · ⏎ spawn · esc cancel", m.width)),
-	}
+	)
 }

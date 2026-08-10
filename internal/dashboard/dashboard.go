@@ -129,6 +129,23 @@ type Popups interface {
 	Selected(dir string) error
 }
 
+// Claimer is where a Main root Claim is kept (§4.2, §7.3's free key): claim
+// it with an optional note, release it, and read which roots are claimed
+// right now — which is what keeps a Claimed repo with nothing running in it
+// on the rail (§5.1) and what a repo header's own row reads to draw its
+// state.
+type Claimer interface {
+	Claim(root, note string) error
+	Release(root string) error
+	// Claimed is every root reserved right now, by root, with the note it
+	// was claimed with.
+	Claimed() map[string]string
+	// NoteOf is the note root was claimed with, and whether it is claimed at
+	// all — a Takeover reads it to preserve a note already on the root
+	// rather than fetching every Claim just to read the one.
+	NoteOf(root string) (string, bool)
+}
+
 // Harness is everything the Dashboard reaches the rest of the world through.
 // Any of them may be absent: a Dashboard missing one does less, and still
 // draws.
@@ -159,8 +176,12 @@ type Harness struct {
 	Prompter Prompter
 	// Stopper interrupts a Working Session's turn with a bare guarded Esc,
 	// and ends an Idle or Ready one gracefully once its own confirmation has
-	// been answered (§7.3).
+	// been answered (§7.3). A Takeover reuses it to end the occupant before
+	// claiming the root.
 	Stopper Stopper
+	// Claimer is where a Main root Claim is kept: claim it, release it, and
+	// read which roots are claimed now (§4.2, §7.3's free key).
+	Claimer Claimer
 }
 
 // Model is the Dashboard's bubbletea model.
@@ -224,6 +245,12 @@ type Model struct {
 	prompting *prompting
 	// ending is the end-session confirmation, and nil when none is open.
 	ending *ending
+	// claiming is the Claim dialog open over a Free repo header, and nil
+	// when none is open.
+	claiming *claiming
+	// takingOver is the Takeover confirmation open over an InUse repo header
+	// whose only occupant is Idle, and nil when none is open.
+	takingOver *takingOver
 	// pending is which Sessions, by pid, have a guarded answer in flight —
 	// sent off the main loop and not yet back — so a second y or n on the
 	// same row before the first lands cannot fire a second send at the pane
@@ -371,6 +398,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.stopped(msg.pid, msg.err)
 	case ended:
 		return m.stopped(msg.pid, msg.err)
+	case tookOver:
+		return m.stoppedTakeover(msg)
 	case tea.KeyMsg:
 		return m.pressed(msg)
 	}
@@ -427,13 +456,22 @@ func (m Model) rebuilt() Model {
 	if m.tickets == nil {
 		m.tickets = map[string]ticket.Key{}
 	}
-	m.working = m.workingSet()
+	// Read once and closed over rather than asked per row: Claim and Release
+	// are synchronous state-file writes, and there is no async round trip
+	// here worth caching the way cautions and popups are — but every row
+	// asking about the same working set should still see the same answer.
+	claimed := map[string]string{}
+	if m.harness.Claimer != nil {
+		claimed = m.harness.Claimer.Claimed()
+	}
+	m.working = m.workingSet(claimed)
 	m.rows = rowsOf(m.set, m.working, answers{
 		root:     m.rootOf,
 		checkout: m.checkoutOf,
 		ticket:   m.ticketOf,
 		caution:  m.cautionOf,
 		popup:    m.popupOf,
+		claimed:  func(root string) (string, bool) { note, ok := claimed[root]; return note, ok },
 	})
 	m.waiting = session.AttentionIn(m.set)
 	m.cursor = 0
@@ -446,24 +484,25 @@ func (m Model) rebuilt() Model {
 	return m.noting()
 }
 
-// workingSet is the repos the Dashboard shows: the ones with a Session running
-// in them, and the ones the harness remembers you working in recently enough.
-//
-// Claimed roots belong in here too and are not passed yet — nothing can claim
-// one until the Claim action exists. The rule already honours them, so that is
-// a field to fill rather than a rule to revisit.
-func (m Model) workingSet() []string {
+// workingSet is the repos the Dashboard shows: the ones with a Session
+// running in them, the ones you have claimed, and the ones the harness
+// remembers you working in recently enough.
+func (m Model) workingSet(claimed map[string]string) []string {
 	live := make([]string, 0, len(m.set))
 	for _, s := range m.set {
 		if root := m.rootOf(s.Dir); root != "" {
 			live = append(live, root)
 		}
 	}
+	roots := make([]string, 0, len(claimed))
+	for root := range claimed {
+		roots = append(roots, root)
+	}
 	var active map[string]time.Time
 	if m.harness.Activity != nil {
 		active = m.harness.Activity.Active()
 	}
-	return workingset.Membership{Live: live, Active: active}.Roots(time.Now())
+	return workingset.Membership{Live: live, Claimed: roots, Active: active}.Roots(time.Now())
 }
 
 // asking lets go of the answers that go stale on their own, and draws the
@@ -665,10 +704,15 @@ func (m Model) checkoutOf(dir string) string {
 	return checkout
 }
 
-// cautionOf is what git last said a Main root is carrying. Unlike everything
-// else a row is built from, it is not asked here: a root nobody has asked about
-// yet carries nothing, and says so until the answer arrives.
-func (m Model) cautionOf(root string) repo.Caution { return m.cautions[root] }
+// cautionOf is what git last said a Main root is carrying, and whether it
+// has been asked at all. Unlike everything else a row is built from, it is
+// not asked here: a root nobody has asked about yet carries nothing, and
+// says so until the answer arrives — the second return is what tells that
+// silence apart from a root git has actually looked at and found clean.
+func (m Model) cautionOf(root string) (repo.Caution, bool) {
+	caution, known := m.cautions[root]
+	return caution, known
+}
 
 // popupOf is what the harness last swept a directory's hidden Popup shell
 // doing. Like cautionOf, it is not asked here: a directory with no popup at
@@ -743,6 +787,10 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.promptKey(msg)
 	case m.ending != nil:
 		return m.endingKey(msg)
+	case m.claiming != nil:
+		return m.claimingKey(msg), nil
+	case m.takingOver != nil:
+		return m.takingOverKey(msg)
 	case m.setting != nil:
 		return m.typed(msg), nil
 	case m.picker.open:
@@ -791,6 +839,8 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.interrupt()
 		case "q":
 			m = m.startEnd()
+		case "c":
+			return m.claim()
 		}
 	}
 	return m.noting(), nil
@@ -1000,6 +1050,10 @@ var (
 	// enough to catch an eye running down the rail and quiet enough not to be
 	// mistaken for a Session that has stopped.
 	cautionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e3b341"))
+	// Claimed reads in the same amber as a caution — the validated mock's own
+	// choice, and not a coincidence worth a second colour: both are the
+	// harness telling you something worth a second look before a PR goes in.
+	claimedStyle = cautionStyle
 	// The selected row is inverted and otherwise drawn plainly: a state colour
 	// nested inside the inversion fights with it.
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
@@ -1225,12 +1279,16 @@ func carrying(c repo.Caution, room int) string {
 }
 
 // rootStyle is how a Main root's state is drawn: a root with an agent in it
-// reads in the agents' own colour, because an agent is what has it, and a free
-// one in the quiet the sidepanel keeps for everything that is not asking
+// reads in the agents' own colour, because an agent is what has it; a root
+// you have claimed in the same amber every other Claimed mark reads in; and a
+// free one in the quiet the sidepanel keeps for everything that is not asking
 // anything of you.
 func rootStyle(state repo.State) lipgloss.Style {
-	if state == repo.InUse {
+	switch state {
+	case repo.InUse:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color(session.Working.Colour()))
+	case repo.Claimed:
+		return claimedStyle
 	}
 	return quietStyle
 }
@@ -1280,6 +1338,12 @@ func (m Model) selected() []string {
 	if m.ending != nil {
 		return m.endingView()
 	}
+	if m.claiming != nil {
+		return m.claimingView()
+	}
+	if m.takingOver != nil {
+		return m.takingOverView()
+	}
 	if m.setting != nil {
 		// The box is the input for as long as one is open. It says what is
 		// being corrected rather than what is selected, because the two come
@@ -1310,10 +1374,21 @@ func (m Model) selected() []string {
 			repoStyle.Render(truncate(r.label(), m.width)),
 			rootStyle(r.state).Render(r.state.Glyph()) + " " + truncate("root: "+string(r.state), m.width-2),
 		}
+		if r.state == repo.Claimed && r.claimNote != "" {
+			lines = append(lines, quietStyle.Render(truncate("note: "+r.claimNote, m.width)))
+		}
 		lines = append(lines, m.carrying(r.caution)...)
+		if r.state == repo.Claimed && r.cautionKnown && !r.caution.Any() {
+			// The nudge a Claimed root earns once the review it was reserved
+			// for looks done from here: back on the default branch, nothing
+			// uncommitted left in it. Gated on cautionKnown too — a root git
+			// has not actually been asked about yet must never read as
+			// clean by default.
+			lines = append(lines, claimedStyle.Render(truncate("clean on default — release?", m.width)))
+		}
 		return append(lines,
 			quietStyle.Render(shorten(r.root, m.width)),
-			quietStyle.Render(truncate("⏎ go to repo · w spawn", m.width)))
+			quietStyle.Render(m.repoOffering(r)))
 	}
 
 	// What the Session is doing and how long it has been doing it, then its
@@ -1394,7 +1469,13 @@ func offering(r row, width int) string {
 	if r.ticket != "" {
 		keys = append(keys, "o open")
 	}
+	return fitKeys(keys, width)
+}
 
+// fitKeys is offering's own greedy fit, shared with a repo header's row
+// (repoOffering): as many whole keys as fit, in the order they matter most,
+// and never one cut off mid-word.
+func fitKeys(keys []string, width int) string {
 	var line string
 	for _, key := range keys {
 		next := key
