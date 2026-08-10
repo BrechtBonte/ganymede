@@ -42,6 +42,11 @@ const (
 	// Seen: the harness's own — focus landed on the Session's pane, or you
 	// jumped to it, either of which clears Ready.
 	Seen Kind = "Seen"
+	// Escalate: the first-party 60s "still sitting there" signal (§9). It says
+	// nothing about whether the Session is Blocked or Ready — only the state
+	// model, which alone knows whether the Session is still unseen, can turn
+	// this into an alert worth raising beyond the Dashboard.
+	Escalate Kind = "Escalate"
 )
 
 // Event is one thing that happened to a Session.
@@ -116,17 +121,21 @@ func Parse(body []byte) (Event, bool) {
 		event.Kind = Blocked
 		event.Reason = permissionReason(p.ToolName)
 	case "Notification":
-		if !stops(p.NotificationType) {
+		switch {
+		case p.NotificationType == "idle_prompt":
+			event.Kind = Escalate
+		case stops(p.NotificationType):
+			event.Kind = Blocked
+			// A Blocked row is always displayed with its reason, so there has
+			// to be one. The notification's own kind is a poor reason but an
+			// honest one, and better than a row that says a Session is stuck
+			// and will not say on what.
+			event.Reason = oneLine(p.Message, reasonLimit)
+			if event.Reason == "" {
+				event.Reason = p.NotificationType
+			}
+		default:
 			return Event{}, false
-		}
-		event.Kind = Blocked
-		// A Blocked row is always displayed with its reason, so there has to
-		// be one. The notification's own kind is a poor reason but an honest
-		// one, and better than a row that says a Session is stuck and will not
-		// say on what.
-		event.Reason = oneLine(p.Message, reasonLimit)
-		if event.Reason == "" {
-			event.Reason = p.NotificationType
 		}
 	case seenEvent:
 		event.Kind = Seen

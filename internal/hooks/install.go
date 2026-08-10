@@ -45,6 +45,12 @@ func Command(binary string) string {
 // second install replaces the first rather than doubling it, and a command
 // left behind by a binary that has since moved goes with them.
 //
+// The harness's notifier is also made the single OS channel (§9): Claude
+// Code's own built-in desktop notification is turned off, and any existing
+// osascript wiring that put a notification up itself is absorbed alongside
+// the harness's own stale entries — otherwise a Blocked or Ready Session would
+// bank a notification twice over.
+//
 // Everything else in the file is the user's — their model, their permissions,
 // their own hooks, their secrets. It is read as an unopened tree and written
 // back whole, so a key this harness has never heard of survives it.
@@ -71,9 +77,13 @@ func Install(settings, command string) error {
 			}
 			groups = listed
 		}
-		installed[event] = append(without(groups), group(command))
+		installed[event] = append(without(groups, event), group(command))
 	}
 	doc["hooks"] = installed
+	// The one setting outside "hooks" this harness ever touches: unconditional,
+	// because the notifier being the sole channel is not a preference this
+	// harness offers a way out of (§9).
+	doc["preferredNotifChannel"] = "notifications_disabled"
 
 	body, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -112,7 +122,15 @@ func group(command string) map[string]any {
 // exactly where it stands: settings are the user's file, and a shape this
 // harness cannot read is more likely a Claude Code newer than it than a
 // mistake.
-func without(groups []any) []any {
+//
+// event narrows which osascript notification wiring is absorbed alongside the
+// harness's own stale entries: only on Stop and Notification, the two events
+// Claude Code's own notification recipe actually wires (§9). A handler shaped
+// the same way but wired to some other event this harness also reads — say,
+// the user's own thing on SessionStart — is theirs to keep; deleting it would
+// be reading absorption into a scope the spec never gave it.
+func without(groups []any, event string) []any {
+	absorbNotifications := event == "Stop" || event == "Notification"
 	kept := make([]any, 0, len(groups))
 	for _, entry := range groups {
 		found, isGroup := entry.(map[string]any)
@@ -128,7 +146,7 @@ func without(groups []any) []any {
 
 		remaining := make([]any, 0, len(handlers))
 		for _, handler := range handlers {
-			if !isOurs(handler) {
+			if !isOurs(handler) && !(absorbNotifications && isNotificationWiring(handler)) {
 				remaining = append(remaining, handler)
 			}
 		}
@@ -162,6 +180,26 @@ func isOurs(handler any) bool {
 		return false
 	}
 	return filepath.Base(unquote(binary)) == "ganymede"
+}
+
+// isNotificationWiring reports whether a hook handler is the osascript
+// recipe for a desktop notification — the one Claude Code's own docs suggest,
+// and the one this machine already had wired on Stop and Notification before
+// the harness existed. The harness's notifier is now the sole OS channel
+// (§9), so this is absorbed alongside the harness's own stale entries rather
+// than left beside it, doubling every Blocked and Ready banner.
+//
+// It goes by the shape of the command — osascript told to display a
+// notification — rather than by the binary alone: an osascript hook doing
+// something else entirely (a Finder command, a dialog) is none of the
+// harness's business.
+func isNotificationWiring(handler any) bool {
+	found, ok := handler.(map[string]any)
+	if !ok {
+		return false
+	}
+	command, _ := found["command"].(string)
+	return strings.Contains(command, "osascript") && strings.Contains(command, "display notification")
 }
 
 // unquote takes off the shell quoting Command put on.

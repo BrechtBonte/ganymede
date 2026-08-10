@@ -22,6 +22,7 @@ go build -o bin/ganymede ./cmd/ganymede
 | `ganymede install` | Install the tmux configuration and the hooks only |
 | `ganymede hook` | Report a hook payload on stdin — Claude Code runs this for you |
 | `ganymede seen <pid>` | Report the sessions inside a process as seen — tmux runs this for you |
+| `ganymede notify-click <pid>` | Focus Ghostty and jump to the session a notification was about — a clicked notification runs this for you |
 
 Inside the window, `Alt+g` moves between the sidepanel and the working client. The dock — the outer tmux server framing the two — runs with no prefix key, so `C-b` and everything else belongs to the session you are working in.
 
@@ -216,6 +217,7 @@ The glossary in `CONTEXT.md` is normative: Dashboard, Working set, Session, Main
 - tmux — with the harness-installed config fragment: `allow-passthrough on`, `focus-events on`, the status-line strip segment, and the root-table popup binding
 - Claude Code — registry shape verified against **2.1.226**, unchanged from the 2.1.220 record in the spec's §11; it must be re-verified on upgrades
 - Go toolchain, to build `ganymede`
+- [terminal-notifier](https://github.com/julienXX/terminal-notifier) (`brew install terminal-notifier`) — the harness's own OS notification channel (§9); `ganymede up` says so if it is missing, and Blocked and Ready alerts simply do not fire beyond the Dashboard without it
 
 ## Build order
 

@@ -1,6 +1,7 @@
 package ghostty_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,5 +104,42 @@ func TestOpenDoesNotWaitForTheWindowToClose(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("Open blocked for %s; it should return once the window is up", elapsed)
+	}
+}
+
+// No banner fires while Ghostty is the window in front of you (§9) — the one
+// question Frontmost exists to answer.
+func TestFrontmostIsTrueWhenGhosttyIsInFront(t *testing.T) {
+	e := ghostty.Emulator{FrontApp: func() (string, error) { return "Ghostty", nil }}
+
+	front, err := e.Frontmost()
+	if err != nil {
+		t.Fatalf("Frontmost: %v", err)
+	}
+	if !front {
+		t.Error("Frontmost = false, want true when Ghostty is the frontmost app")
+	}
+}
+
+// Any other application in front means banners are allowed to fire.
+func TestFrontmostIsFalseForAnyOtherApp(t *testing.T) {
+	e := ghostty.Emulator{FrontApp: func() (string, error) { return "Slack", nil }}
+
+	front, err := e.Frontmost()
+	if err != nil {
+		t.Fatalf("Frontmost: %v", err)
+	}
+	if front {
+		t.Error("Frontmost = true, want false when another app is in front")
+	}
+}
+
+// A question that could not be answered is not the same as a "no" — the
+// caller decides whether to fail open, and must be able to tell the two apart.
+func TestFrontmostReportsAskingWentWrong(t *testing.T) {
+	e := ghostty.Emulator{FrontApp: func() (string, error) { return "", errors.New("no System Events") }}
+
+	if _, err := e.Frontmost(); err == nil {
+		t.Error("Frontmost swallowed the error asking which app is frontmost")
 	}
 }

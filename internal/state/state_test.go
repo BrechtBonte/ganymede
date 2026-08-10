@@ -26,6 +26,7 @@ type watching struct {
 	checks    chan reconciler.Reconciled
 	hooks     chan hooks.Event
 	merged    <-chan []session.Session
+	alerts    <-chan state.Alert
 }
 
 func watch(t *testing.T) *watching {
@@ -38,7 +39,36 @@ func watch(t *testing.T) *watching {
 		hooks:     make(chan hooks.Event),
 	}
 	w.merged = w.model.Watch(t.Context(), w.snapshots, w.checks, w.hooks)
+	w.alerts = w.model.Alerts()
 	return w
+}
+
+// alerted waits for the next Alert the model raises.
+//
+// It is read after the working set that the same event produced: apply runs
+// to completion — Alert and all — before the model ever blocks trying to hand
+// the merged set to the test, so by the time shown() has returned, an Alert
+// the event raised is already sitting in the (buffered) channel waiting to be
+// read without a race.
+func (w *watching) alerted() state.Alert {
+	w.t.Helper()
+	select {
+	case a := <-w.alerts:
+		return a
+	case <-time.After(2 * time.Second):
+		w.t.Fatal("the state model raised no Alert")
+		return state.Alert{}
+	}
+}
+
+// noAlert asserts that nothing has been raised.
+func (w *watching) noAlert() {
+	w.t.Helper()
+	select {
+	case a := <-w.alerts:
+		w.t.Fatalf("the state model raised an Alert it should not have: %+v", a)
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 // registry is what the registry says the working set is now.
@@ -641,5 +671,145 @@ func TestTheTwoAreMatchedOnTheProcess(t *testing.T) {
 
 	if shown.State != session.Working {
 		t.Errorf("the Session is %s, want the cross-check's %s", shown.State, session.Working)
+	}
+}
+
+// The whole reason Alerts exist: a permission prompt going up is worth a
+// notification beyond the Dashboard the moment the hook says so.
+func TestAPermissionPromptRaisesABlockedAlert(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Working, start))
+
+	w.hook(needsADecision("permission: Bash", start.Add(time.Minute)))
+
+	alert := w.alerted()
+	if alert.Kind != state.AlertBlocked {
+		t.Errorf("alert kind = %s, want %s", alert.Kind, state.AlertBlocked)
+	}
+	if alert.Session != "s1" {
+		t.Errorf("the alert names Session %q, want %q", alert.Session, "s1")
+	}
+	if alert.Reason != "permission: Bash" {
+		t.Errorf("alert reason = %q, want %q", alert.Reason, "permission: Bash")
+	}
+}
+
+// Going Blocked is edge-triggered: a second hook arriving while the first
+// decision is still open is not a new one to ping about. Alerts style already
+// keeps the first banner up, and no-re-nagging is the whole point of it.
+func TestGoingBlockedAgainWhileAlreadyBlockedDoesNotAlertTwice(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Working, start))
+	w.hook(needsADecision("permission: Bash", start.Add(time.Minute)))
+	w.alerted()
+
+	w.hook(needsADecision("permission: Write(config.yaml)", start.Add(2*time.Minute)))
+
+	w.noAlert()
+}
+
+// But a block that resolved and then recurred is a new decision, and gets its
+// own Alert — the edge is on standing Blocked, not on the Session ever having
+// been Blocked before.
+func TestBlockedAlertsAgainAfterResolvingAndBlockingAgain(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Working, start))
+	w.hook(needsADecision("permission: Bash", start.Add(time.Minute)))
+	w.alerted()
+	w.registry(running(session.Working, start.Add(2*time.Minute)))
+
+	w.hook(needsADecision("permission: Write(config.yaml)", start.Add(3*time.Minute)))
+
+	alert := w.alerted()
+	if alert.Reason != "permission: Write(config.yaml)" {
+		t.Errorf("alert reason = %q, want the new reason", alert.Reason)
+	}
+}
+
+// Ready itself is silent — dashboard badge only. It is the first-party 60s
+// idle_prompt signal, and only that, which can turn it into an Alert.
+func TestATurnEndingRaisesNoAlertOnItsOwn(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, start))
+
+	w.hook(turnEnded("shall I push?"))
+
+	w.noAlert()
+}
+
+// The escalation the whole design is for: idle_prompt arrives, the turn is
+// still unread, and one notification fires — carrying what the turn ended on,
+// since that is what makes it worth reading.
+func TestAnUnseenReadyEscalatesWhenTheIdlePromptArrives(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, start))
+	w.hook(turnEnded("shall I push?"))
+
+	w.hook(hooks.Event{Kind: hooks.Escalate, Session: "s1"})
+
+	alert := w.alerted()
+	if alert.Kind != state.AlertReady {
+		t.Errorf("alert kind = %s, want %s", alert.Kind, state.AlertReady)
+	}
+	if alert.Snippet != "shall I push?" {
+		t.Errorf("alert snippet = %q, want what the turn ended on", alert.Snippet)
+	}
+}
+
+// The harness gates the escalation on its own seen-tracking: a Session
+// already looked at must never ping just because idle_prompt happened to
+// arrive anyway.
+func TestASeenReadyDoesNotEscalate(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, start))
+	w.hook(turnEnded("done"))
+	w.hook(hooks.Event{Kind: hooks.Seen, Session: "s1"})
+
+	w.hook(hooks.Event{Kind: hooks.Escalate, Session: "s1"})
+
+	w.noAlert()
+}
+
+// A Session that was never Ready in the first place — still Working, say —
+// has nothing for idle_prompt to escalate.
+func TestEscalationForASessionThatIsNotReadyDoesNothing(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Working, start))
+
+	w.hook(hooks.Event{Kind: hooks.Escalate, Session: "s1"})
+
+	w.noAlert()
+}
+
+// Exactly one notification fires per Ready cycle (§9), however many times
+// idle_prompt itself arrives.
+func TestEscalationFiresOnlyOncePerReadyCycle(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, start))
+	w.hook(turnEnded("done"))
+	w.hook(hooks.Event{Kind: hooks.Escalate, Session: "s1"})
+	w.alerted()
+
+	w.hook(hooks.Event{Kind: hooks.Escalate, Session: "s1"})
+
+	w.noAlert()
+}
+
+// A Session seen and left Ready again by a later turn is a new cycle, and can
+// escalate again.
+func TestEscalationCanFireAgainOnANewReadyCycle(t *testing.T) {
+	w := watch(t)
+	w.registry(running(session.Idle, start))
+	w.hook(turnEnded("first"))
+	w.hook(hooks.Event{Kind: hooks.Escalate, Session: "s1"})
+	w.alerted()
+	w.hook(hooks.Event{Kind: hooks.Seen, Session: "s1"})
+
+	w.hook(turnEnded("second"))
+	w.hook(hooks.Event{Kind: hooks.Escalate, Session: "s1"})
+
+	alert := w.alerted()
+	if alert.Snippet != "second" {
+		t.Errorf("alert snippet = %q, want %q", alert.Snippet, "second")
 	}
 }
