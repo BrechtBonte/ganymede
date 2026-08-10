@@ -1,257 +1,127 @@
 # Ganymede
 
-A terminal harness for day-to-day multi-repo [Claude Code](https://code.claude.com) work on macOS — a tmux environment with an always-visible dashboard that shows which repos have agent sessions open, which of those need you, and which main checkouts are free.
+> **Status:** actively evolving — claim/takeover, worktree spawn, inline actions, and notifications all work day-to-day; rough edges are still being sanded down.
 
-It replaces Warp as the daily driver. It is not a general-purpose terminal: tmux owns the layout, Ghostty is just the window it lives in, and the harness itself is one Go binary.
+## Table of contents
 
-> **Status: the dashboard is live, and read-only.** It watches Claude Code's session registry, listens to hooks, and cross-checks both against `claude agents --json` every 30 seconds, and draws your real sessions grouped under their repo in every state — Working, Blocked with its reason, Ready with the message the turn ended on, Idle, Shell — appearing and disappearing as sessions start and end. Everything waiting on you sorts to the top — Blocked above Ready, longest-waiting first — with each row carrying how long it has been there, the SELECTED box spelling the highlighted row out in full, and the working client's status line carrying the ambient `█ N blocked · ● M ready` counts. The list is the **working set**, not everything: repos with a live session, plus the ones you worked in over the last seven days, which it remembers across restarts and drops again once the window closes. `⏎` jumps the working client to the selected session — or, on a repo's own row, takes you to the repo — and seeing a session clears its Ready badge. `g` opens a fuzzy picker over every repo discovered under `~/Projects`, and picking one takes you there and puts it on the dashboard. Every session row also carries the JIRA ticket its checkout is about — read off the branch, or the worktree's name, or whatever you corrected it to with `t` — and `o` opens that ticket in the browser. Each repo's own row says whether its main root is free for a PR checkout or in use by an agent — any live session working in the root holds it, even an idle one, while a worktree session leaves it free — and cautions what that checkout is carrying: the branch it has strayed to, a commit checked out by hash, an uncommitted tree — re-read off git on the same half-minute clock as the tickets, since nothing reports a branch you checked out yourself. Nothing else on the dashboard acts yet: no claims, no worktree spawn, no inline actions, no notifier. Everything below describes the design in full — the specification is the single source of truth for the build, see [Design documents](#design-documents). See [Getting started](#getting-started) for what runs today.
+- [What it is](#what-it-is)
+- [How to use it](#how-to-use-it)
+  - [See what needs you](#see-what-needs-you)
+  - [Spawn a worktree session for a ticket](#spawn-a-worktree-session-for-a-ticket)
+  - [Respond to a permission prompt inline](#respond-to-a-permission-prompt-inline)
+  - [Claim a root for PR review](#claim-a-root-for-pr-review)
+  - [Get notified when you're away](#get-notified-when-youre-away)
+  - [Keys](#keys)
+- [How to install](#how-to-install)
+  - [Prerequisites](#prerequisites)
+  - [Install](#install)
+  - [Run](#run)
+- [Learn more](#learn-more)
 
-## Getting started
+## What it is
 
-```sh
-go build -o bin/ganymede ./cmd/ganymede
-./bin/ganymede up
-```
+![Ganymede dashboard](docs/assets/dashboard.png)
+<!-- TODO: replace with a real capture. Best shot: a Ghostty window with the
+     sidepanel showing 2+ repos, at least one session Blocked and one Ready,
+     and the working client focused on a session on the right.
+     `./bin/ganymede up`, get a couple of sessions into those states, then
+     `screencapture -i docs/assets/dashboard.png`. -->
 
-`ganymede up` installs the tmux configuration and the Claude Code hooks, brings up the sessions, and opens a Ghostty window with the dashboard docked on the left of the repo you ran it in. It is safe to re-run: it reuses whatever is already up, and installs over itself rather than beside itself.
+Ganymede is a terminal harness for day-to-day multi-repo Claude Code work on macOS: an always-visible dashboard that shows which repos have agent sessions open, which of those need you, and which main checkouts are free — so you can jump straight to whatever needs attention instead of hunting across terminal windows.
 
-| Command | Does |
-|---|---|
-| `ganymede up [directory]` | Open the harness for the repo at *directory* (default: the current one) |
-| `ganymede dashboard` | Run the dashboard in the current terminal — what the sidepanel runs for you |
-| `ganymede install` | Install the tmux configuration, the Ghostty configuration, and the hooks only |
-| `ganymede hook` | Report a hook payload on stdin — Claude Code runs this for you |
-| `ganymede seen <pid>` | Report the sessions inside a process as seen — tmux runs this for you |
-| `ganymede notify-click <pid>` | Focus Ghostty and jump to the session a notification was about — a clicked notification runs this for you |
+## How to use it
 
-Inside the window, `Alt+g` moves between the sidepanel and the working client. The dock — the outer tmux server framing the two — runs with no prefix key, so `C-b` and everything else belongs to the session you are working in.
+Once it's running (see [How to install](#how-to-install)), Ganymede docks a sidepanel to the left of your terminal. Everything below happens from there.
 
-In the sidepanel, `↑` and `↓` move the selection and `⏎` jumps the working client to the selected session — including sessions in repos you never opened the harness from, since the registry's `cwd` is what puts a row on the list. `⏎` on a repo's own header row takes you to the repo instead, bringing its session up at the main root if nothing is running there yet. `t` sets or corrects the selected session's JIRA ticket — type it in any case, or paste the browse link and the key is taken out of it, and set nothing to hand the row back to its branch — and `o` opens that ticket in the browser.
+### See what needs you
 
-`g` opens the repo picker over every repo the harness can find. Typing narrows it fuzzily — `gnm` reaches `ganymede` — matching a repo's own name ahead of one that only matches by the directory it is filed under, which is shown at the right to tell two repos of the same name apart. `⏎` takes you to the highlighted repo and puts it on the dashboard; `Esc` leaves everything as it was.
+The sidepanel lists your repos, each with its sessions nested underneath. Sessions needing you sort to the top — **Blocked** above **Ready**, longest-waiting first — so the row at the top of the list is always the most urgent thing waiting on you. Use `↑`/`↓` to move the selection; the box at the foot of the panel shows full detail for whatever's highlighted — the blocked reason, the last message, the ticket, the working directory.
 
-What the harness writes: a config fragment at `~/.config/ganymede/tmux.conf`, sourced from a marked block in your `tmux.conf`; a Ghostty config fragment at `~/.config/ganymede/ghostty.conf` — fresh defaults (JetBrains Mono, a built-in dark theme) and the Cmd+F keybind below — loaded from a marked block in `~/.config/ghostty/config.ghostty`; the dock's own config at `~/.config/ganymede/dock.conf`; its event socket at `~/.config/ganymede/events.sock`, owned by one dashboard at a time — a second `ganymede dashboard` refuses to start rather than take it; its own state at `~/.config/ganymede/state.json`, currently the tickets you set by hand and the per-repo activity the working set is built from, written a section at a time so that nothing else in it is disturbed; and its own hook entries in `~/.claude/settings.json`, which are replaced rather than repeated on every install and leave the rest of that file, permissions included, untouched.
+Press `⏎` on a session row to jump the working client straight to it, clearing that session's Ready badge as you go. Press `⏎` on a repo's own header row to go to that repo instead, starting a session at its main root if nothing is running there yet.
 
-Two things in that fragment are the harness's to own: tmux's global `pane-focus-in` hook, which is how seeing a session clears its Ready badge, and the `@ganymede-seen` option it reads. A `pane-focus-in` hook of your own in `tmux.conf` would be replaced by it.
+Don't see the repo you want? Press `g` to open a fuzzy picker over every repo Ganymede can find under `~/Projects`. Typing narrows it — `gnm` reaches `ganymede` — and `⏎` takes you there and adds it to the sidepanel.
 
-## Why
+### Spawn a worktree session for a ticket
 
-- See at a glance which repos have a **Session** open and which sessions need attention.
-- Make "add a background session in a git worktree" a one-action flow.
-- Keep it visible whether a repo's **Main root** is free, because PR review happens by checking the PR out there.
-- Show each session's JIRA ticket — ID and link only, no JIRA API.
-- Provide a quick open/close shell in the current directory (the **Popup shell**).
+Press `w` on a repo to open a background session in its own git worktree, leaving the main root untouched. The dialog takes two optional fields: a JIRA ticket ID (the worktree gets named after it, e.g. `FIRE-2841-paging`) and a first prompt — fill that in and the session starts working immediately, fire-and-forget. Worktree sessions always start in Claude Code's auto permission mode, since the isolation of a worktree justifies it.
 
-**Out of scope, permanently:** remote or mobile access, non-Claude agents as first-class citizens, PR/CI status display, and Warp-style shell niceties (blocks, AI suggestions, command palettes).
+### Respond to a permission prompt inline
 
-## Architecture
+When a session goes **Blocked** on a permission prompt, you don't have to jump into its pane for a plain yes/no: press `y` to approve or `n` (or `Esc`) to deny, right from the sidepanel. Anything richer than a straight approve/deny still needs `⏎` to jump in — the sidepanel only ever scripts what it can verify first.
 
-| Layer | Choice | Role |
-|---|---|---|
-| Emulator | **Ghostty** | Purely the window tmux lives in — no Ghostty tabs or splits are used. Native macOS, GPU rendering, kitty keyboard protocol (transmits `` Ctrl+` `` distinctly). |
-| Multiplexer | **tmux** | Substrate for sessions, windows, popups, the status bar, and the send-keys control path. |
-| Harness | **One Go binary (`ganymede`), bubbletea TUI** | Dashboard, event receiver, notifier, tmux orchestration. Single static binary; no third-party session manager. |
-| Heavy lifting | **First-party Claude Code primitives** | `claude --worktree` (spawn), `~/.claude/sessions/<pid>.json` registry (state), hooks (events), `claude agents --json` (reconciler). |
+Press `p` on an Idle, Ready, or Working session to send it a prompt from the detail box without switching panes. On a Working session, `Enter` queues the prompt for after the current turn; `Ctrl+Enter` interrupts it and sends immediately. Press `x` to interrupt a Working session outright, and `q` to end an Idle or Ready one (with a confirmation first).
 
-### Topology
+### Claim a root for PR review
 
-- **One tmux session per repo**, named after the repo. Window 1 is the main root; each worktree session gets its own window, named after the worktree (which carries the ticket ID). Two repos wanting the same name — an `api` under more than one organisation — are told apart by qualifying the second with the directory it is filed under (`acme-api`), so the picker can never quietly take you to the other one.
-- **One persistent `ganymede` tmux session** hosting the dashboard TUI.
-- **The dashboard is a docked sidepanel.** One Ghostty window holds two tmux clients side by side: a narrow (~40-column) left client permanently attached to the `ganymede` session, and the **working client** on the right showing the repo session in focus. The dashboard steers the working client with `switch-client -c`.
-- The working client's tmux status line carries an ambient **attention strip** — `█ N blocked · ● M ready` — deliberate redundancy with the dashboard, sitting under your eye line inside the session you're focused on.
+Checking out a PR means using a repo's main root — but if an agent session already has it checked out, even an idle one, it's still holding context tied to that checkout. Press `c` on a repo's header row to see what that does for its current state:
 
-### Data flow
+- **Free** root: opens a Claim dialog (with an optional note, e.g. "reviewing FIRE-2841") — this reserves the root and warns worktree spawns away from it.
+- **Claimed** root (by you): releases it immediately, no confirmation.
+- **In-use** root, with its only occupant Idle: opens a **Takeover** confirmation — accepting it ends that session and claims the root behind it in one action. Refused if the occupant is Working or Blocked.
 
-```mermaid
-flowchart LR
-    subgraph firstparty ["First-party Claude Code"]
-        REG["~/.claude/sessions/*.json registry"]
-        HK["Hooks: SessionStart/End, Stop,<br/>UserPromptSubmit, PermissionRequest, Notification"]
-        REC["claude agents --json"]
-    end
-    subgraph ganymede ["ganymede binary"]
-        RX["Event receiver<br/>local unix socket"]
-        SM["State model"]
-        UI["Sidepanel TUI"]
-        NOT["Notifier"]
-        ACT["Action engine<br/>guarded send-keys"]
-    end
-    REG -- "fsnotify watch" --> SM
-    HK -- "thin async hook commands<br/>POST stdin JSON" --> RX --> SM
-    REC -- "slow-timer reconcile" --> SM
-    SM --> UI
-    SM --> NOT
-    UI --> ACT -- "tmux send-keys / paste-buffer / display-popup / switch-client" --> tmux[(tmux)]
-```
+### Get notified when you're away
 
-- **Registry watch** is authoritative for state: `~/.claude/sessions/` holds one JSON file per session with `pid, sessionId, cwd, name, status, waitingFor, statusUpdatedAt, kind`. Pids are liveness-checked; a vanished file or dead pid means the session is **Gone**.
-- **Hooks** provide sub-second edges and rich payloads. Installed user-level in `~/.claude/settings.json` so every repo is covered. Hook commands are thin — forward stdin JSON to the receiver socket, async where no response is needed, never blocking a session.
-- **The reconciler** runs `claude agents --json` on a slow timer (30s) as the documented, schema-stable cross-check. The registry files are undocumented, so their shape must be re-verified on Claude Code upgrades. Sessions the registry watch missed are added; where the two describe the same session differently, the reconciler wins. Three things it does not do: overrule a registry record the registry has moved on *since* the cross-check was asked (that is the registry running ahead, not disagreeing); overrule anything at all when it cannot read the session's status, since a defaulted state must never outrank a read one; or remove a row, because it is always the older picture of the two. A row it added is dropped by the next cross-check once the session ends, so the reconciler is accurate to one tick — and a session only it can see may show as Blocked with no reason, since the reason lives in the registry file the watch could not read.
-- **Harness state** (its own sidecar, e.g. `~/.config/ganymede/state.json`) holds root claims and notes, manual ticket overrides, per-repo last-activity timestamps, popup-shell ownership, and Ready/seen tracking.
+Whenever Ghostty isn't the frontmost app, Ganymede's notifier is the one place alerts come from. A **Blocked** session pings you immediately and stays sticky until you resolve it. A **Ready** session — done, but you haven't looked yet — stays a silent dashboard badge at first, and only escalates to a notification if it's still unseen about a minute later. Clicking a notification focuses Ghostty and jumps you straight to that session.
 
-## State model
-
-### Session states
-
-| State | Meaning | Primary signal |
-|---|---|---|
-| **Working** | Turn (or subagents) running; nothing asked of you | registry `status: busy` |
-| **Blocked** | Cannot continue without your decision; **always shown with its reason** | registry `status: waiting` + `waitingFor` |
-| **Ready** | Turn finished, output unseen — an unread badge | registry `status: idle` *and* not yet seen |
-| **Idle** | At the prompt, seen, nothing pending | registry `status: idle` + seen |
-| **Shell** | Occupied by you (`!` shell mode) | registry `status: shell` |
-| **Gone** | Process ended; the row disappears | registry file gone / pid dead |
-
-```mermaid
-stateDiagram-v2
-    [*] --> Working: prompt submitted / spawn with first prompt
-    Working --> Blocked: permission prompt, question, dialog
-    Blocked --> Working: answered
-    Working --> Ready: turn ends (Stop)
-    Ready --> Idle: seen (tmux focus) or new prompt
-    Idle --> Working: prompt submitted
-    Idle --> Shell: user enters ! shell mode
-    Shell --> Idle: shell mode exited
-    Working --> [*]: process ends → Gone
-    Idle --> [*]: process ends → Gone
-```
-
-**Attention = Blocked ∪ Ready.** Blocked outranks Ready; within a tier, longest-waiting first. Repos sort by their most urgent session. Seeing a session — tmux focus landing on its pane, or a new prompt — clears Ready to Idle; the harness tracks "seen" itself, the registry does not.
-
-### Main-root states
-
-| State | Meaning | Rules |
-|---|---|---|
-| **Free** | No live session cwd'd in the main root, no claim | Safe to check out a PR. |
-| **In use by agent** | *Any* live session has the root as cwd — **even an Idle one**, since an idle agent still holds context bound to that checkout | Strict; softened only by Takeover. |
-| **Claimed** | Explicitly reserved by you, optionally with a note (typically PR review) | Warns agent spawns away; released explicitly. The dashboard nudges release once the root is back on the default branch with a clean tree. |
-
-**Takeover** claims a root whose only occupant is an Idle session, ending that session in the same action. It is refused when the occupant is Working or Blocked. Git caution markers (off-default branch, dirty tree) show on the root row independently of these states.
-
-## Dashboard
-
-- **Repo tree** (~40 columns, always visible, left): repo header rows with root-state chip and git caution markers, indented session rows with state glyph, session/worktree name, abbreviated ticket ID, and wait age. Attention tier sorts first, then recency.
-- **SELECTED detail box** at the foot: full detail for the highlighted row — blocked reason or last-message snippet, full ticket ID, cwd — plus the inline input for prompt and confirm actions.
-- **Main panel** (right): the live session in focus. `⏎` on a row jumps there.
-
-### Working set
-
-The dashboard shows repos with a live session, a Claimed root, or harness activity in the last 7 days (window configurable) — expected size 5–10 rows. Discovery scans configured roots, default `~/Projects` at depth ≤ 3, excluding worktree checkouts; sessions living outside the scan roots still appear, since the registry's `cwd` is ground truth. Everything else sits behind the fuzzy picker (`g`) over the full inventory — jumping or spawning into a repo puts it on the dashboard. A repo drops off after the recency window with no sessions and no claim, and is never evicted while live or Claimed.
-
-A checkout is a repo when its `.git` is a directory. A worktree checkout, a submodule and a `--separate-git-dir` checkout all keep a `.git` *file* naming a git directory elsewhere, so none of the three is offered as a repo of its own — which is also what stops the scan descending into the trees vendored inside a checkout. Per-repo activity is stamped whenever a session is running in a repo and whenever you open one yourself, and lives in its own section of the harness state file so the working set survives a restart.
-
-## Keys
+### Keys
 
 | Key | On | Action |
 |---|---|---|
 | `⏎` | session row | Jump — switch the working client to the session (clears Ready) |
 | `⏎` | repo row | Go to the repo — switch the working client to its session, started at the main root if nothing is running there |
-| `y` / `n` | Blocked | Approve-once (`Y`) / deny (`Esc`). Richer choices always jump in |
-| `p` | Idle, Ready, Working | Prompt from the detail box. On Working, Enter **queues**; `Ctrl+Enter` interrupts-then-sends |
-| `x` | Working | Interrupt via guarded `Esc` — no confirm dialog; the guard plus a deliberate key is the safety |
-| `q` | Idle, Ready | End session: confirm, then paste `/exit` at the prompt. Refused on Working/Blocked |
+| `y` / `n` | Blocked | Approve (`y`) / deny (`n` or `Esc`). Richer choices always jump in |
+| `p` | Idle, Ready, Working | Prompt from the detail box. On Working, `Enter` queues; `Ctrl+Enter` interrupts-then-sends |
+| `x` | Working | Interrupt |
+| `q` | Idle, Ready | End session (confirm first). Refused on Working/Blocked |
 | `w` | repo | Spawn a worktree session |
+| `c` | repo header | Claim (Free) / release (Claimed) / Takeover (In-use, sole Idle occupant) |
 | `g` | anywhere | Fuzzy repo picker over the full inventory |
 | `t` | session row | Set or correct the JIRA ticket |
 | `o` | session row | Open the ticket link in the browser |
-| `` Ctrl+` `` | global, no prefix | Toggle the popup shell (tmux root-table binding) |
-| *(TBD)* | repo/root | Claim / release / Takeover |
+| `` Ctrl+` `` | global, no prefix | Toggle the popup shell — a scratch shell in the current session's directory. Closing hides it, never kills it |
+| `↑` / `↓` | anywhere | Move the selection |
+| `Alt+g` | anywhere | Move focus between the sidepanel and the working client |
 
-Shell rows get no inline actions — you are the occupant. **Digit keys are never scripted**, because permission-dialog rows are dynamic.
+Digit keys are never scripted, because permission-dialog rows are dynamic.
 
-## Acting on sessions
+## How to install
 
-Sessions are interactive in panes. Inline actions cover exactly the safe-to-script subset; everything richer is one `⏎` away, because "focus the pane" is always the honest fallback.
+### Prerequisites
 
-The `PermissionRequest` hook is a **reporter only** — it forwards `tool_name`, `tool_input`, and `session_id` to the receiver and exits immediately, so the pane's dialog never lags and the sidepanel still gets instant blocked context.
+| Requirement | Why | Get it |
+|---|---|---|
+| macOS | Ganymede is built around Ghostty and macOS-only notification APIs — there's no Linux support | — |
+| [Claude Code](https://code.claude.com) | Ganymede is a harness *for* Claude Code sessions | https://code.claude.com |
+| [Ghostty](https://ghostty.org) | The terminal emulator Ganymede docks its dashboard into | https://ghostty.org |
+| tmux (3.3+) | The multiplexer Ganymede's dashboard and sessions run on | `brew install tmux` |
+| Go toolchain | To build the `ganymede` binary | https://go.dev/dl/ |
+| [terminal-notifier](https://github.com/julienXX/terminal-notifier) | Ganymede's own OS notification channel — without it, Blocked/Ready alerts don't fire beyond the dashboard | `brew install terminal-notifier` |
 
-**Guarded send-keys** is the single action transport, in strict order:
+### Install
 
-1. Gate on the registry — state must match the action's precondition and `statusUpdatedAt` must be fresh.
-2. `tmux capture-pane` and verify the expected content (the permission-dialog tool line, an empty input box for prompt-send).
-3. Send only `Y` / `N` / `Esc` / `Enter` / bracketed-paste text (`set-buffer` + `paste-buffer -p`).
-4. Re-verify with capture-pane.
+Clone this repo, then build the binary:
 
-Any mismatch at any step means **do nothing and focus the pane instead**. Channels is the designated future replacement once it leaves research preview with a non-dangerous custom-channel opt-in.
+```sh
+go build -o bin/ganymede ./cmd/ganymede
+```
 
-## Worktree sessions
+### Run
 
-`claude --worktree <name>` is adopted as-is — worktree and branch under `.claude/worktrees/`, `.worktreeinclude` env copying, per-repo `worktree.baseRef`, reopen-by-name, and built-in exit-time cleanup. No custom worktree management.
-
-`w` on a repo opens a dialog with two optional fields: a **JIRA ticket ID**, from which the worktree name derives plus an editable short suffix (e.g. `FIRE-2841-paging`), and a **first prompt**, which when filled makes the spawn fire-and-forget — the session starts working immediately. Launch is a new tmux window in the repo's tmux session, with the window name and the Claude session name (`claude -n`) both set to the worktree name, so the ticket rides in the registry, terminal title, and dashboard for free.
-
-Spawned worktree sessions **always start in auto permission mode** — the worktree's isolation justifies it, and whatever auto still gates simply surfaces as Blocked.
-
-Ending a session goes through the dashboard's `q` action → graceful exit → Claude Code's own cleanup prompt. The `worktree-prune` skill covers stragglers.
-
-## Popup shell
-
-- **Identity:** per-session — it belongs to the session or window in focus and opens in that pane's current directory (or the dashboard's selected repo when focus is on the tree).
-- **Primitive:** `tmux display-popup`, centered, ≈75% × 75%, plain shell.
-- **Persistence:** closing **hides, never kills**. Scrollback, history, and running commands survive in a hidden tmux session per owner, auto-killed when the owning session goes Gone.
-- **Gesture:** one no-prefix toggle key, default `` Ctrl+` ``, which both opens and closes. An Alt-chord is the fallback for emulators that can't transmit it distinctly.
-- **Model:** it never affects session or root states — it's you, not an agent. A hidden popup with a running command shows a busy marker on its owner's row and is mentioned in claim and takeover confirmations ("popup running: composer install").
-
-## Notifications
-
-"Beyond the dashboard" means whenever Ghostty isn't frontmost.
-
-- **Single owner.** The harness notifier is the only OS channel. Install sets `preferredNotifChannel: notifications_disabled` and absorbs the existing osascript hook wiring, so there are no double banners.
-- **Policy.** Blocked pings immediately. Ready is silent — dashboard badge only — until the first-party 60s `idle_prompt` signal arrives; if the session is still unseen at that moment, one notification fires.
-- **Focus-aware.** No banners while Ghostty is frontmost.
-- **Anatomy.** Title is repo + ticket (`service-ai-assistant · FIRE-1234`); body is the reason — `waitingFor` for Blocked, a `last_assistant_message` snippet for Ready. Clicking focuses Ghostty and jumps the dashboard to that session. Sound on Blocked only.
-- **Missed pings.** Blocked notifications use macOS **Alerts style** — sticky until dismissed or resolved, with no re-nagging. Setting the notifier app to Alerts is a one-time System Settings step.
-
-## JIRA tickets
-
-Precedence is manual override → branch name → worktree directory name → no ticket. Derivation takes the first match of `[A-Z][A-Z0-9]*-\d+` in the session's git branch name, else in the worktree dir name; dashboard-spawned sessions need nothing extra. A manual override (`t`) is stored keyed by **repo + branch/worktree path** — not session id, so it survives restarts — and evicted when that branch or worktree disappears. Sessions with no ticket render a dim "no ticket", never a placeholder key. Links go to `https://teamleader.atlassian.net/browse/<KEY>` and open with `o`. Ticket ID and link only — **no JIRA API dependency, ever**.
-
-## Vocabulary
-
-The glossary in `CONTEXT.md` is normative: Dashboard, Working set, Session, Main root, Worktree session, Popup shell; session states Working / Blocked / Ready / Idle / Shell / Gone and Attention; root states Free / In use by agent / Claimed, and Takeover. These names must be used in code, UI copy, and docs, and the listed anti-terms avoided.
-
-## Requirements
-
-- macOS
-- [Ghostty](https://ghostty.org)
-- tmux — with the harness-installed config fragment: `allow-passthrough on`, `focus-events on`, the status-line strip segment, and the root-table popup binding
-- Claude Code — registry shape verified against **2.1.226**, unchanged from the 2.1.220 record in the spec's §11; it must be re-verified on upgrades
-- Go toolchain, to build `ganymede`
-- [terminal-notifier](https://github.com/julienXX/terminal-notifier) (`brew install terminal-notifier`) — the harness's own OS notification channel (§9); `ganymede up` says so if it is missing, and Blocked and Ready alerts simply do not fire beyond the Dashboard without it
-
-## Build order
-
-Non-binding; the plan owns the real slicing. This ordering just respects the dependency grain.
-
-1. **Read-only dashboard** — registry watch, hook install, reconciler → live states, ordering, status strip, jump (`⏎`), picker (`g`).
-2. **Roots & claims** — root-state derivation, Claim/release/Takeover, git caution markers.
-3. **Spawn & popup** — the `w` flow over `claude --worktree`, popup shell.
-4. **Inline actions** — the guarded send-keys engine, then `y`/`n`, `p`, `x`, `q`.
-5. **Alerting** — notifier, focus check, sticky Blocked alerts, Ready escalation, settings absorption.
-6. **Install & migration** — Ghostty and tmux config fragments, hook/settings installer, `Cmd+F` keybind.
-
-## Deferred and declined
-
-| Item | Status |
+| Command | Does |
 |---|---|
-| Worktree cleanup lifecycle (merge-back, auto-cleanup after PR merge, parking) | **Deferred** until real usage sharpens it. First-party exit cleanup and `worktree-prune` cover the interim. |
-| Background agents attached into panes (`claude --bg` + `claude attach`) | **Declined** for now — stop/respawn/logs and daemon supervision aren't worth the attach choreography, single-client semantics, and an unverified `--worktree` combination. Revisit if resilience becomes a felt need. |
-| Channels as the action transport | **Deferred** pending preview exit. |
-| Blocking / armed-verdict `PermissionRequest` pattern | **Declined** — the hook is report-only; blocking would delay every dialog. |
+| `ganymede up [directory]` | Open the harness for the repo at *directory* (default: the current one) — installs config and hooks, brings up sessions, opens the Ghostty window |
+| `ganymede dashboard` | Run the dashboard standalone in the current terminal |
+| `ganymede install` | Install the tmux/Ghostty config and the Claude Code hooks only, without opening a window |
 
-## Migration from Warp
+`ganymede up` is what you want day-to-day:
 
-Warp runs stock, so there are no custom keybindings, theme, or font to port. The one surviving muscle memory is `Cmd+F` find-in-output, which becomes a Ghostty keybind translating to tmux copy-mode search (tmux owns the scrollback). Not carried over: Cmd tab/split/close/digit keys (the harness owns layout), Warp history search and autosuggestions (out of scope), and block selection — the vertical-tabs habit is succeeded by the dashboard itself. Cutover is parallel with no deadline: Ghostty and tmux run alongside Warp from install, and Warp is removed whenever it has clearly gone unused.
+```sh
+./bin/ganymede up
+```
 
-## Design documents
+It's safe to re-run — it reuses whatever's already up and installs over itself rather than beside itself. Inside the window, `Alt+g` moves between the sidepanel and the working client; the dock itself runs with no prefix key, so `C-b` and everything else belongs to the session you're working in.
 
-The specification and its supporting material live in the planning repo at `~/Projects/plans/Ganymede-harness/`:
+## Learn more
 
-| Document | Role |
-|---|---|
-| `SPEC.md` | Single source of truth for the build — restates every decision in full |
-| `CONTEXT.md` | Normative vocabulary |
-| `MAP.md` | Decision map; all 13 decision tickets closed |
-| `issues/` | Per-decision history and rationale — not requirements |
-| `prototype-dashboard-mock.html` | Validated UI reference (variant D) |
-| `research/` | Source research behind the stack choices |
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — internals: layer choices, data flow, the full state model, the guarded action protocol, and the design decisions behind them
+- [CONTEXT.md](CONTEXT.md) — the normative vocabulary this dashboard uses
