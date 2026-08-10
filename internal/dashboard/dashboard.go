@@ -74,9 +74,9 @@ type Opener interface {
 	Open(dir string) error
 }
 
-// Focuser moves keyboard focus to the working client's pane — the dock's own
-// alt+g, given automatically once Enter has already put something in front
-// of you.
+// Focuser moves keyboard focus to the working client's pane — the dock-level
+// half of what alt+g does, given automatically once Enter has already put
+// something in front of you.
 type Focuser interface {
 	Focus() error
 }
