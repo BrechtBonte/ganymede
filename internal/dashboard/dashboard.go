@@ -1278,8 +1278,8 @@ func pruneForgotten(forgotten map[int]struct{}, sessions []session.Session) map[
 // guard's own explanation of what went wrong, so a jump that also fails is
 // left unsaid rather than overwriting it.
 func (m Model) focusPane(pid int) Model {
-	if m.harness.Jumper != nil {
-		_ = m.harness.Jumper.Jump(pid)
+	if m.harness.Jumper != nil && m.harness.Jumper.Jump(pid) == nil {
+		m.active = pid
 	}
 	return m
 }

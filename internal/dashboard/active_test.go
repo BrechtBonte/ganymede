@@ -96,3 +96,37 @@ func TestAJumpThatFailsDoesNotMarkItsRowActive(t *testing.T) {
 		t.Errorf("aaa-idle row = %q, want no mark left behind by a jump that failed", line)
 	}
 }
+
+// The send guard's own mismatch (prompt.go's delivering/dashboard.go's
+// `sent` case) reaches the pane through focusPane, not jumpTo, and shares
+// the same property: the cursor can move on before the async answer lands,
+// and the row it focuses must still pick up the mark.
+func TestTheGuardsSendMismatchMarksItsRowEvenAfterTheCursorMovedOn(t *testing.T) {
+	prompter := &prompts{err: errors.New("pane does not show an empty input box to send into")}
+	jumper := &jumps{}
+	// Different-length names on the same dir so live()'s PID (len(name) +
+	// len(dir)) does not collide between the two.
+	a := live("aaa-idle", "/repos/ganymede", session.Idle)
+	b := live("bbb-idle-2", "/repos/ganymede", session.Idle)
+	model := withPrompter(prompter, jumper, a, b)
+	model = press(model, tea.KeyDown) // onto a's row
+
+	model = sendingKey(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	model = typeInto(model, "fix it")
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter in the prompt dialog asked for no guarded send")
+	}
+
+	model = press(model, tea.KeyDown) // browse onto b's row before the send lands
+
+	model, _ = model.Update(cmd())
+
+	line, ok := rawLineFor(model, "aaa-idle")
+	if !ok {
+		t.Fatalf("no row for aaa-idle:\n%s", drawn(model))
+	}
+	if !strings.HasPrefix(line, styleCodeOf(reverseFaint)) {
+		t.Errorf("aaa-idle row = %q, want it marked as the row the working client is actually showing", line)
+	}
+}
