@@ -180,8 +180,11 @@ func TestEscCancelsThePromptWithoutSending(t *testing.T) {
 func TestASendThatTheGuardCouldNotVerifyFocusesThePane(t *testing.T) {
 	prompter := &prompts{err: errors.New("pane does not show an empty input box to send into")}
 	jumper := &jumps{}
+	focuser := &focuses{}
 	idle := live("ganymede-78", "/repos/ganymede", session.Idle)
-	model := withPrompter(prompter, jumper, idle)
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: jumper, Prompter: prompter, Focuser: focuser})
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	model, _ = model.Update(dashboard.Sessions{idle})
 	model = press(model, tea.KeyDown)
 
 	model = sendingKey(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
@@ -193,6 +196,9 @@ func TestASendThatTheGuardCouldNotVerifyFocusesThePane(t *testing.T) {
 	}
 	if !strings.Contains(detail(model), "does not show an empty input box") {
 		t.Errorf("SELECTED = %q, want the guard's own mismatch explained", detail(model))
+	}
+	if focuser.n != 0 {
+		t.Errorf("Focus called %d times, want the async fallback to leave keyboard focus alone", focuser.n)
 	}
 }
 

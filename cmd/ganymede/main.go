@@ -208,7 +208,7 @@ func runDashboard() error {
 	// working client to a Session or to a repo, and it carries the counts to
 	// that client's status line.
 	hands := dashboard.Harness{
-		Jumper: harness, Opener: harness, Strip: harness, Spawner: harness, Popups: harness, Approver: harness,
+		Jumper: harness, Opener: harness, Focuser: harness, Strip: harness, Spawner: harness, Popups: harness, Approver: harness,
 		Prompter: harness, Stopper: harness, Seen: model.Seen, Tickets: tickets,
 	}
 	// Root Claims, like the tickets set by hand: a state file that cannot be

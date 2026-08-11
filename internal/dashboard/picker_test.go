@@ -294,6 +294,23 @@ func TestPickingARepoOpensItAndPutsItOnTheDashboard(t *testing.T) {
 	}
 }
 
+// Picking a repo is Enter too: the same Focus that follows a jump follows a
+// pick, so choosing a repo out of the picker lands you in it as well.
+func TestPickingARepoFocusesTheWorkingClient(t *testing.T) {
+	focuser := &focuses{}
+	model := picking(t, dashboardOn(dashboard.Harness{
+		Opener:    &opens{},
+		Focuser:   focuser,
+		Inventory: stock{repos: []string{"/repos/ganymede"}},
+	}))
+
+	model = press(typing(model, "gany"), tea.KeyEnter)
+
+	if focuser.n != 1 {
+		t.Errorf("Focus called %d times, want exactly one after picking a repo", focuser.n)
+	}
+}
+
 // The Dashboard is the harness's memory of where you have been, so a repo you
 // picked has to still be there after a restart — the only reason the sidecar
 // is a file at all.
