@@ -53,7 +53,14 @@ func spinning() tea.Cmd {
 }
 
 // animating says whether anything on the rail is mid-spin: a Working Session
-// or an InUse root.
+// or a root whose holder is Working.
+//
+// InUse alone is not enough (state.go): it fires for any live occupant —
+// Idle, Ready, Blocked, Shell included — and a spinner gated on it would
+// never stop for as long as a root merely had somebody sitting in it, which
+// is most of the time a repo is on the rail at all. row.holderWorking is the
+// narrower question the animation actually needs: not "is somebody here" but
+// "is that somebody's turn running."
 func (m Model) animating() bool {
 	for _, r := range m.rows {
 		if r.session != nil {
@@ -62,13 +69,42 @@ func (m Model) animating() bool {
 			}
 			continue
 		}
-		if r.state == repo.InUse {
+		if r.holderWorking {
 			return true
 		}
 	}
 	return false
 }
 ```
+
+#### `row.holderWorking`
+
+A header row's `state` says whether *someone* holds the Main root; it says
+nothing about what that someone is doing. `rowsOf` (`rows.go`) already
+computes, per Session, whether it is the one actually holding the root
+(`holdsRoot`, via `ask.checkout(running.Dir) == root`) — the header row needs
+the same fact taken one step further: not just which Session holds the root,
+but whether that Session is Working. A new field on the header row, set
+alongside `state` in `rowsOf`:
+
+```go
+// holderWorking says the Session actually holding this root — as against
+// every Session merely grouped under the repo — is Working, on a repo's
+// header row. It is narrower than state == InUse, which fires for a holder
+// in any state; it is what says whether the header row's own mark has
+// anything worth animating.
+func holderWorking(root string, group []session.Session, ask answers) bool {
+	for _, s := range group {
+		if ask.checkout(s.Dir) == root {
+			return s.State == session.Working
+		}
+	}
+	return false
+}
+```
+
+called where `state := stateOf(root, byRoot[root], ask, claimed)` already is,
+and stored as `row.holderWorking` next to `state`.
 
 `Update` wiring:
 
@@ -85,16 +121,22 @@ func (m Model) animating() bool {
   route through a new helper:
 
   ```go
-  // repoGlyph is a Main root's mark at the current frame: InUse borrows
-  // Working's own animated mark, the same borrowing rootStyle already makes
-  // for its colour; everything else stands still on its Glyph.
-  func (m Model) repoGlyph(state repo.State) string {
-  	if state == repo.InUse {
+  // repoGlyph is a Main root's mark at the current frame: an InUse root
+  // whose holder is Working borrows Working's own animated mark — the same
+  // borrowing rootStyle already makes for its colour. An InUse root held by
+  // an Idle, Ready, Blocked, or Shell Session, and every other state, stand
+  // still on Glyph.
+  func (m Model) repoGlyph(r row) string {
+  	if r.state == repo.InUse && r.holderWorking {
   		return session.Working.Frame(m.spinner)
   	}
-  	return state.Glyph()
+  	return r.state.Glyph()
   }
   ```
+
+  Note this retires `repo.InUse.Glyph()` (`▣`) from the header row only while
+  the holder is Working — the plain `▣` still shows for every other InUse
+  root, exactly as today.
 
 ### Testing
 
@@ -102,13 +144,21 @@ func (m Model) animating() bool {
   spinner frames in order and wraps around; every non-Working state's
   `Frame(tick)` equals its `Glyph()` for a handful of ticks.
 - `internal/dashboard`: a synthesized `Spin{}` message advances the glyph
-  drawn for a Working row and for an InUse repo header row; once nothing is
-  left animating, `Update(Spin{})` returns a `nil` `tea.Cmd` rather than
-  rescheduling.
-- `internal/dashboard/roots_test.go`'s two `repo.InUse.Glyph()` assertions
-  become `session.Working.Frame(0)` — deterministic, since these test
-  helpers construct a `Model` via `Update` and never execute the returned
-  `tea.Cmd`, so `spinner` never leaves its zero value.
+  drawn for a Working row and for a header row whose holder is Working;
+  once nothing is left animating, `Update(Spin{})` returns a `nil` `tea.Cmd`
+  rather than rescheduling.
+- A new test puts an Idle Session in an InUse root (the existing
+  `TestRepoHeaderMarksAMainRootASessionIsWorkingIn` and
+  `TestALiveOccupantOutranksAClaimOnTheHeaderRow` already do exactly this,
+  unchanged) and asserts `animating()` is false and the header row still
+  reads the plain `repo.InUse.Glyph()` — an occupied-but-not-Working root
+  must not spin, and must not keep the tick loop alive forever. A companion
+  test swaps that Session to Working and asserts the header row now reads
+  `session.Working.Frame(0)` instead.
+- `internal/dashboard/roots_test.go`'s existing `repo.InUse.Glyph()`
+  assertions need no change: both use an Idle occupant already
+  (`session.Idle`), so `holderWorking` is false for both and the plain `▣`
+  is exactly what they still see.
 
 ## Non-goals
 
