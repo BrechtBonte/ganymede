@@ -350,7 +350,7 @@ git commit -m "Refuse to send keys into a frozen pane" -m "capture-pane returns 
 - Consumes: `Layout.Command`, `quoteForOption(path string) string`, the `@ganymede-seen` option set by `seenHook`.
 - Produces: `const frozenHook` (a `%s`-free string appended by `fragment`).
 
-**Note before you start:** `pane-mode-changed` does **not** appear in `show-hooks -g` or `show-options -g` even while set and firing (probed, tmux 3.7b). Assert on the generated fragment text, which is what this package's tests already do. Do not "verify it properly" against a live server; you will see nothing and think it is broken.
+**Note before you start:** `pane-mode-changed` is missing from an *unfiltered* `show-hooks -g` even while set and firing, but `show-hooks -g pane-mode-changed` reports it normally — which is how this package already checks `pane-focus-in`. Test it against a live server. Beware only that an *unset* hook asked for by name comes back as its bare name, not as an empty string.
 
 - [ ] **Step 1: Write the failing test**
 

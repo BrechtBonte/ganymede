@@ -253,13 +253,18 @@ key, and `#{pane_pid}`, `#{pane_id}` and `#{pane_in_mode}` all expand inside
 the hook body — including `in_mode=0` on the leaving edge, which is what lets
 one command handle both directions.
 
-One trap found in the probe: **`pane-mode-changed` does not appear in
-`show-hooks -g`, nor in `show-options -g`, even while it is set and firing.**
-A test that asserts the hook is installed by reading it back out of tmux will
-see nothing and look like a failure. `internal/tmuxconf`'s tests assert on the
-generated fragment text, which is the right level here and sidesteps this
-entirely — the note is for whoever is later tempted to "verify it properly"
-against a live server.
+One quirk found in the probe, and corrected while implementing: an unfiltered
+`show-hooks -g` does not list `pane-mode-changed` at all, even while it is set
+and firing, and neither does `show-options -g`. Asked **by name** —
+`show-hooks -g pane-mode-changed` — it reports normally, which is how
+`internal/tmuxconf` already checks `pane-focus-in`. So the hook is testable
+against a live server after all, and is tested that way rather than by
+matching the generated fragment text.
+
+The related trap is worth keeping: an *unset* hook asked for by name is
+reported as its bare name rather than as nothing, so `hook != ""` is not the
+way to assert one was never installed. What says so is that it runs no
+harness.
 
 - `internal/topology`: a pane put into `copy-mode` is reported by `Frozen`
   and its neighbours are not; `send-keys -X cancel` clears it. A pid in no
