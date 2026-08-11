@@ -1232,6 +1232,13 @@ func (m Model) forget(pid int) Model {
 	m.forgotten[pid] = struct{}{}
 	m.set = withoutForgotten(m.set, m.forgotten)
 	m.notice = "session ended — removed from the dashboard"
+	if m.active == pid {
+		// The pid this named is confirmed gone; if the OS ever hands it to
+		// an unrelated process, the registry will report that as a new
+		// Session that was never jumped to, and it must not inherit this
+		// mark.
+		m.active = 0
+	}
 	return m.rebuilt()
 }
 
@@ -1298,6 +1305,9 @@ func (m Model) goTo(root string) Model {
 		m.notice = err.Error()
 		return m
 	}
+	// A bare repo has no Session in it at all, so nothing on the rail
+	// should keep reading as the one the working client is showing.
+	m.active = 0
 	if m.harness.Activity != nil {
 		if err := m.harness.Activity.Touch(root, time.Now()); err != nil {
 			m.notice = err.Error()
