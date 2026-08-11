@@ -122,7 +122,7 @@ func up(args []string) error {
 	// Refusing to open the window over any of them would be the harness
 	// holding your day to ransom over a font, a hook, or a notification style.
 	if err := installGhosttyConfig(); err != nil {
-		fmt.Fprintf(os.Stderr, "ganymede: Ghostty is not configured with its fresh defaults or the Cmd+F keybind: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ganymede: Ghostty is not configured with its fresh defaults or its keybinds: %v\n", err)
 	}
 	if err := installHooks(); err != nil {
 		fmt.Fprintf(os.Stderr, "ganymede: the hooks are not installed, so Ready and Blocked reasons will be missing: %v\n", err)
