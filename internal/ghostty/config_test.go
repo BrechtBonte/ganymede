@@ -124,6 +124,25 @@ func TestInstalledConfigBindsCmdFToTmuxCopyModeSearch(t *testing.T) {
 	}
 }
 
+// Shift+⏎ is the newline gesture on the way in to Claude, and the terminal's
+// stock encoding gives it none of its own: it arrives as the plain carriage
+// return that submits the turn. The harness binds it to the escape and
+// carriage return Option+⏎ already sends, which is what Claude Code reads as a
+// newline. Ghostty prints a configured text: sequence back with its own
+// backslashes doubled, so that is what the installed binding looks like here.
+func TestInstalledConfigBindsShiftEnterToANewline(t *testing.T) {
+	layout, home := layoutIn(t)
+
+	if err := ghostty.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	out := showConfig(t, home)
+	if !strings.Contains(out, `keybind = shift+enter=text:\\x1b\\r`) {
+		t.Errorf("config = %q, want shift+enter sending escape then carriage return", out)
+	}
+}
+
 // The user's Ghostty config stays theirs: the harness adds its block and
 // leaves everything else alone.
 func TestInstallKeepsTheUsersOwnSettings(t *testing.T) {

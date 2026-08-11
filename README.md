@@ -81,6 +81,7 @@ Whenever Ghostty isn't the frontmost app, Ganymede's notifier is the one place a
 | `` Ctrl+` `` | global, no prefix | Toggle the popup shell — a scratch shell in the current session's directory. Closing hides it, never kills it |
 | `↑` / `↓` | anywhere | Move the selection |
 | `Alt+g` | anywhere | Move focus between the sidepanel and the working client |
+| `Shift+⏎` | typing to Claude | Newline instead of sending — it sends what `Alt+⏎` sends |
 
 Digit keys are never scripted, because permission-dialog rows are dynamic.
 

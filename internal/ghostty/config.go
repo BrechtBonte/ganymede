@@ -26,6 +26,21 @@ const (
 // shell's own toggle, so no prefix is involved at all.
 const FindKeybind = `keybind = super+f=text:\x1d`
 
+// NewlineKeybind gives Shift+⏎ the newline it has nowhere else: an escape
+// followed by a carriage return, which is what Option+⏎ already sends through
+// macos-option-as-alt below and what Claude Code reads as "another line, not
+// yet my turn". Stock, Shift+⏎ has no sequence of its own — the terminal
+// sends the same bare carriage return ⏎ does, and the half-written prompt goes
+// off to the agent.
+//
+// It is bound at Ghostty's own level, like FindKeybind, because nothing under
+// it can tell the two apart: what the dock, the Session's tmux and Claude
+// itself see are the bytes, and after this they are Option+⏎'s bytes. Which is
+// also the trade — every application in the window now reads Shift+⏎ as
+// Option+⏎, including the Dashboard, where the prompt box takes Option+⏎ on a
+// Working Session as interrupt-then-send.
+const NewlineKeybind = `keybind = shift+enter=text:\x1b\r`
+
 // OptionAsAlt forces Option to behave as Alt rather than macOS's own Unicode
 // compose key. Ghostty's default for this varies by keyboard layout — true
 // only for U.S. Standard/International — so on other layouts (e.g. Belgian
@@ -49,7 +64,8 @@ const fragment = "# Managed by ganymede. Edit ganymede, not this file.\n" +
 	`font-family = "` + Font + "\"\n" +
 	`theme = "` + Theme + "\"\n" +
 	OptionAsAlt + "\n" +
-	FindKeybind + "\n"
+	FindKeybind + "\n" +
+	NewlineKeybind + "\n"
 
 // DefaultLayout resolves the standard locations: the fragment under the
 // harness's own config directory, and the config file Ghostty documents as
