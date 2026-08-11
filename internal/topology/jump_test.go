@@ -225,3 +225,72 @@ func TestUnderNamesNothingWhenAPaneHoldsNoneOfThem(t *testing.T) {
 		t.Errorf("found %v inside a pane it was given no processes for", found)
 	}
 }
+
+// idlePane starts a tmux session standing in for a Session's own pane, with a
+// process nested inside it the way a Session sits below the pane's shell, and
+// no mode held over it. It answers with the nested pid — the one the registry
+// would name — rather than the pane's own, so what is asked about here is what
+// gets asked about in earnest.
+func idlePane(t *testing.T, h topology.Harness, name string) int {
+	t.Helper()
+	tmuxOn(t, h.Socket, "new-session", "-d", "-s", name, paneCommand)
+	return deepestChild(t, panePIDInSession(t, h.Socket, name))
+}
+
+// A pane in copy-mode is showing a held view: the program underneath goes on
+// writing to its screen, and none of it reaches the client. That is the thing
+// the rail has to be able to say, and pane_in_mode is tmux's answer to it.
+func TestFrozenReportsOnlyThePaneHoldingAMode(t *testing.T) {
+	h := guardable(t)
+	held := idlePane(t, h, "held")
+	live := idlePane(t, h, "live")
+
+	tmuxOn(t, h.Socket, "copy-mode", "-t", "held")
+
+	frozen, err := h.Frozen([]int{held, live})
+	if err != nil {
+		t.Fatalf("Frozen: %v", err)
+	}
+	if !frozen[held] {
+		t.Errorf("the pane in copy-mode is not reported frozen: %v", frozen)
+	}
+	if frozen[live] {
+		t.Errorf("a pane showing its live view is reported frozen: %v", frozen)
+	}
+}
+
+// Leaving the mode is as much of an answer as entering it: a mark that only
+// ever went on would be worse than no mark at all.
+func TestFrozenClearsWhenTheModeIsCancelled(t *testing.T) {
+	h := guardable(t)
+	pid := idlePane(t, h, "held")
+	tmuxOn(t, h.Socket, "copy-mode", "-t", "held")
+	tmuxOn(t, h.Socket, "send-keys", "-X", "-t", "held", "cancel")
+
+	frozen, err := h.Frozen([]int{pid})
+	if err != nil {
+		t.Fatalf("Frozen: %v", err)
+	}
+	if frozen[pid] {
+		t.Error("a pane whose mode was cancelled is still reported frozen")
+	}
+}
+
+// A Session in no pane at all — started outside tmux, or gone since the
+// registry was read — is left out rather than answered false. The two are
+// different answers, and only one of them is true.
+func TestFrozenLeavesOutAProcessInNoPane(t *testing.T) {
+	h := guardable(t)
+	// A pane of some sort, so the server is actually up: what is being
+	// asked here is what a live server says about a process none of its
+	// panes is running, not what a server that is not there says at all.
+	idlePane(t, h, "live")
+
+	frozen, err := h.Frozen([]int{os.Getpid()})
+	if err != nil {
+		t.Fatalf("Frozen: %v", err)
+	}
+	if _, answered := frozen[os.Getpid()]; answered {
+		t.Errorf("a process in no pane was given an answer: %v", frozen)
+	}
+}

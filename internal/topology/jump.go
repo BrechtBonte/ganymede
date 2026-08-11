@@ -39,7 +39,7 @@ func (h Harness) Jump(pid int) error {
 
 // locate returns the id of the tmux pane a process is running in.
 func (h Harness) locate(pid int) (string, error) {
-	panes, err := h.panes()
+	panes, _, err := h.panes()
 	if err != nil {
 		return "", err
 	}
@@ -128,18 +128,24 @@ func (h Harness) workingClient() (string, error) {
 	return tty, nil
 }
 
-// panes maps the process tmux started in each pane to that pane's id.
-func (h Harness) panes() (map[int]string, error) {
+// panes maps the process tmux started in each pane to that pane's id, and says
+// which of those panes is holding a mode over its live view.
+//
+// Both answers come off one list-panes because they are asked of the same
+// panes at the same moment: a pane whose mode was entered between two calls
+// would otherwise be located by the first and judged by the second.
+func (h Harness) panes() (map[int]string, map[string]bool, error) {
 	out, err := exec.Command("tmux", h.sessions().args("list-panes", "-a",
-		"-F", "#{pane_pid} #{pane_id}")...).Output()
+		"-F", "#{pane_pid} #{pane_id} #{pane_in_mode}")...).Output()
 	if err != nil {
-		return nil, fmt.Errorf("list the panes: %w", err)
+		return nil, nil, fmt.Errorf("list the panes: %w", err)
 	}
 
 	panes := map[int]string{}
+	held := map[string]bool{}
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 2 {
+		if len(fields) != 3 {
 			continue
 		}
 		pid, err := strconv.Atoi(fields[0])
@@ -147,8 +153,41 @@ func (h Harness) panes() (map[int]string, error) {
 			continue
 		}
 		panes[pid] = fields[1]
+		held[fields[1]] = fields[2] == "1"
 	}
-	return panes, nil
+	return panes, held, nil
+}
+
+// Frozen says which of pids are running in a pane holding a mode over its live
+// view — a pane showing a held picture of the Session rather than the Session,
+// and handing every keystroke to the mode instead of to Claude.
+//
+// It resolves each pid the way locate does, and for the same reason: tmux knows
+// only the process it started in the pane, and a Session is that process's
+// descendant however many shells down.
+//
+// A pid the harness cannot place in a pane is left out of the map rather than
+// answered false. A Session running outside tmux has no pane whose view could
+// be held, and saying it is not frozen would be claiming to have looked.
+func (h Harness) Frozen(pids []int) (map[int]bool, error) {
+	panes, held, err := h.panes()
+	if err != nil {
+		return nil, err
+	}
+	parents, err := parents()
+	if err != nil {
+		return nil, err
+	}
+
+	frozen := make(map[int]bool, len(pids))
+	for _, pid := range pids {
+		pane, ok := paneOf(pid, panes, parents)
+		if !ok {
+			continue
+		}
+		frozen[pid] = held[pane]
+	}
+	return frozen, nil
 }
 
 // parents maps every process to its parent.
