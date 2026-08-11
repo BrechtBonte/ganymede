@@ -45,6 +45,11 @@ Usage:
   ganymede seen <pid>       Report the Sessions running inside a process as
                             seen, which clears Ready. tmux runs this for you
                             when focus lands on a pane.
+  ganymede frozen <pane-pid> <0|1>
+                            Report that a pane has started or stopped holding
+                            a mode over its live view, which is what marks the
+                            Sessions inside it Frozen. tmux runs this for you
+                            when a pane's mode changes.
   ganymede notify-click <pid>
                             Focus Ghostty and jump the Dashboard to the
                             Session a notification was about. A clicked
@@ -81,6 +86,8 @@ func run(args []string) error {
 		return report(os.Stdin)
 	case "seen":
 		return seen(args[1:])
+	case "frozen":
+		return frozen(args[1:])
 	case "notify-click":
 		return notifyClick(args[1:])
 	case "popup":
@@ -463,6 +470,57 @@ func seen(args []string) error {
 	for _, s := range running {
 		if held[s.PID] {
 			_ = hooks.Forward(socket, hooks.SeenPayload(s.ID))
+		}
+	}
+	return nil
+}
+
+// frozen reports every Session running inside a pane whose mode has just
+// changed as being behind a held view, or back in front of a live one.
+//
+// It is seen's shape, for seen's reason: tmux can only name the process it
+// started in the pane, and the Sessions are that process's descendants. Like
+// seen and the hook command it is run by something that must not be held up,
+// so it says nothing about what it could not do — a tmux hook is no place for
+// a diagnostic, and the pane it would print into is somebody's work.
+func frozen(args []string) error {
+	if len(args) != 2 {
+		return errors.New("frozen takes the pid of the pane and whether it is in a mode")
+	}
+	pane, err := strconv.Atoi(args[0])
+	if err != nil {
+		return nil
+	}
+	inMode := args[1] == "1"
+
+	sessions, err := registry.Default()
+	if err != nil {
+		return nil
+	}
+	running, err := sessions.Read()
+	if err != nil {
+		return nil
+	}
+	pids := make([]int, len(running))
+	for i, s := range running {
+		pids[i] = s.PID
+	}
+	inside, err := topology.Under(pane, pids)
+	if err != nil || len(inside) == 0 {
+		return nil
+	}
+
+	socket, err := hooks.DefaultSocket()
+	if err != nil {
+		return nil
+	}
+	within := map[int]bool{}
+	for _, pid := range inside {
+		within[pid] = true
+	}
+	for _, s := range running {
+		if within[s.PID] {
+			_ = hooks.Forward(socket, hooks.FrozenPayload(s.ID, inMode))
 		}
 	}
 	return nil
