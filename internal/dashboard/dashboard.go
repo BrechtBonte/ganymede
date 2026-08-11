@@ -267,6 +267,12 @@ type Model struct {
 	// same row before the first lands cannot fire a second send at the pane
 	// the first is still verifying.
 	pending map[int]bool
+	// spinner is the current tick of the Working spinner, advanced by Spin.
+	spinner int
+	// spinTicking says a Spin loop is already running, so a rebuild that
+	// finds a fresh Working row while one is already ticking does not stack
+	// a second loop on top of it.
+	spinTicking bool
 }
 
 // setting is a ticket being set by hand: the checkout it is about, the name it
@@ -316,6 +322,42 @@ func ticking() tea.Cmd {
 	return tea.Tick(30*time.Second, func(time.Time) tea.Msg { return Tick{} })
 }
 
+// Spin is the Dashboard asking to be drawn one frame further into whatever is
+// spinning on the rail.
+type Spin struct{}
+
+// spinning drives the spinner clock. Unlike ticking()'s half minute, this one
+// only exists to be fast — and it stops rescheduling itself the moment
+// animating() says nothing needs it, rather than running forever in the
+// background of a Dashboard sitting quiet at the prompt.
+func spinning() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return Spin{} })
+}
+
+// animating says whether anything on the rail is mid-spin: a Working Session
+// or a root whose holder is Working.
+//
+// state == InUse alone is not enough (state.go): it fires for any live
+// occupant — Idle, Ready, Blocked, Shell included — and a spinner gated on it
+// would never stop for as long as a root merely had somebody sitting in it,
+// which is most of the time a repo is on the rail at all. holderWorking is
+// the narrower question the animation actually needs: not "is somebody here"
+// but "is that somebody's turn running."
+func (m Model) animating() bool {
+	for _, r := range m.rows {
+		if r.session != nil {
+			if r.session.State == session.Working {
+				return true
+			}
+			continue
+		}
+		if r.holderWorking {
+			return true
+		}
+	}
+	return false
+}
+
 // waitFor takes the next working set off the watch.
 func waitFor(sessions <-chan []session.Session) tea.Cmd {
 	if sessions == nil {
@@ -336,6 +378,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 	case Sessions:
 		m = m.showing(msg).counted()
+		var spin tea.Cmd
+		if m.animating() && !m.spinTicking {
+			m.spinTicking = true
+			spin = spinning()
+		}
 		// A root nothing has asked git about yet is asked about now, so that a
 		// repo arriving on the rail is not drawn without its cautions for half a
 		// minute. The roots already answered for wait for the tick: the working
@@ -344,9 +391,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// own running at all times.
 		if cmd := m.readingUnread(); cmd != nil {
 			m.awaiting = true
-			return m, tea.Batch(waitFor(m.sessions), cmd)
+			return m, tea.Batch(waitFor(m.sessions), cmd, spin)
 		}
-		return m, waitFor(m.sessions)
+		return m, tea.Batch(waitFor(m.sessions), spin)
+	case Spin:
+		m.spinner++
+		if !m.animating() {
+			m.spinTicking = false
+			return m, nil
+		}
+		return m, spinning()
 	case Cautions:
 		m.cautions, m.awaiting = m.laidOver(msg), false
 		m = m.showing(m.set)
@@ -1191,7 +1245,7 @@ func (m Model) line(i int) string {
 	// show that — and the ticket is what tells two Sessions in one repo apart
 	// before their names do.
 	const indent = "  "
-	glyph := r.session.State.Glyph()
+	glyph := r.session.State.Frame(m.spinner)
 	age := ageOf(*r.session)
 	mark := busyMark(r)
 	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" "+mark)-lipgloss.Width(about(r.ticket)+" "+age)-1)
@@ -1221,7 +1275,7 @@ func busyMark(r row) string {
 // The cautions its checkout is carrying go in front of the mark, because they
 // are read in that order: what the root is, then what is in it.
 func (m Model) repoLine(r row, selected bool) string {
-	glyph := r.state.Glyph()
+	glyph := m.repoGlyph(r)
 	mark := strings.TrimRight(busyMark(r), " ")
 	// What the row has left for a caution once the name, the mark and the
 	// state glyph have had their columns. Where that leaves too little, the
@@ -1314,6 +1368,18 @@ func rootStyle(state repo.State) lipgloss.Style {
 	return quietStyle
 }
 
+// repoGlyph is a Main root's mark at the current frame: an InUse root whose
+// holder is Working borrows Working's own animated mark — the same borrowing
+// rootStyle already makes for its colour. An InUse root held by an Idle,
+// Ready, Blocked, or Shell Session, and every other state, stand still on
+// Glyph.
+func (m Model) repoGlyph(r row) string {
+	if r.state == repo.InUse && r.holderWorking {
+		return session.Working.Frame(m.spinner)
+	}
+	return r.state.Glyph()
+}
+
 // about is how a ticket reads on a row. A Session about no ticket says so,
 // rather than leaving a gap that reads as a harness which has not worked it out
 // yet — and never a placeholder key, which would read as an answer.
@@ -1393,7 +1459,7 @@ func (m Model) selected() []string {
 		// answer is spelled rather than drawn.
 		lines := []string{
 			repoStyle.Render(truncate(r.label(), m.width)),
-			rootStyle(r.state).Render(r.state.Glyph()) + " " + truncate("root: "+string(r.state), m.width-2),
+			rootStyle(r.state).Render(m.repoGlyph(r)) + " " + truncate("root: "+string(r.state), m.width-2),
 		}
 		if r.state == repo.Claimed && r.claimNote != "" {
 			lines = append(lines, quietStyle.Render(truncate("note: "+r.claimNote, m.width)))
