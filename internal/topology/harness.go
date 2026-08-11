@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/config"
 	"github.com/BrechtBonte/ganymede/internal/tmuxconf"
@@ -48,6 +49,11 @@ type Harness struct {
 	// means WorktreeCommand — a test substitutes something else so Spawn need
 	// not run claude at all.
 	Worktree func(name, prompt string) []string
+	// WatchFor is how long SpawnWatch waits for a spawned session to die on
+	// startup, and WatchEvery how often it looks. Zero means the defaults in
+	// spawn.go — a test shortens both rather than sitting out the real half
+	// minute.
+	WatchFor, WatchEvery time.Duration
 }
 
 // Ensure brings the topology up, reusing whatever is already running.
@@ -230,6 +236,17 @@ func (s server) run(args ...string) error {
 		return fmt.Errorf("tmux %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// output is run for the commands asked a question rather than told to do
+// something: tmux's answer on stdout, with its complaint left on stderr where
+// it cannot be mistaken for one.
+func (s server) output(args ...string) (string, error) {
+	out, err := exec.Command("tmux", s.args(args...)...).Output()
+	if err != nil {
+		return "", fmt.Errorf("tmux %s: %w", strings.Join(args, " "), err)
+	}
+	return string(out), nil
 }
 
 // Default is the harness as it runs day to day: the Dashboard and the repo

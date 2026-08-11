@@ -2,6 +2,7 @@ package dashboard_test
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,13 +17,25 @@ import (
 type spawns struct {
 	dirs, names, prompts []string
 	err                  error
+	// window is the window Spawn reports having opened, and watched every
+	// window the Dashboard went on to watch for a death on startup.
+	window  string
+	watched []string
+	// died is what the watched session said before dying, and empty is a
+	// session that started and stayed up.
+	died string
 }
 
-func (s *spawns) Spawn(dir, name, prompt string) error {
+func (s *spawns) Spawn(dir, name, prompt string) (string, error) {
 	s.dirs = append(s.dirs, dir)
 	s.names = append(s.names, name)
 	s.prompts = append(s.prompts, prompt)
-	return s.err
+	return s.window, s.err
+}
+
+func (s *spawns) SpawnWatch(window string) (string, bool) {
+	s.watched = append(s.watched, window)
+	return s.died, s.died != ""
 }
 
 // onARepo is a Dashboard with one repo on the rail and nothing running in it,
@@ -236,6 +249,60 @@ func TestSpawnThatFailsSaysSo(t *testing.T) {
 
 	if !strings.Contains(detail(model), "no such session") {
 		t.Errorf("SELECTED = %q, want what went wrong in it", detail(model))
+	}
+}
+
+// tmux accepting a window is not the session running in it. A Worktree session
+// that dies on startup — a WorktreeCreate hook that fails, a flag claude will
+// not take — closed the dialog and said nothing whatever, which is the one
+// thing the Dashboard must never do: the spawn was reported as a success on the
+// strength of tmux having been asked.
+func TestASpawnedSessionThatDiesOnStartupSaysSo(t *testing.T) {
+	spawner := &spawns{window: "@7", died: "Error creating worktree: WorktreeCreate hook failed"}
+	model := onARepo(t, dashboard.Harness{Spawner: spawner}, "/repos/service-billing")
+
+	model = types(model, "w")
+	model = types(model, "FIRE-2841")
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if cmd == nil {
+		t.Fatal("the spawn left nothing watching the window it opened")
+	}
+	model, _ = model.Update(cmd())
+
+	// The notice wraps to the sidepanel's forty columns, so it is read back as
+	// the one line it was written as.
+	box := detail(model)
+	said := strings.Join(strings.Fields(box), " ")
+	if !strings.Contains(said, "WorktreeCreate hook failed") {
+		t.Errorf("SELECTED = %q, want the reason the spawned session died in it", box)
+	}
+	if !strings.Contains(said, "FIRE-2841 died on startup") {
+		t.Errorf("SELECTED = %q, want the Worktree session it was about named", box)
+	}
+	if !slices.Contains(spawner.watched, "@7") {
+		t.Errorf("watched %v, want the window Spawn opened", spawner.watched)
+	}
+}
+
+// A Worktree session that started is not worth a word: it turning up on the
+// rail is the whole report, and a notice for every good spawn would be noise
+// on the one panel that must stay worth reading.
+func TestASpawnedSessionThatStartsSaysNothing(t *testing.T) {
+	spawner := &spawns{window: "@7"}
+	model := onARepo(t, dashboard.Harness{Spawner: spawner}, "/repos/service-billing")
+
+	model = types(model, "w")
+	model = types(model, "FIRE-2841")
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if cmd == nil {
+		t.Fatal("the spawn left nothing watching the window it opened")
+	}
+	model, _ = model.Update(cmd())
+
+	if box := detail(model); strings.Contains(box, "died") {
+		t.Errorf("SELECTED = %q, want nothing said about a spawn that started", box)
 	}
 }
 

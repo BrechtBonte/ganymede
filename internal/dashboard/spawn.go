@@ -12,8 +12,32 @@ import (
 // in that repo's Session running claude --worktree, named after the worktree
 // the dialog derived and given the first prompt as its own when there is one
 // (§6).
+//
+// Starting one is two questions, not one, because tmux answers the first
+// immediately and the one that matters late: a window is accepted at once, and
+// the session in it can still die ten seconds later over a WorktreeCreate hook
+// or a flag claude will not take.
 type Spawner interface {
-	Spawn(dir, name, prompt string) error
+	// Spawn starts the session and returns the window it opened.
+	Spawn(dir, name, prompt string) (window string, err error)
+	// SpawnWatch waits out that window's startup and reports the session
+	// dying in it, along with the last thing it said. It blocks for as long as
+	// being sure takes, so it is asked away from the goroutine that draws.
+	SpawnWatch(window string) (output string, died bool)
+}
+
+// spawned is a Worktree session that did not survive its own startup, and what
+// it said on the way out.
+type spawned struct{ name, output string }
+
+// said is what the rail is told about it. A window that had already gone
+// leaves nothing to read, and the death itself is still worth the word — it is
+// the difference between a spawn that quietly did nothing and one that said so.
+func (s spawned) said() string {
+	if s.output == "" {
+		return s.name + " died on startup"
+	}
+	return s.name + " died on startup: " + s.output
 }
 
 // spawnField is which of the dialog's three inputs the keyboard is in.
@@ -154,13 +178,13 @@ func (m Model) spawnInto(dir string) Model {
 
 // spawningKey is the dialog's own key handling. While it is up every key
 // belongs to it, the same way the ticket-setting input owns the keyboard.
-func (m Model) spawningKey(msg tea.KeyMsg) Model {
+func (m Model) spawningKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
 		// Abandoned: nothing is spawned, and the repo is left as it was.
 		m.spawning = nil
 	case tea.KeyEnter:
-		m = m.launch()
+		return m.launch()
 	case tea.KeyTab:
 		m.spawning = m.spawning.next()
 	case tea.KeyShiftTab:
@@ -172,7 +196,7 @@ func (m Model) spawningKey(msg tea.KeyMsg) Model {
 	case tea.KeyBackspace:
 		m.spawning = m.spawning.back()
 	}
-	return m
+	return m, nil
 }
 
 // launch starts the Worktree session the dialog asked for.
@@ -182,22 +206,27 @@ func (m Model) spawningKey(msg tea.KeyMsg) Model {
 // type, not something to type again. A Spawn that runs and fails is worth the
 // same word a jump that could not be made gets, and there the dialog closes:
 // retyping the same fields would ask tmux for exactly the same thing.
-func (m Model) launch() Model {
+//
+// A Spawn that runs and works is not the end of it. It leaves behind the watch
+// on the window it opened, which is the only thing that can tell a Worktree
+// session that started from one that was merely begun.
+func (m Model) launch() (Model, tea.Cmd) {
 	name := m.spawning.name()
 	if name == "" {
 		m.notice = "name the worktree"
-		return m
+		return m, nil
 	}
 	root, prompt := m.spawning.root, strings.TrimSpace(m.spawning.prompt)
 	if m.harness.Spawner == nil {
 		m.notice = "no worktree spawning is configured"
 		m.spawning = nil
-		return m
+		return m, nil
 	}
-	if err := m.harness.Spawner.Spawn(root, name, prompt); err != nil {
+	window, err := m.harness.Spawner.Spawn(root, name, prompt)
+	if err != nil {
 		m.notice = err.Error()
 		m.spawning = nil
-		return m
+		return m, nil
 	}
 	m.spawning = nil
 	if m.harness.Activity != nil {
@@ -209,7 +238,28 @@ func (m Model) launch() Model {
 			m.notice = err.Error()
 		}
 	}
-	return m.rebuilt().selecting(root)
+	return m.rebuilt().selecting(root), m.watchingSpawn(window, name)
+}
+
+// watchingSpawn waits out a spawned session's startup away from the goroutine
+// that draws, and reports it if it dies there.
+//
+// A spawn that stays up reports nothing at all: the Session turning up on the
+// rail is the whole account of it, and a notice for every good spawn would be
+// noise on the one panel that has to stay worth reading.
+func (m Model) watchingSpawn(window, name string) tea.Cmd {
+	spawner := m.harness.Spawner
+	if window == "" {
+		// Nothing to watch: a Spawner that names no window is one that cannot be
+		// asked about it afterwards.
+		return nil
+	}
+	return func() tea.Msg {
+		if output, died := spawner.SpawnWatch(window); died {
+			return spawned{name: name, output: output}
+		}
+		return nil
+	}
 }
 
 // fieldLine draws one of the dialog's inputs: its label, what has been typed

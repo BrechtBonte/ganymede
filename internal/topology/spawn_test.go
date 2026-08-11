@@ -1,10 +1,12 @@
 package topology_test
 
 import (
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/topology"
 )
@@ -26,6 +28,9 @@ func resolved(t *testing.T, dir string) string {
 // business starting a real Claude Code session.
 type worktreeCalls struct {
 	names, prompts []string
+	// command is what the spawned window should run instead of the plain shell
+	// below — a test about a session dying on startup needs one that dies.
+	command []string
 }
 
 // record is a Harness.Worktree that remembers what it was asked for and keeps
@@ -34,6 +39,9 @@ type worktreeCalls struct {
 func (c *worktreeCalls) record(name, prompt string) []string {
 	c.names = append(c.names, name)
 	c.prompts = append(c.prompts, prompt)
+	if c.command != nil {
+		return c.command
+	}
 	return []string{"sh", "-c", "sleep 300"}
 }
 
@@ -107,7 +115,7 @@ func TestWorktreeCommandWithNoPromptAddsNoTrailingArgument(t *testing.T) {
 func TestSpawnCreatesANewWindowNamedAfterTheWorktree(t *testing.T) {
 	h, calls, repo := spawnable(t)
 
-	if err := h.Spawn(repo, "FIRE-2841-paging", ""); err != nil {
+	if _, err := h.Spawn(repo, "FIRE-2841-paging", ""); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
@@ -129,7 +137,7 @@ func TestSpawnCreatesANewWindowNamedAfterTheWorktree(t *testing.T) {
 func TestSpawnRunsTheWorktreeWindowAtTheMainRoot(t *testing.T) {
 	h, _, repo := spawnable(t)
 
-	if err := h.Spawn(repo, "FIRE-2841-paging", ""); err != nil {
+	if _, err := h.Spawn(repo, "FIRE-2841-paging", ""); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
@@ -145,7 +153,7 @@ func TestSpawnRunsTheWorktreeWindowAtTheMainRoot(t *testing.T) {
 func TestSpawnPassesThePromptWhenThereIsOne(t *testing.T) {
 	h, calls, repo := spawnable(t)
 
-	if err := h.Spawn(repo, "FIRE-2841-paging", "fix the pagination bug"); err != nil {
+	if _, err := h.Spawn(repo, "FIRE-2841-paging", "fix the pagination bug"); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
@@ -160,7 +168,7 @@ func TestSpawnPassesThePromptWhenThereIsOne(t *testing.T) {
 func TestSpawnBringsUpTheReposSessionWhenNoneIsRunning(t *testing.T) {
 	h, _, repo := spawnable(t)
 
-	if err := h.Spawn(repo, "FIRE-2841-paging", ""); err != nil {
+	if _, err := h.Spawn(repo, "FIRE-2841-paging", ""); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
@@ -170,13 +178,147 @@ func TestSpawnBringsUpTheReposSessionWhenNoneIsRunning(t *testing.T) {
 	}
 }
 
+// windowThere reports whether a window is still on the server, without failing
+// the test when it is not — which is the whole question being asked. tmux
+// answers for a window it cannot find with an empty line and no complaint, so
+// an exit status alone would say every window still existed.
+func windowThere(socket, window string) bool {
+	out, err := exec.Command("tmux", "-L", socket, "display-message",
+		"-p", "-t", window, "#{window_id}").Output()
+	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+// The window Spawn opened has to be nameable afterwards, and its name is no
+// use for it: claude renames its own window as it runs, so the id tmux hands
+// back at creation is the only handle that still finds the window minutes
+// later.
+func TestSpawnReturnsTheWindowItOpened(t *testing.T) {
+	h, _, repo := spawnable(t)
+
+	window, err := h.Spawn(repo, "FIRE-2841-paging", "")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if !strings.HasPrefix(window, "@") {
+		t.Fatalf("Spawn returned %q, want a tmux window id", window)
+	}
+	if got := tmuxOn(t, h.Socket, "display-message", "-p", "-t", window, "#{window_name}"); got != "FIRE-2841-paging" {
+		t.Errorf("the returned window is named %q, want the window Spawn opened", got)
+	}
+}
+
+// The failure this whole flow exists for: claude exits during startup — a
+// WorktreeCreate hook that fails, a flag it will not take — and tmux erases
+// the window the instant the command dies. A spawn that only checked tmux
+// accepted the window reads that as success and says nothing at all, which is
+// the one thing the Dashboard must never do.
+func TestSpawnDiedReportsASessionThatDiedOnStartupAndWhatItSaid(t *testing.T) {
+	h, calls, repo := spawnable(t)
+	calls.command = []string{"sh", "-c", "echo 'Error creating worktree: returned no worktree path'; exit 1"}
+
+	window, err := h.Spawn(repo, "FIRE-2841-paging", "")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	var output string
+	var died bool
+	if !settles(func() bool { output, died = h.SpawnDied(window); return died }) {
+		t.Fatalf("SpawnDied never reported a session that exited at once")
+	}
+	if !strings.Contains(output, "returned no worktree path") {
+		t.Errorf("SpawnDied read %q, want what the session said before it died", output)
+	}
+}
+
+// The other half of the same question: a Worktree session that started and is
+// sitting there working must never be reported as dead, or every good spawn
+// would be followed by a notice saying it failed.
+func TestSpawnDiedSaysNothingOfASessionStillRunning(t *testing.T) {
+	h, _, repo := spawnable(t)
+
+	window, err := h.Spawn(repo, "FIRE-2841-paging", "")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if output, died := h.SpawnDied(window); died {
+		t.Errorf("SpawnDied reported a live Worktree session as dead, reading %q", output)
+	}
+}
+
+// A window whose session ended long after it started is an ordinary day's
+// work finishing, not a spawn that failed — so the scaffolding that keeps a
+// dead pane readable comes off once the spawn has proven it started, leaving
+// the window to close behind the session the way every other one does.
+func TestSpawnSettledLetsTheWindowCloseWhenTheSessionEnds(t *testing.T) {
+	h, calls, repo := spawnable(t)
+	calls.command = []string{"sh", "-c", "sleep 0.2"}
+
+	window, err := h.Spawn(repo, "FIRE-2841-paging", "")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := h.SpawnSettled(window); err != nil {
+		t.Fatalf("SpawnSettled: %v", err)
+	}
+
+	if !settles(func() bool { return !windowThere(h.Socket, window) }) {
+		t.Errorf("the window is still on the server after its session ended, want it closed once the spawn had settled")
+	}
+}
+
+// SpawnWatch is the question the Dashboard actually asks, and the reason it
+// cannot be answered at the time of the spawn: a WorktreeCreate hook that
+// fails takes some ten seconds to bring claude down with it, so a spawn that
+// looked once and reported success would report it every time.
+func TestSpawnWatchWaitsOutASessionThatDiesAfterAMoment(t *testing.T) {
+	h, calls, repo := spawnable(t)
+	h.WatchFor, h.WatchEvery = 5*time.Second, 20*time.Millisecond
+	calls.command = []string{"sh", "-c", "sleep 0.3; echo 'hook failed: no worktree path'; exit 1"}
+
+	window, err := h.Spawn(repo, "FIRE-2841-paging", "")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	output, died := h.SpawnWatch(window)
+	if !died {
+		t.Fatalf("SpawnWatch called a session that died after a moment alive")
+	}
+	if !strings.Contains(output, "no worktree path") {
+		t.Errorf("SpawnWatch read %q, want what the session said before it died", output)
+	}
+}
+
+// A session still running when the watch runs out is one that started: there is
+// nothing to report, and the scaffolding holding its pane open comes off behind
+// it.
+func TestSpawnWatchLeavesALiveSessionAloneAndSettlesIt(t *testing.T) {
+	h, _, repo := spawnable(t)
+	h.WatchFor, h.WatchEvery = 200*time.Millisecond, 20*time.Millisecond
+
+	window, err := h.Spawn(repo, "FIRE-2841-paging", "")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if output, died := h.SpawnWatch(window); died {
+		t.Fatalf("SpawnWatch called a live Worktree session dead, reading %q", output)
+	}
+	if got := tmuxOn(t, h.Socket, "show-options", "-w", "-t", window, "-v", "remain-on-exit"); got != "off" {
+		t.Errorf("remain-on-exit is %q once the spawn settled, want it off so the window closes behind the session", got)
+	}
+}
+
 // A background session is not one that steals your eye the moment it starts:
 // spawning must not switch the session's active window away from whatever
 // you were already looking at in the Main root.
 func TestSpawnLeavesTheMainRootsWindowInFront(t *testing.T) {
 	h, _, repo := spawnable(t)
 
-	if err := h.Spawn(repo, "FIRE-2841-paging", ""); err != nil {
+	if _, err := h.Spawn(repo, "FIRE-2841-paging", ""); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
