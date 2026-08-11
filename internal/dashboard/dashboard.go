@@ -135,6 +135,15 @@ type Strip interface {
 	Show(waiting session.Attention) error
 }
 
+// Panes is what the harness can say about the tmux panes the Sessions are
+// running in.
+type Panes interface {
+	// Frozen says which of pids are running in a pane holding a mode over
+	// its live view. A pid it cannot place in a pane is left out, which is
+	// not the same answer as false.
+	Frozen(pids []int) (map[int]bool, error)
+}
+
 // Tickets is everything the harness does with a JIRA ticket: read which one a
 // Session's checkout is about, keep the correction when you set one by hand, and
 // show it. All three are the same small idea — an ID and a link, no JIRA API —
@@ -205,6 +214,8 @@ type Harness struct {
 	// Popups is the Popup shell's busy status and the harness's memory of
 	// where the cursor is.
 	Popups Popups
+	// Panes is what tmux says about the panes the Sessions run in.
+	Panes Panes
 	// Approver answers a Blocked Session's dialog: the guard's default row,
 	// or the decline (§7.3).
 	Approver Approver
@@ -464,7 +475,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// older than this one's will be — and it is bounded to once every half
 		// minute, which is the point of hanging it on the tick.
 		m.awaiting = true
-		return m, tea.Batch(ticking(), m.reading(), m.sweepingPopups())
+		return m, tea.Batch(ticking(), m.reading(), m.sweepingPopups(), m.sweepingFrozen())
 	case Discovered:
 		m.picker = m.picker.found(msg)
 		return m, nil
@@ -695,6 +706,48 @@ func (m Model) sweepingPopups() tea.Cmd {
 			return nil
 		}
 		return PopupStatuses(statuses)
+	}
+}
+
+// sweepingFrozen asks tmux which Sessions are behind a pane holding a mode
+// over the live view.
+//
+// It is the cross-check under the pane-mode-changed hook, on the same
+// half-minute clock the cautions are re-read on: the hook is what makes the
+// mark quick, and this is what makes it true after a Dashboard restart, a
+// fragment not yet sourced into a running server, or an edge that never
+// arrived.
+//
+// tmux is asked in pids, the only name it could match a Session by, and
+// answers in them. The ids go back on here, where the working set this was
+// asked about is still in hand.
+func (m Model) sweepingFrozen() tea.Cmd {
+	if m.harness.Panes == nil || len(m.set) == 0 {
+		return nil
+	}
+	ids := make(map[int]string, len(m.set))
+	pids := make([]int, 0, len(m.set))
+	for _, s := range m.set {
+		ids[s.PID] = s.ID
+		pids = append(pids, s.PID)
+	}
+	ask := m.harness.Panes.Frozen
+	return func() tea.Msg {
+		held, err := ask(pids)
+		if err != nil {
+			// A sweep that failed said nothing about any pane, and
+			// reporting no message at all leaves the last answer standing
+			// — unlike a FrozenPanes of nothing, which would take every
+			// mark off the rail over a tmux that was briefly not there.
+			return nil
+		}
+		frozen := make(FrozenPanes, len(held))
+		for pid, inMode := range held {
+			if id := ids[pid]; id != "" {
+				frozen[id] = inMode
+			}
+		}
+		return frozen
 	}
 }
 

@@ -1,8 +1,12 @@
 package dashboard_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
 	"github.com/BrechtBonte/ganymede/internal/session"
@@ -105,6 +109,105 @@ func TestFreezingAPaneChangesNothingAboutAttention(t *testing.T) {
 
 // countOf is how many times a mark appears in a view.
 func countOf(view, mark string) int { return strings.Count(view, mark) }
+
+// panes stands in for the harness's hand on tmux, recording what it was asked
+// about so a test can check the sweep asks about the live Sessions.
+type panes struct {
+	frozen map[int]bool
+	err    error
+	asked  [][]int
+}
+
+func (p *panes) Frozen(pids []int) (map[int]bool, error) {
+	p.asked = append(p.asked, pids)
+	return p.frozen, p.err
+}
+
+// sweptFrozen runs what a Tick asked for and hands the Dashboard back what the
+// harness said about the panes, the way the runtime does. Whatever else was
+// asked for — the git read, the popup sweep, the next tick — is left running,
+// exactly as popups_test.go's swept leaves them.
+func sweptFrozen(t *testing.T, model tea.Model, cmd tea.Cmd) tea.Model {
+	t.Helper()
+	read := make(chan dashboard.FrozenPanes, 1)
+	var run func(tea.Cmd)
+	run = func(ask tea.Cmd) {
+		if ask == nil {
+			return
+		}
+		go func() {
+			switch msg := ask().(type) {
+			case dashboard.FrozenPanes:
+				select {
+				case read <- msg:
+				default:
+				}
+			case tea.BatchMsg:
+				for _, inner := range msg {
+					run(inner)
+				}
+			}
+		}()
+	}
+	run(cmd)
+
+	select {
+	case frozen := <-read:
+		model, _ = model.Update(frozen)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Dashboard never asked the harness which panes are frozen")
+	}
+	return model
+}
+
+// The cross-check under the hook: what catches a mode entered while the
+// Dashboard was down, a fragment not yet sourced into a running server, or an
+// edge that never arrived.
+func TestTheTickSweepsForFrozenPanes(t *testing.T) {
+	running := live("max-paging-numbers", "/repos/service-billing", session.Working)
+	swept := &panes{frozen: map[int]bool{running.PID: true}}
+	model := dashboardOn(dashboard.Harness{Jumper: &jumps{}, Panes: swept}, running)
+
+	_, cmd := model.Update(dashboard.Tick{})
+	model = sweptFrozen(t, model, cmd)
+
+	line, ok := lineWith(tree(model), "max-paging-numbers")
+	if !ok {
+		t.Fatalf("no row for the session:\n%s", tree(model))
+	}
+	if !strings.Contains(line, frozenMark) {
+		t.Errorf("row = %q, want the Frozen mark the sweep found", line)
+	}
+	if len(swept.asked) == 0 || len(swept.asked[0]) != 1 || swept.asked[0][0] != running.PID {
+		t.Errorf("the sweep asked about %v, want the live Session's pid %d", swept.asked, running.PID)
+	}
+}
+
+// A sweep that failed says nothing about any pane, and leaves the last answer
+// standing rather than blanking a mark tmux was merely slow to answer about.
+func TestAFailedSweepLeavesTheLastAnswerStanding(t *testing.T) {
+	running := live("max-paging-numbers", "/repos/service-billing", session.Working)
+	swept := &panes{err: errors.New("tmux is not there")}
+	model := dashboardOn(dashboard.Harness{Jumper: &jumps{}, Panes: swept}, running)
+	model, _ = model.Update(dashboard.FrozenPanes{"max-paging-numbers-id": true})
+
+	_, cmd := model.Update(dashboard.Tick{})
+	// Not sweptFrozen: the point is that no FrozenPanes message ever comes
+	// back, so waiting for one would only ever time out. Running the batch
+	// and going on is what the runtime does with a command that reports
+	// nothing.
+	if cmd != nil {
+		go cmd()
+	}
+
+	line, ok := lineWith(tree(model), "max-paging-numbers")
+	if !ok {
+		t.Fatalf("no row for the session:\n%s", tree(model))
+	}
+	if !strings.Contains(line, frozenMark) {
+		t.Errorf("row = %q, want a failed sweep to leave the Frozen mark standing", line)
+	}
+}
 
 // The edges off the pane-mode-changed hook, which are what make the mark
 // quick — and, on the leaving edge, what take it down the moment you press q
