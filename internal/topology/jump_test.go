@@ -1,6 +1,7 @@
 package topology_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -179,6 +180,45 @@ func TestJumpToAProcessInNoPaneSaysSo(t *testing.T) {
 	err := h.Jump(os.Getpid())
 	if err == nil {
 		t.Fatal("Jump to a process in no pane reported success")
+	}
+	var gone topology.GoneError
+	if errors.As(err, &gone) {
+		t.Errorf("a live process with no pane was reported Gone: %v", err)
+	}
+	if session, _ := workingClientShows(t, h); session != "service-ai-assistant" {
+		t.Errorf("the working client moved to %q on a jump that could not be made", session)
+	}
+}
+
+// deadPID hands back a pid that used to be a process and now is not — the
+// stand-in for a Session whose Claude process has already ended.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start a throwaway process: %v", err)
+	}
+	pid := cmd.Process.Pid
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for the throwaway process: %v", err)
+	}
+	return pid
+}
+
+// A pid that no longer names any process at all is the one case worth acting
+// on rather than just reporting: the Session is not merely unplaceable, it is
+// Gone, and the Dashboard needs to be able to tell the two apart.
+func TestJumpToAGoneProcessSaysSo(t *testing.T) {
+	h := jumpable(t)
+	pid := deadPID(t)
+
+	err := h.Jump(pid)
+	if err == nil {
+		t.Fatal("Jump to a gone process reported success")
+	}
+	var gone topology.GoneError
+	if !errors.As(err, &gone) || gone.PID != pid {
+		t.Errorf("Jump(%d) error = %v, want a GoneError naming %d", pid, err, pid)
 	}
 	if session, _ := workingClientShows(t, h); session != "service-ai-assistant" {
 		t.Errorf("the working client moved to %q on a jump that could not be made", session)

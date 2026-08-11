@@ -7,6 +7,7 @@
 package dashboard
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -310,6 +311,13 @@ type Model struct {
 	// same row before the first lands cannot fire a second send at the pane
 	// the first is still verifying.
 	pending map[int]bool
+	// forgotten is which pids Jump has confirmed are Gone — the process
+	// itself has ended, not merely unplaceable in a pane. Sessions is
+	// filtered against it on every arrival so a row Enter just cleaned up
+	// does not flicker back on the registry's next tick or a stale
+	// reconciler cross-check; an entry is dropped once a real snapshot no
+	// longer carries that pid, since there is nothing left to guard against.
+	forgotten map[int]struct{}
 	// spinner is the current tick of the Working spinner, advanced by Spin.
 	spinner int
 	// spinTicking says a Spin loop is already running, so a rebuild that
@@ -541,7 +549,8 @@ func (m Model) showing(sessions []session.Session) Model {
 	if m.roots == nil {
 		m.roots = map[string]string{}
 	}
-	m.set = sessions
+	m.forgotten = pruneForgotten(m.forgotten, sessions)
+	m.set = withoutForgotten(sessions, m.forgotten)
 	if m.harness.Activity != nil {
 		now := time.Now()
 		for _, s := range sessions {
@@ -1171,6 +1180,13 @@ func (m Model) jumpTo(s session.Session, moveFocus bool) Model {
 		return m
 	}
 	if err := m.harness.Jumper.Jump(s.PID); err != nil {
+		// Gone is the one jump failure worth acting on rather than just
+		// reporting: the process itself has ended, so the row is cleaned up
+		// instead of left for you to notice failing again.
+		var gone topology.GoneError
+		if errors.As(err, &gone) {
+			return m.forget(s.PID)
+		}
 		// A jump that could not be made left you where you were, so the
 		// Session has not been seen and its badge stays.
 		m.notice = err.Error()
@@ -1183,6 +1199,55 @@ func (m Model) jumpTo(s session.Session, moveFocus bool) Model {
 		_ = m.harness.Focuser.Focus()
 	}
 	return m
+}
+
+// forget drops a Session Jump has confirmed is Gone, and keeps it dropped
+// across every snapshot until the source that reported it has moved on too
+// — otherwise the very next registry tick or reconciler cross-check would
+// put the row right back, undoing the one thing Enter was just asked to do.
+func (m Model) forget(pid int) Model {
+	if m.forgotten == nil {
+		m.forgotten = map[int]struct{}{}
+	}
+	m.forgotten[pid] = struct{}{}
+	m.set = withoutForgotten(m.set, m.forgotten)
+	m.notice = "session ended — removed from the dashboard"
+	return m.rebuilt()
+}
+
+// withoutForgotten drops any Session Jump has confirmed is Gone.
+func withoutForgotten(sessions []session.Session, forgotten map[int]struct{}) []session.Session {
+	if len(forgotten) == 0 {
+		return sessions
+	}
+	kept := make([]session.Session, 0, len(sessions))
+	for _, s := range sessions {
+		if _, gone := forgotten[s.PID]; gone {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return kept
+}
+
+// pruneForgotten drops a confirmed-Gone pid once the account that reported
+// it Gone has itself moved on — the registry or the reconciler no longer
+// naming it — so the set does not grow for the life of the Dashboard.
+func pruneForgotten(forgotten map[int]struct{}, sessions []session.Session) map[int]struct{} {
+	if len(forgotten) == 0 {
+		return forgotten
+	}
+	present := make(map[int]bool, len(sessions))
+	for _, s := range sessions {
+		present[s.PID] = true
+	}
+	kept := make(map[int]struct{}, len(forgotten))
+	for pid := range forgotten {
+		if present[pid] {
+			kept[pid] = struct{}{}
+		}
+	}
+	return kept
 }
 
 // focusPane puts pid's own pane in front of you without counting it as seen
