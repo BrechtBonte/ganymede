@@ -251,7 +251,7 @@ func runDashboard() error {
 		}
 	}
 
-	program := tea.NewProgram(dashboard.New(dashboardSessions, hands), tea.WithAltScreen())
+	program := tea.NewProgram(dashboard.New(dashboardSessions, hands), tea.WithAltScreen(), tea.WithReportFocus())
 	// The mode edges reach the Dashboard as messages rather than down a
 	// channel of its own: New already takes the one stream it is built
 	// around, and a second parameter would be threaded through every caller
