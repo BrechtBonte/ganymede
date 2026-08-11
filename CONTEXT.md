@@ -64,6 +64,12 @@ _Avoid_: dead, closed, ended
 The union of Blocked and Ready — everything waiting on you. Blocked outranks Ready; within a tier, longest-waiting first.
 _Avoid_: alerts, notifications, needs-input
 
+### Pane view
+
+**Frozen**:
+The Session's pane is showing a held tmux view rather than the live Session — your keys reach the mode, not Claude. Orthogonal to every Session state: a Frozen pane can sit over a Working one, which is exactly when it reads as a hang.
+_Avoid_: stuck, hung, copy-mode, scrolled
+
 ### Main-root states
 
 **Free**:
