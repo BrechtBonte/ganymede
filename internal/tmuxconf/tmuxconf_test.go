@@ -336,6 +336,62 @@ func TestNoCommandBindsNoPopupToggle(t *testing.T) {
 	}
 }
 
+// The Frozen mark rests on tmux telling the harness when a pane starts or
+// stops holding a mode over its live view. Like the focus hook, the pid has
+// to still be a format after the config is read: expanded at load it would
+// name one pane forever, and the wrong one.
+func TestTheInstalledConfigAsksTmuxToReportModeChanges(t *testing.T) {
+	layout, _ := installedWithRecorder(t)
+
+	tmux := tmuxWithConf(t, layout.UserConf)
+	hook := tmux("show-hooks", "-g", "pane-mode-changed")
+
+	if !strings.Contains(hook, "frozen") {
+		t.Errorf("a pane changing mode does not run the harness: %q", hook)
+	}
+	if !strings.Contains(hook, "#{pane_pid}") {
+		t.Errorf("the pane was decided when the config was read, not when the mode changed: %q", hook)
+	}
+	if !strings.Contains(hook, "#{pane_in_mode}") {
+		t.Errorf("the hook does not say which way the mode changed: %q", hook)
+	}
+}
+
+// A Layout that cannot say where the harness lives installs no hook that runs
+// it — the same trade the seen hook and the popup toggle already make.
+func TestNoCommandReportsNoModeChanges(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// An unset hook is reported as its bare name, not as nothing at all, so
+	// what says it was never installed is that it runs no harness.
+	tmux := tmuxWithConf(t, layout.UserConf)
+	if hook := tmux("show-hooks", "-g", "pane-mode-changed"); strings.Contains(hook, "frozen") {
+		t.Errorf("pane-mode-changed = %q, want no harness to run with no command to run it", hook)
+	}
+}
+
+// Both edges, for real. pane-mode-changed fires on entering and on leaving,
+// and pane_in_mode reads 0 on the leaving one — which is what lets a single
+// hook both raise the Frozen mark and take it down again.
+func TestAPaneEnteringAndLeavingAModeRunsTheHarnessForIt(t *testing.T) {
+	layout, record := installedWithRecorder(t)
+	tmux := tmuxWithConf(t, layout.UserConf)
+	pane := tmux("display-message", "-p", "-t", "=probe:0.0", "#{pane_pid}")
+
+	tmux("copy-mode", "-t", "=probe:0.0")
+	if !settled(func() bool { return strings.Contains(read(t, record), "frozen "+pane+" 1") }) {
+		t.Errorf("entering a mode recorded %q, want the pane %s reported frozen", read(t, record), pane)
+	}
+
+	tmux("send-keys", "-X", "-t", "=probe:0.0", "cancel")
+	if !settled(func() bool { return strings.Contains(read(t, record), "frozen "+pane+" 0") }) {
+		t.Errorf("leaving a mode recorded %q, want the pane %s reported thawed", read(t, record), pane)
+	}
+}
+
 // Warp's one surviving muscle memory (§13): Ghostty's Cmd+F sends FindKey
 // directly, so it has to be bound at the root table — not behind whatever
 // prefix the session happens to have, which the harness never touches and a
