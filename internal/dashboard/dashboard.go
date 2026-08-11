@@ -29,6 +29,11 @@ import (
 // whatever it is cautioning about.
 const caution = "⚠"
 
+// frozen is the mark a row carries while its pane is holding a mode over the
+// live Session: what that pane is showing you is a held view, and the keys you
+// type into it are going to the mode rather than to Claude.
+const frozen = "❄"
+
 // popupBusy is the mark a row carries while its own hidden Popup shell is
 // running something (§8) — never while it is only open and sitting at its
 // prompt, which is not worth a word.
@@ -56,6 +61,14 @@ type Cautions map[string]repo.Caution
 // but it is still a subprocess the goroutine drawing the tree must not wait
 // on.
 type PopupStatuses map[string]popup.Status
+
+// FrozenPanes is which Sessions are behind a pane holding a mode over the live
+// view, by Claude session id, as the half-minute cross-check last found them.
+//
+// Like Cautions it arrives as a message rather than being read where it is
+// drawn: asking tmux is a round trip, and a View that made one would make it
+// several times a second.
+type FrozenPanes map[string]bool
 
 // watchEnded says the state model has stopped reporting. The Dashboard keeps
 // showing what it last drew rather than blanking the tree.
@@ -228,6 +241,12 @@ type Model struct {
 	// own — a sweep that found nothing new to report leaves the last one
 	// standing rather than blanking a marker mid-command.
 	popups PopupStatuses
+	// frozen is which Sessions the harness last heard were behind a pane
+	// holding a mode over the live view, by Claude session id. Never cleared
+	// on its own, only laid over by the next answer, for the reason cautions
+	// already documents: a mark that blinked out while tmux was being asked
+	// again is a mark you stop reading.
+	frozen map[string]bool
 	// selectedWritten is the directory last told to the harness as the
 	// cursor's own, so that a redraw the cursor has not moved through does
 	// not tell it the same thing again.
@@ -415,6 +434,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.popups = msg
 		m = m.rebuilt()
 		return m, nil
+	case FrozenPanes:
+		m.frozen = msg
+		m = m.rebuilt()
+		return m, nil
 	case watchEnded:
 		return m, nil
 	case Tick:
@@ -542,6 +565,7 @@ func (m Model) rebuilt() Model {
 		ticket:   m.ticketOf,
 		caution:  m.cautionOf,
 		popup:    m.popupOf,
+		frozen:   m.frozenOf,
 		claimed:  func(root string) (string, bool) { note, ok := claimed[root]; return note, ok },
 	})
 	m.waiting = session.AttentionIn(m.set)
@@ -789,6 +813,12 @@ func (m Model) cautionOf(root string) (repo.Caution, bool) {
 // doing. Like cautionOf, it is not asked here: a directory with no popup at
 // all, or one the harness has not swept yet, reads as idle rather than busy.
 func (m Model) popupOf(dir string) popup.Status { return m.popups[dir] }
+
+// frozenOf says whether the Session with this id is behind a pane holding a
+// mode over the live view. A Session nothing has been said about is not
+// frozen, which is the right default: the mark claims something, and its
+// absence claims nothing.
+func (m Model) frozenOf(id string) bool { return m.frozen[id] }
 
 // selectedDir is the directory the cursor is currently on: a Session's own
 // on a Session row, or a repo header's Main root when it is not on one. It
@@ -1253,7 +1283,7 @@ func (m Model) line(i int) string {
 	const indent = "  "
 	glyph := r.session.State.Frame(m.spinner)
 	age := ageOf(*r.session)
-	mark := busyMark(r)
+	mark := marks(r)
 	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" "+mark)-lipgloss.Width(about(r.ticket)+" "+age)-1)
 	if i == m.cursor {
 		return selectedStyle.Width(m.width).Render(spread(indent+glyph+" "+mark+name, about(r.ticket)+" "+age, m.width))
@@ -1262,15 +1292,26 @@ func (m Model) line(i int) string {
 		ticketStyle(r.ticket).Render(about(r.ticket))+" "+quietStyle.Render(age), m.width)
 }
 
-// busyMark is a row's own busy-popup marker, with the trailing space that
-// separates it from whatever comes next — empty when its hidden Popup shell
-// is not running anything worth mentioning (§8), so a row with no popup at
-// all costs the layout nothing.
-func busyMark(r row) string {
-	if !r.popup.Busy {
+// marks are what you have done to a row, as against what its Session is
+// doing: that its pane is frozen, and that its hidden Popup shell is running
+// something (§8). They come with the trailing space that separates them from
+// whatever follows, and a row carrying neither costs the layout nothing.
+//
+// Frozen comes first. Whether the pane is still showing you the live Session
+// changes what the rest of the row means; what a popup underneath it is
+// running is a footnote to that.
+func marks(r row) string {
+	var said []string
+	if r.frozen {
+		said = append(said, frozen)
+	}
+	if r.popup.Busy {
+		said = append(said, popupBusy)
+	}
+	if len(said) == 0 {
 		return ""
 	}
-	return popupBusy + " "
+	return strings.Join(said, " ") + " "
 }
 
 // repoLine draws a repo's header row: its name, and at the far end the mark of
@@ -1282,7 +1323,7 @@ func busyMark(r row) string {
 // are read in that order: what the root is, then what is in it.
 func (m Model) repoLine(r row, selected bool) string {
 	glyph := m.repoGlyph(r)
-	mark := strings.TrimRight(busyMark(r), " ")
+	mark := strings.TrimRight(marks(r), " ")
 	// What the row has left for a caution once the name, the mark and the
 	// state glyph have had their columns. Where that leaves too little, the
 	// caution says less rather than nothing, and the name is truncated to

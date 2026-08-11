@@ -52,6 +52,13 @@ type row struct {
 	// own on a Session row, the Main root on a repo's header row. A busy one
 	// is what earns the row its marker (§8).
 	popup popup.Status
+	// frozen says the Session's own pane is holding a mode over the live
+	// view, so what that pane shows is a held picture of the Session rather
+	// than the Session itself. It is orthogonal to the Session's State — a
+	// Frozen pane sits over one in any state, which is exactly when it reads
+	// as a hang — and it is never set on a repo's header row, which has no
+	// pane of its own to hold anything.
+	frozen bool
 	// holdsRoot says a Session row's own Session is the one actually holding
 	// its repo's Main root as its checkout — as against every Session merely
 	// grouped under the repo, a Worktree session included. It is what a
@@ -77,6 +84,10 @@ type answers struct {
 	caution func(root string) (repo.Caution, bool)
 	// popup is what a directory's hidden Popup shell is doing.
 	popup func(dir string) popup.Status
+	// frozen is whether a Session's own pane is holding a mode over the live
+	// view. It is asked by Session id rather than by directory: the pane
+	// belongs to the Session, and two Sessions can share a checkout.
+	frozen func(id string) bool
 	// claimed is the note a Main root was claimed with, and whether it is
 	// claimed at all.
 	claimed func(root string) (string, bool)
@@ -163,7 +174,7 @@ func rowsOf(sessions []session.Session, working []string, ask answers) []row {
 			running := &byRoot[root][i]
 			rows = append(rows, row{
 				root: root, session: running, ticket: ask.ticket(running.Dir, root), popup: ask.popup(running.Dir),
-				holdsRoot: ask.checkout(running.Dir) == root,
+				holdsRoot: ask.checkout(running.Dir) == root, frozen: ask.frozen(running.ID),
 			})
 		}
 	}
