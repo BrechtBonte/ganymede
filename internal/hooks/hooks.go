@@ -42,6 +42,14 @@ const (
 	// Seen: the harness's own — focus landed on the Session's pane, or you
 	// jumped to it, either of which clears Ready.
 	Seen Kind = "Seen"
+	// Froze: the Session's pane has started holding a mode over its live
+	// view, so what that pane shows is a held picture of the Session and the
+	// keys typed into it reach the mode. It says nothing about what the
+	// Session is doing — a Frozen pane sits over one in any state, which is
+	// exactly when it reads as a hang.
+	Froze Kind = "Froze"
+	// Thawed: the pane is showing the live Session again.
+	Thawed Kind = "Thawed"
 	// Escalate: the first-party 60s "still sitting there" signal (§9). It says
 	// nothing about whether the Session is Blocked or Ready — only the state
 	// model, which alone knows whether the Session is still unseen, can turn
@@ -82,6 +90,15 @@ type payload struct {
 // seenEvent names the harness's own event on the wire. It is deliberately not
 // a name Claude Code could grow into.
 const seenEvent = "GanymedeSeen"
+
+// frozeEvent and thawedEvent name the harness's own mode edges on the wire,
+// and are deliberately not names Claude Code could grow into either. The
+// direction is the name rather than a field, so the payload keeps the one
+// shape the receiver already reads.
+const (
+	frozeEvent  = "GanymedeFroze"
+	thawedEvent = "GanymedeThawed"
+)
 
 // Limits on what the harness keeps. A snippet is drawn on one line of a
 // 40-column sidepanel and held for every Session in the working set; a reason
@@ -139,6 +156,10 @@ func Parse(body []byte) (Event, bool) {
 		}
 	case seenEvent:
 		event.Kind = Seen
+	case frozeEvent:
+		event.Kind = Froze
+	case thawedEvent:
+		event.Kind = Thawed
 	default:
 		return Event{}, false
 	}
@@ -150,6 +171,22 @@ func Parse(body []byte) (Event, bool) {
 // way in.
 func SeenPayload(id string) []byte {
 	body, err := json.Marshal(payload{Event: seenEvent, SessionID: id})
+	if err != nil {
+		// payload is two strings; encoding/json cannot fail on it.
+		return nil
+	}
+	return body
+}
+
+// FrozenPayload is what the pane-mode-changed hook sends the Dashboard about
+// one Session behind the pane whose mode has just changed, in the same
+// envelope Claude Code uses so the receiver still has one way in.
+func FrozenPayload(id string, frozen bool) []byte {
+	event := thawedEvent
+	if frozen {
+		event = frozeEvent
+	}
+	body, err := json.Marshal(payload{Event: event, SessionID: id})
 	if err != nil {
 		// payload is two strings; encoding/json cannot fail on it.
 		return nil
