@@ -59,6 +59,38 @@ func TestEveryStateHasOneMarkOfItsOwn(t *testing.T) {
 	}
 }
 
+// Working is the one state whose turn is actually running, so it is the one
+// mark on the rail that moves: Frame steps it through ten distinct braille
+// frames and wraps back to the first rather than running off the end.
+func TestWorkingFrameCyclesThroughTenDistinctFrames(t *testing.T) {
+	seen := map[string]bool{}
+	for tick := 0; tick < 10; tick++ {
+		frame := session.Working.Frame(tick)
+		if frame == "" {
+			t.Errorf("tick %d has no frame", tick)
+		}
+		if seen[frame] {
+			t.Errorf("tick %d repeats a frame already seen: %q", tick, frame)
+		}
+		seen[frame] = true
+	}
+	if got, want := session.Working.Frame(10), session.Working.Frame(0); got != want {
+		t.Errorf("tick 10 = %q, want it to wrap back to tick 0's %q", got, want)
+	}
+}
+
+// Every other state has nothing running to animate, so Frame is just Glyph
+// whatever tick it is asked for.
+func TestOnlyWorkingAnimates(t *testing.T) {
+	for _, state := range []session.State{session.Blocked, session.Ready, session.Idle, session.Shell} {
+		for _, tick := range []int{0, 1, 9, 42} {
+			if got, want := state.Frame(tick), state.Glyph(); got != want {
+				t.Errorf("%s.Frame(%d) = %q, want its Glyph %q", state, tick, got, want)
+			}
+		}
+	}
+}
+
 // Blocked and Ready are told apart by colour as well as by mark, because the
 // strip is read out of the corner of your eye.
 func TestAttentionIsColouredApart(t *testing.T) {
