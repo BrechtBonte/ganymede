@@ -249,12 +249,13 @@ func runDashboard() error {
 	return err
 }
 
-// fanned splits one stream of working sets into two, so the Dashboard and the
-// notifier can each watch it on their own goroutine without racing each other
-// for values meant for both.
-func fanned(ctx context.Context, in <-chan []session.Session) (a, b <-chan []session.Session) {
-	toA := make(chan []session.Session)
-	toB := make(chan []session.Session)
+// fanned splits one stream into two, so two watchers can each take it on their
+// own goroutine without racing each other for values meant for both: the
+// working sets go to the Dashboard and the notifier, and the reported events
+// to the state model and the Dashboard.
+func fanned[T any](ctx context.Context, in <-chan T) (a, b <-chan T) {
+	toA := make(chan T)
+	toB := make(chan T)
 	go func() {
 		defer close(toA)
 		defer close(toB)
@@ -262,13 +263,13 @@ func fanned(ctx context.Context, in <-chan []session.Session) (a, b <-chan []ses
 			select {
 			case <-ctx.Done():
 				return
-			case set, ok := <-in:
+			case value, ok := <-in:
 				if !ok {
 					return
 				}
-				for _, out := range [](chan<- []session.Session){toA, toB} {
+				for _, out := range [](chan<- T){toA, toB} {
 					select {
-					case out <- set:
+					case out <- value:
 					case <-ctx.Done():
 						return
 					}
