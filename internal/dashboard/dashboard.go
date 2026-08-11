@@ -459,6 +459,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.harness.Seen(msg.id)
 		}
 		return m, nil
+	case spawned:
+		// The spawn already closed its dialog and reported nothing, on the
+		// strength of tmux having taken the window. This is the window answering
+		// for the session in it, which is the only answer worth having.
+		m.notice = msg.said()
+		return m, nil
 	case interrupted:
 		return m.stopped(msg.pid, msg.err)
 	case ended:
@@ -847,7 +853,7 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case msg.Type == tea.KeyCtrlC:
 	case m.spawning != nil:
-		return m.spawningKey(msg), nil
+		return m.spawningKey(msg)
 	case m.prompting != nil:
 		return m.promptKey(msg)
 	case m.ending != nil:
