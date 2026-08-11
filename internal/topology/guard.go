@@ -60,6 +60,18 @@ func (h Harness) answer(pid int, reason, key string) error {
 	if err != nil {
 		return err
 	}
+	// Before the content check, not after it: a frozen pane still shows the
+	// dialog to capture-pane, which returns the live screen the mode is
+	// holding a view over — so the content check passes and the key goes into
+	// the mode instead. This is the cheaper of the two questions and the one
+	// that decides whether the other is worth asking.
+	held, err := h.modeHeld(target)
+	if err != nil {
+		return err
+	}
+	if held {
+		return fmt.Errorf("pane %s is frozen: it is showing a held view, not the live Session", target)
+	}
 	before, err := h.capturePane(target)
 	if err != nil {
 		return err
@@ -95,6 +107,23 @@ func (h Harness) settled(target, reason string) bool {
 		}
 		time.Sleep(redrawPoll)
 	}
+}
+
+// modeHeld says the pane is holding a mode over its live view, which is what
+// makes a send-keys land in the mode's own key table instead of in the
+// Session.
+//
+// It asks about the one pane rather than reusing Frozen, which asks about
+// every pane at once: the guard already has the pane id, and the narrower
+// question is both cheaper and less racy. It is named apart from Frozen
+// rather than case-shifted from it, so the two are told apart at every call
+// site.
+func (h Harness) modeHeld(target string) (bool, error) {
+	out, err := h.sessions().output("display-message", "-p", "-t", target, "#{pane_in_mode}")
+	if err != nil {
+		return false, fmt.Errorf("ask whether the Session's pane is frozen: %w", err)
+	}
+	return strings.TrimSpace(out) == "1", nil
 }
 
 // capturePane is the pane's whole visible screen, which is what the guard
