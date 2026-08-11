@@ -37,6 +37,16 @@ func (h Harness) Jump(pid int) error {
 	return nil
 }
 
+// GoneError says a Jump target's process has ended — not merely that the
+// harness could not place a live process in a pane. locate tells the two
+// apart using the same ps table it already builds to find the pane; the
+// dashboard needs the distinction to know when a row is safe to clean up.
+type GoneError struct{ PID int }
+
+func (e GoneError) Error() string {
+	return fmt.Sprintf("process %d has ended", e.PID)
+}
+
 // locate returns the id of the tmux pane a process is running in.
 func (h Harness) locate(pid int) (string, error) {
 	panes, _, err := h.panes()
@@ -49,6 +59,13 @@ func (h Harness) locate(pid int) (string, error) {
 	}
 	found, ok := paneOf(pid, panes, parents)
 	if !ok {
+		// Every live process on the machine is a key in parents — reusing it
+		// tells Gone apart from merely unplaceable at no extra cost: no new
+		// syscall, no duplicating the liveness check registry.running already
+		// owns elsewhere.
+		if _, alive := parents[pid]; !alive {
+			return "", GoneError{PID: pid}
+		}
 		return "", fmt.Errorf("no tmux pane is running process %d", pid)
 	}
 	return found, nil
