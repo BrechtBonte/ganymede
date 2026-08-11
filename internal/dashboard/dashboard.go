@@ -70,6 +70,19 @@ type PopupStatuses map[string]popup.Status
 // several times a second.
 type FrozenPanes map[string]bool
 
+// Froze says a Session's pane has started holding a mode over the live view,
+// and Thawed that it has stopped. Both name the Session by Claude's own id,
+// which is what the pane-mode-changed hook resolves the pane it fired for
+// into.
+//
+// They are the quick half of the answer: FrozenPanes on the half-minute clock
+// is what makes it true again after a Dashboard restart, a fragment not yet
+// sourced into a running server, or an edge that never arrived.
+type (
+	Froze  string
+	Thawed string
+)
+
 // watchEnded says the state model has stopped reporting. The Dashboard keeps
 // showing what it last drew rather than blanking the tree.
 type watchEnded struct{}
@@ -438,6 +451,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.frozen = msg
 		m = m.rebuilt()
 		return m, nil
+	case Froze:
+		return m.freezing(string(msg), true), nil
+	case Thawed:
+		return m.freezing(string(msg), false), nil
 	case watchEnded:
 		return m, nil
 	case Tick:
@@ -813,6 +830,23 @@ func (m Model) cautionOf(root string) (repo.Caution, bool) {
 // doing. Like cautionOf, it is not asked here: a directory with no popup at
 // all, or one the harness has not swept yet, reads as idle rather than busy.
 func (m Model) popupOf(dir string) popup.Status { return m.popups[dir] }
+
+// freezing records one mode edge against the Session it was about.
+//
+// The map is copied rather than written through: what is standing in m.frozen
+// arrived as a FrozenPanes message and belongs to whoever sent it, and a Model
+// that edited it would be reaching back into a message it has already handled.
+func (m Model) freezing(id string, held bool) Model {
+	next := make(map[string]bool, len(m.frozen)+1)
+	// Not `for session, frozen := range` — this package imports session,
+	// frozen is the mark's own const, and held is this function's parameter.
+	for behind, was := range m.frozen {
+		next[behind] = was
+	}
+	next[id] = held
+	m.frozen = next
+	return m.rebuilt()
+}
 
 // frozenOf says whether the Session with this id is behind a pane holding a
 // mode over the live view. A Session nothing has been said about is not

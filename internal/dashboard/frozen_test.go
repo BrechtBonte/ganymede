@@ -105,3 +105,63 @@ func TestFreezingAPaneChangesNothingAboutAttention(t *testing.T) {
 
 // countOf is how many times a mark appears in a view.
 func countOf(view, mark string) int { return strings.Count(view, mark) }
+
+// The edges off the pane-mode-changed hook, which are what make the mark
+// quick — and, on the leaving edge, what take it down the moment you press q
+// rather than up to half a minute later.
+func TestTheMarkFollowsTheModeEdges(t *testing.T) {
+	model := sidepanel(&jumps{}, live("max-paging-numbers", "/repos/service-billing", session.Working))
+
+	model, _ = model.Update(dashboard.Froze("max-paging-numbers-id"))
+	line, ok := lineWith(tree(model), "max-paging-numbers")
+	if !ok {
+		t.Fatalf("no row for the session:\n%s", tree(model))
+	}
+	if !strings.Contains(line, frozenMark) {
+		t.Errorf("row = %q after Froze, want the Frozen mark", line)
+	}
+
+	model, _ = model.Update(dashboard.Thawed("max-paging-numbers-id"))
+	line, ok = lineWith(tree(model), "max-paging-numbers")
+	if !ok {
+		t.Fatalf("no row for the session:\n%s", tree(model))
+	}
+	if strings.Contains(line, frozenMark) {
+		t.Errorf("row = %q after Thawed, want the Frozen mark gone", line)
+	}
+}
+
+// An edge must not write through the map the last cross-check handed over: a
+// message's own value belongs to whoever sent it, and a Model that edited one
+// would be reaching back into a message it has already handled.
+func TestAnEdgeDoesNotWriteThroughTheSweptMap(t *testing.T) {
+	model := sidepanel(&jumps{}, live("max-paging-numbers", "/repos/service-billing", session.Working))
+
+	swept := dashboard.FrozenPanes{"max-paging-numbers-id": false}
+	model, _ = model.Update(swept)
+	model, _ = model.Update(dashboard.Froze("max-paging-numbers-id"))
+
+	if swept["max-paging-numbers-id"] {
+		t.Error("an edge wrote through the map the cross-check sent")
+	}
+}
+
+// An edge about a Session the rail has never heard of is remembered rather
+// than dropped: the hook resolves panes to Sessions off the registry, which
+// can name one a beat before the working set the Dashboard is drawing does.
+func TestAnEdgeAheadOfTheWorkingSetStillLands(t *testing.T) {
+	model := sidepanel(&jumps{})
+
+	model, _ = model.Update(dashboard.Froze("max-paging-numbers-id"))
+	model, _ = model.Update(dashboard.Sessions{
+		live("max-paging-numbers", "/repos/service-billing", session.Working),
+	})
+
+	line, ok := lineWith(tree(model), "max-paging-numbers")
+	if !ok {
+		t.Fatalf("no row for the session:\n%s", tree(model))
+	}
+	if !strings.Contains(line, frozenMark) {
+		t.Errorf("row = %q, want the Frozen mark an edge reported before the row existed", line)
+	}
+}
