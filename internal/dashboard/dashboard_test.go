@@ -406,6 +406,84 @@ func TestAJumpThatCannotBeMadeIsReported(t *testing.T) {
 	}
 }
 
+// A jump that finds the process itself gone — not merely unplaceable — is
+// the one case worth acting on: this is the row Brecht sees linger, and
+// Enter is the moment he actually notices it.
+func TestJumpToAGoneSessionRemovesItsRow(t *testing.T) {
+	only := live("ganymede-78", "/repos/ganymede", session.Idle)
+	jumper := &jumps{err: topology.GoneError{PID: only.PID}}
+	model := sidepanel(jumper, only)
+
+	model = press(model, tea.KeyDown)
+	model = press(model, tea.KeyEnter)
+
+	if strings.Contains(tree(model), "ganymede-78") {
+		t.Errorf("the row survived a jump that found its process gone:\n%s", tree(model))
+	}
+}
+
+// Dropping the row on its own is not enough: the registry ticks every two
+// seconds and the reconciler every thirty, and either can still carry the
+// same pid if the state model has not caught up. A row that flickered back
+// would undo the one thing Enter was just asked to do.
+func TestARemovedGoneRowStaysGoneAcrossTheNextSnapshot(t *testing.T) {
+	only := live("ganymede-78", "/repos/ganymede", session.Idle)
+	jumper := &jumps{err: topology.GoneError{PID: only.PID}}
+	model := sidepanel(jumper, only)
+
+	model = press(model, tea.KeyDown)
+	model = press(model, tea.KeyEnter)
+
+	// The same pid, reported again — a stale reconciler cross-check
+	// re-asserting a Session the registry has already dropped.
+	model, _ = model.Update(dashboard.Sessions{only})
+
+	if strings.Contains(tree(model), "ganymede-78") {
+		t.Errorf("a confirmed-gone row reappeared on the next snapshot:\n%s", tree(model))
+	}
+}
+
+// A pid the harness forgot cannot be suppressed forever: once the source
+// that reported it dead has itself moved on, there is nothing left to guard
+// against, and the set must not silently keep growing for the life of the
+// Dashboard process.
+func TestAForgottenPidIsPrunedOnceItsSourceMovesOn(t *testing.T) {
+	only := live("ganymede-78", "/repos/ganymede", session.Idle)
+	jumper := &jumps{err: topology.GoneError{PID: only.PID}}
+	model := sidepanel(jumper, only)
+
+	model = press(model, tea.KeyDown)
+	model = press(model, tea.KeyEnter)
+
+	// The registry catches up and stops reporting the pid at all.
+	model, _ = model.Update(dashboard.Sessions{})
+
+	// The same pid reappears as a new Session — the one case that would prove
+	// the pid was still wrongly suppressed rather than pruned.
+	again := live("ganymede-78", "/repos/ganymede", session.Idle)
+	model, _ = model.Update(dashboard.Sessions{again})
+
+	if !strings.Contains(tree(model), "ganymede-78") {
+		t.Errorf("a pid stayed suppressed after its own source stopped reporting it gone:\n%s", tree(model))
+	}
+}
+
+// A jump that fails for a reason other than the process being gone — running
+// outside tmux, say — must not be mistaken for Gone: the row stays, and only
+// the notice changes, exactly as before this change.
+func TestAJumpThatCannotBeMadeLeavesTheRowInPlace(t *testing.T) {
+	only := live("ganymede-78", "/repos/ganymede", session.Idle)
+	jumper := &jumps{err: errors.New("no tmux pane is running process 4242")}
+	model := sidepanel(jumper, only)
+
+	model = press(model, tea.KeyDown)
+	model = press(model, tea.KeyEnter)
+
+	if !strings.Contains(tree(model), "ganymede-78") {
+		t.Errorf("a merely-unplaceable jump removed the row:\n%s", tree(model))
+	}
+}
+
 // The working set changes under your hands. The selection has to stay on the
 // Session you put it on, not on whatever row inherits that position.
 func TestSelectionStaysWithItsSessionAsTheWorkingSetChanges(t *testing.T) {
