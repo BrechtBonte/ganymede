@@ -240,6 +240,11 @@ type Model struct {
 	harness       Harness
 	rows          []row
 	cursor        int
+	// focused says the dock's keyboard focus is on the Dashboard's own pane
+	// rather than the working client's. It starts true, since a terminal that
+	// never forwards tmux's focus-events should draw exactly as it always has
+	// rather than sitting dim for a fact it will never hear the other half of.
+	focused bool
 	// set is the Sessions the rows were built from, kept so that they can be
 	// built again when something other than a Session has moved — a repo
 	// picked, a repo opened, the recency window closing on the clock.
@@ -356,6 +361,7 @@ func New(sessions <-chan []session.Session, harness Harness) Model {
 		height:   45,
 		sessions: sessions,
 		harness:  harness,
+		focused:  true,
 	}
 }
 
@@ -427,6 +433,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+	case tea.FocusMsg:
+		m.focused = true
+	case tea.BlurMsg:
+		m.focused = false
 	case Sessions:
 		m = m.showing(msg).counted()
 		var spin tea.Cmd
@@ -1320,7 +1330,20 @@ var (
 	// The selected row is inverted and otherwise drawn plainly: a state colour
 	// nested inside the inversion fights with it.
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
+	// blurredSelectedStyle is the same inversion, dimmed: what the cursor's row
+	// wears while the dock's keyboard focus is over in the working client
+	// rather than on the Dashboard.
+	blurredSelectedStyle = selectedStyle.Faint(true)
 )
+
+// selectedRowStyle is how the cursor's own row is drawn: inverted plainly
+// while the Dashboard holds the dock's focus, dimmed once it does not.
+func (m Model) selectedRowStyle() lipgloss.Style {
+	if m.focused {
+		return selectedStyle
+	}
+	return blurredSelectedStyle
+}
 
 // styleOf is how a state is drawn: its own colour where it has one, and the
 // quiet the sidepanel keeps for the states asking nothing of you.
@@ -1438,7 +1461,7 @@ func (m Model) line(i int) string {
 	mark := marks(r)
 	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" "+mark)-lipgloss.Width(about(r.ticket)+" "+age)-1)
 	if i == m.cursor {
-		return selectedStyle.Width(m.width).Render(spread(indent+glyph+" "+mark+name, about(r.ticket)+" "+age, m.width))
+		return m.selectedRowStyle().Width(m.width).Render(spread(indent+glyph+" "+mark+name, about(r.ticket)+" "+age, m.width))
 	}
 	return spread(indent+styleOf(r.session.State).Render(glyph)+" "+mark+name,
 		ticketStyle(r.ticket).Render(about(r.ticket))+" "+quietStyle.Render(age), m.width)
@@ -1492,7 +1515,7 @@ func (m Model) repoLine(r row, selected bool) string {
 		if mark != "" {
 			marks += " " + mark
 		}
-		return selectedStyle.Width(m.width).Render(spread(r.label(), marks, m.width))
+		return m.selectedRowStyle().Width(m.width).Render(spread(r.label(), marks, m.width))
 	}
 	marks = rootStyle(r.state).Render(glyph)
 	if warning != "" {
