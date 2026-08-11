@@ -190,6 +190,12 @@ func runDashboard() error {
 	if err != nil {
 		return err
 	}
+	// The state model and the Dashboard both want what is reported, and a
+	// channel has one reader. The state model ignores the mode edges by its
+	// own default; the Dashboard is the only thing that acts on them, which
+	// keeps a fact about a tmux pane out of the three-source merge, where
+	// nothing but what Claude is doing is adjudicated.
+	stateEvents, paneEvents := fanned(ctx, reported)
 	// The slow cross-check against the interface Claude Code documents, which
 	// is what the registry watch's undocumented one is insured by. It needs
 	// nothing from the harness and cannot fail to start: a machine whose
@@ -197,7 +203,7 @@ func runDashboard() error {
 	checked := reconciler.Reconciler{}.Watch(ctx)
 
 	model := state.New()
-	merged := model.Watch(ctx, watch, checked, reported)
+	merged := model.Watch(ctx, watch, checked, stateEvents)
 	// The notifier watches the same working set the Dashboard draws, so it
 	// can put a name and a pid to whatever the model's Alerts are about — but
 	// a channel has one reader, and the Dashboard's is the tea.Program's own
@@ -216,7 +222,7 @@ func runDashboard() error {
 	// that client's status line.
 	hands := dashboard.Harness{
 		Jumper: harness, Opener: harness, Focuser: harness, Strip: harness, Spawner: harness, Popups: harness, Approver: harness,
-		Prompter: harness, Stopper: harness, Seen: model.Seen, Tickets: tickets,
+		Prompter: harness, Stopper: harness, Seen: model.Seen, Tickets: tickets, Panes: harness,
 	}
 	// Root Claims, like the tickets set by hand: a state file that cannot be
 	// read costs the Claims in it and nothing else, and the Dashboard is not
@@ -245,7 +251,23 @@ func runDashboard() error {
 		}
 	}
 
-	_, err = tea.NewProgram(dashboard.New(dashboardSessions, hands), tea.WithAltScreen()).Run()
+	program := tea.NewProgram(dashboard.New(dashboardSessions, hands), tea.WithAltScreen())
+	// The mode edges reach the Dashboard as messages rather than down a
+	// channel of its own: New already takes the one stream it is built
+	// around, and a second parameter would be threaded through every caller
+	// for something two lines can send. The goroutine ends with the channel,
+	// which ends with the watch, which ends with the Dashboard.
+	go func() {
+		for event := range paneEvents {
+			switch event.Kind {
+			case hooks.Froze:
+				program.Send(dashboard.Froze(event.Session))
+			case hooks.Thawed:
+				program.Send(dashboard.Thawed(event.Session))
+			}
+		}
+	}()
+	_, err = program.Run()
 	return err
 }
 
