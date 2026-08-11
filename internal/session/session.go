@@ -84,6 +84,20 @@ func (s State) Glyph() string {
 	return ""
 }
 
+// spinnerFrames is the braille cycle a Working glyph steps through — the
+// classic CLI spinner, so the one state that means "your turn is running" is
+// the one mark on the rail actually in motion.
+var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// Frame is how a State reads at the given tick of the animation clock: Glyph
+// for every state but Working, which instead cycles through spinnerFrames.
+func (s State) Frame(tick int) string {
+	if s == Working {
+		return spinnerFrames[tick%len(spinnerFrames)]
+	}
+	return s.Glyph()
+}
+
 // Colour is the State's colour, as a hex triplet every surface can say in its
 // own way. Attention is what has to carry across a room — a Session that has
 // stopped is red, an unread turn green — while the states asking nothing of

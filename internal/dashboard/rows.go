@@ -23,6 +23,12 @@ type row struct {
 	ticket ticket.Key
 	// state is what the Main root is doing, on a repo's header row.
 	state repo.State
+	// holderWorking says the Session actually holding this root — as
+	// against every Session merely grouped under the repo — is Working, on
+	// a repo's header row. It is narrower than state == InUse, which fires
+	// for a holder in any state (state.go): this is what says whether the
+	// header row's own mark has anything worth animating.
+	holderWorking bool
 	// claimNote is the note the root was claimed with, on a repo's header row
 	// whose state is Claimed — empty otherwise (including the collision
 	// state.go documents, where a live occupant outranks an underlying
@@ -151,6 +157,7 @@ func rowsOf(sessions []session.Session, working []string, ask answers) []row {
 		rows = append(rows, row{
 			root: root, state: state, claimNote: note,
 			caution: caution, cautionKnown: cautionKnown, popup: ask.popup(root),
+			holderWorking: holderWorking(root, byRoot[root], ask),
 		})
 		for i := range byRoot[root] {
 			running := &byRoot[root][i]
@@ -176,6 +183,17 @@ func stateOf(root string, group []session.Session, ask answers, claimed bool) re
 		working = append(working, ask.checkout(s.Dir))
 	}
 	return repo.StateOf(root, working, claimed)
+}
+
+// holderWorking says the Session actually holding root, if any, is Working —
+// not merely present, which is all state == InUse promises.
+func holderWorking(root string, group []session.Session, ask answers) bool {
+	for _, s := range group {
+		if ask.checkout(s.Dir) == root {
+			return s.State == session.Working
+		}
+	}
+	return false
 }
 
 // louder orders two repos by what each is asking of you: a repo is as urgent
