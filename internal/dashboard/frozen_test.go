@@ -110,6 +110,28 @@ func TestFreezingAPaneChangesNothingAboutAttention(t *testing.T) {
 // countOf is how many times a mark appears in a view.
 func countOf(view, mark string) int { return strings.Count(view, mark) }
 
+// The rail draws the mark; the box spells it. A one-column glyph is a
+// reminder for somebody who already knows what it means, and this is where
+// the first person to see one finds out.
+//
+// It reads alongside the state rather than instead of it: the Session is
+// still doing whatever it is doing, and the pane not showing you that is a
+// separate fact about the same row.
+func TestTheSelectedBoxSaysTheRowIsFrozen(t *testing.T) {
+	model := sidepanel(&jumps{}, live("max-paging-numbers", "/repos/service-billing", session.Working))
+	model, _ = model.Update(dashboard.FrozenPanes{"max-paging-numbers-id": true})
+	// Onto the Session's own row: the cursor starts on the repo header.
+	model = press(model, tea.KeyDown)
+
+	box := detail(model)
+	if !strings.Contains(box, "frozen") {
+		t.Errorf("SELECTED = %q, want it to say the pane is frozen", box)
+	}
+	if !strings.Contains(box, string(session.Working)) {
+		t.Errorf("SELECTED = %q, want the Session still reading as Working", box)
+	}
+}
+
 // panes stands in for the harness's hand on tmux, recording what it was asked
 // about so a test can check the sweep asks about the live Sessions.
 type panes struct {

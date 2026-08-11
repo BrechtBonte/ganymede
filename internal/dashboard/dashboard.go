@@ -1621,6 +1621,12 @@ func (m Model) selected() []string {
 	if age := ageOf(*r.session); age != "" {
 		standing += " · " + age
 	}
+	if r.frozen {
+		// Last, and alongside the state rather than instead of it: the
+		// Session is still doing whatever it is doing, and the pane not
+		// showing you that is a separate fact about the same row.
+		standing += " · frozen"
+	}
 	lines := []string{
 		state.Render(r.session.State.Glyph()) + " " + truncate(standing, m.width-2),
 		elide(r.session.Name, m.width),
