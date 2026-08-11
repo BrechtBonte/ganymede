@@ -75,19 +75,28 @@ func panePIDInSession(t *testing.T, socket, session string) int {
 // workingClientShows reports which session and window the working client — the
 // client running in the dock's right-hand pane — currently has on show. Both
 // come back empty while that client is still attaching.
+//
+// Read off list-clients rather than display-message -c: #{session_name} and
+// #{window_index} are target-pane-scoped, not target-client-scoped, and
+// display-message -c alone leaves that target unset — which reads back
+// whatever the client's *previous* session was, not its current one. Listing
+// clients and matching by tty gives every field the right client as context.
 func workingClientShows(t *testing.T, h topology.Harness) (session, window string) {
 	t.Helper()
 	tty := tmuxOn(t, h.DockSocket, "display-message", "-p", "-t", "=dock:0.1", "#{pane_tty}")
-	out, err := exec.Command("tmux", "-L", h.Socket, "display-message", "-p", "-c", tty,
-		"#{session_name}\t#{window_index}").Output()
+	out, err := exec.Command("tmux", "-L", h.Socket, "list-clients", "-F",
+		"#{client_tty}\t#{session_name}\t#{window_index}").Output()
 	if err != nil {
 		return "", ""
 	}
-	fields := strings.SplitN(strings.TrimSpace(string(out)), "\t", 2)
-	if len(fields) != 2 {
-		return "", ""
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) != 3 || fields[0] != tty {
+			continue
+		}
+		return fields[1], fields[2]
 	}
-	return fields[0], fields[1]
+	return "", ""
 }
 
 // jumpable brings the harness up with a window in view and a second repo
