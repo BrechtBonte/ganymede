@@ -150,6 +150,28 @@ func TestTheHarnessOwnSeenEventTravelsTheSamePath(t *testing.T) {
 	}
 }
 
+// The harness's own mode edges travel that path too. The direction rides in
+// the event name rather than a field of its own, so the envelope the receiver
+// already reads is untouched.
+func TestAFrozenReportTravelsTheSamePath(t *testing.T) {
+	for _, c := range []struct {
+		frozen bool
+		want   hooks.Kind
+	}{
+		{true, hooks.Froze},
+		{false, hooks.Thawed},
+	} {
+		event := parse(t, string(hooks.FrozenPayload("s1", c.frozen)))
+
+		if event.Kind != c.want {
+			t.Errorf("a frozen=%v report reads as %s, want %s", c.frozen, event.Kind, c.want)
+		}
+		if event.Session != "s1" {
+			t.Errorf("the frozen=%v report names Session %q, want %q", c.frozen, event.Session, "s1")
+		}
+	}
+}
+
 // The harness installs itself on six events but Claude Code fires many more,
 // and settings are the user's to edit. Anything else is passed over rather
 // than guessed at.

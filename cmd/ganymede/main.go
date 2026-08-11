@@ -45,6 +45,11 @@ Usage:
   ganymede seen <pid>       Report the Sessions running inside a process as
                             seen, which clears Ready. tmux runs this for you
                             when focus lands on a pane.
+  ganymede frozen <pane-pid> <0|1>
+                            Report that a pane has started or stopped holding
+                            a mode over its live view, which is what marks the
+                            Sessions inside it Frozen. tmux runs this for you
+                            when a pane's mode changes.
   ganymede notify-click <pid>
                             Focus Ghostty and jump the Dashboard to the
                             Session a notification was about. A clicked
@@ -81,6 +86,8 @@ func run(args []string) error {
 		return report(os.Stdin)
 	case "seen":
 		return seen(args[1:])
+	case "frozen":
+		return frozen(args[1:])
 	case "notify-click":
 		return notifyClick(args[1:])
 	case "popup":
@@ -183,6 +190,12 @@ func runDashboard() error {
 	if err != nil {
 		return err
 	}
+	// The state model and the Dashboard both want what is reported, and a
+	// channel has one reader. The state model ignores the mode edges by its
+	// own default; the Dashboard is the only thing that acts on them, which
+	// keeps a fact about a tmux pane out of the three-source merge, where
+	// nothing but what Claude is doing is adjudicated.
+	stateEvents, paneEvents := fanned(ctx, reported)
 	// The slow cross-check against the interface Claude Code documents, which
 	// is what the registry watch's undocumented one is insured by. It needs
 	// nothing from the harness and cannot fail to start: a machine whose
@@ -190,7 +203,7 @@ func runDashboard() error {
 	checked := reconciler.Reconciler{}.Watch(ctx)
 
 	model := state.New()
-	merged := model.Watch(ctx, watch, checked, reported)
+	merged := model.Watch(ctx, watch, checked, stateEvents)
 	// The notifier watches the same working set the Dashboard draws, so it
 	// can put a name and a pid to whatever the model's Alerts are about — but
 	// a channel has one reader, and the Dashboard's is the tea.Program's own
@@ -209,7 +222,7 @@ func runDashboard() error {
 	// that client's status line.
 	hands := dashboard.Harness{
 		Jumper: harness, Opener: harness, Focuser: harness, Strip: harness, Spawner: harness, Popups: harness, Approver: harness,
-		Prompter: harness, Stopper: harness, Seen: model.Seen, Tickets: tickets,
+		Prompter: harness, Stopper: harness, Seen: model.Seen, Tickets: tickets, Panes: harness,
 	}
 	// Root Claims, like the tickets set by hand: a state file that cannot be
 	// read costs the Claims in it and nothing else, and the Dashboard is not
@@ -238,16 +251,33 @@ func runDashboard() error {
 		}
 	}
 
-	_, err = tea.NewProgram(dashboard.New(dashboardSessions, hands), tea.WithAltScreen()).Run()
+	program := tea.NewProgram(dashboard.New(dashboardSessions, hands), tea.WithAltScreen())
+	// The mode edges reach the Dashboard as messages rather than down a
+	// channel of its own: New already takes the one stream it is built
+	// around, and a second parameter would be threaded through every caller
+	// for something two lines can send. The goroutine ends with the channel,
+	// which ends with the watch, which ends with the Dashboard.
+	go func() {
+		for event := range paneEvents {
+			switch event.Kind {
+			case hooks.Froze:
+				program.Send(dashboard.Froze(event.Session))
+			case hooks.Thawed:
+				program.Send(dashboard.Thawed(event.Session))
+			}
+		}
+	}()
+	_, err = program.Run()
 	return err
 }
 
-// fanned splits one stream of working sets into two, so the Dashboard and the
-// notifier can each watch it on their own goroutine without racing each other
-// for values meant for both.
-func fanned(ctx context.Context, in <-chan []session.Session) (a, b <-chan []session.Session) {
-	toA := make(chan []session.Session)
-	toB := make(chan []session.Session)
+// fanned splits one stream into two, so two watchers can each take it on their
+// own goroutine without racing each other for values meant for both: the
+// working sets go to the Dashboard and the notifier, and the reported events
+// to the state model and the Dashboard.
+func fanned[T any](ctx context.Context, in <-chan T) (a, b <-chan T) {
+	toA := make(chan T)
+	toB := make(chan T)
 	go func() {
 		defer close(toA)
 		defer close(toB)
@@ -255,13 +285,13 @@ func fanned(ctx context.Context, in <-chan []session.Session) (a, b <-chan []ses
 			select {
 			case <-ctx.Done():
 				return
-			case set, ok := <-in:
+			case value, ok := <-in:
 				if !ok {
 					return
 				}
-				for _, out := range [](chan<- []session.Session){toA, toB} {
+				for _, out := range [](chan<- T){toA, toB} {
 					select {
-					case out <- set:
+					case out <- value:
 					case <-ctx.Done():
 						return
 					}
@@ -463,6 +493,57 @@ func seen(args []string) error {
 	for _, s := range running {
 		if held[s.PID] {
 			_ = hooks.Forward(socket, hooks.SeenPayload(s.ID))
+		}
+	}
+	return nil
+}
+
+// frozen reports every Session running inside a pane whose mode has just
+// changed as being behind a held view, or back in front of a live one.
+//
+// It is seen's shape, for seen's reason: tmux can only name the process it
+// started in the pane, and the Sessions are that process's descendants. Like
+// seen and the hook command it is run by something that must not be held up,
+// so it says nothing about what it could not do — a tmux hook is no place for
+// a diagnostic, and the pane it would print into is somebody's work.
+func frozen(args []string) error {
+	if len(args) != 2 {
+		return errors.New("frozen takes the pid of the pane and whether it is in a mode")
+	}
+	pane, err := strconv.Atoi(args[0])
+	if err != nil {
+		return nil
+	}
+	inMode := args[1] == "1"
+
+	sessions, err := registry.Default()
+	if err != nil {
+		return nil
+	}
+	running, err := sessions.Read()
+	if err != nil {
+		return nil
+	}
+	pids := make([]int, len(running))
+	for i, s := range running {
+		pids[i] = s.PID
+	}
+	inside, err := topology.Under(pane, pids)
+	if err != nil || len(inside) == 0 {
+		return nil
+	}
+
+	socket, err := hooks.DefaultSocket()
+	if err != nil {
+		return nil
+	}
+	within := map[int]bool{}
+	for _, pid := range inside {
+		within[pid] = true
+	}
+	for _, s := range running {
+		if within[s.PID] {
+			_ = hooks.Forward(socket, hooks.FrozenPayload(s.ID, inMode))
 		}
 	}
 	return nil

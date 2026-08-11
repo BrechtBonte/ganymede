@@ -61,6 +61,7 @@ These are never typed by hand — see the README's [Run](../README.md#run) secti
 |---|---|---|
 | `ganymede hook` | Claude Code hooks | Reports a hook payload on stdin to the event receiver |
 | `ganymede seen <pid>` | tmux's `pane-focus-in` hook | Marks the sessions inside a process as seen, clearing their Ready badge |
+| `ganymede frozen <pane-pid> <0\|1>` | tmux's `pane-mode-changed` hook | Reports that a pane has started or stopped holding a mode over its live view, which is what marks the sessions inside it Frozen |
 | `ganymede notify-click <pid>` | A clicked OS notification | Focuses Ghostty and jumps to the session the notification was about |
 
 ## State model
@@ -92,6 +93,8 @@ stateDiagram-v2
 
 **Attention = Blocked ∪ Ready.** Blocked outranks Ready; within a tier, longest-waiting first. Repos sort by their most urgent session. Seeing a session — tmux focus landing on its pane, or a new prompt — clears Ready to Idle; the harness tracks "seen" itself, the registry does not.
 
+**Frozen is not a session state.** A pane holding a tmux mode over its live view shows a held picture of the session while the session itself carries on, so it coexists with every state above rather than replacing one — see CONTEXT.md's *Pane view*. It is a mark on the row, not a row's state: sourced from the `pane-mode-changed` hook with a half-minute `#{pane_in_mode}` sweep as the cross-check, held by the dashboard alone rather than by the state model, and changing nothing about Attention, ordering, or notifications. A session Blocked behind a Frozen pane is still Blocked and still pings.
+
 ### Main-root states
 
 | State | Meaning | Rules |
@@ -104,7 +107,7 @@ stateDiagram-v2
 
 ## Dashboard internals
 
-- **Repo tree** (~40 columns, always visible, left): repo header rows with root-state chip and git caution markers, indented session rows with state glyph, session/worktree name, abbreviated ticket ID, and wait age. Attention tier sorts first, then recency.
+- **Repo tree** (~40 columns, always visible, left): repo header rows with root-state chip and git caution markers, indented session rows with state glyph, the marks for a Frozen pane (`❄`) and a busy popup (`⏵`), session/worktree name, abbreviated ticket ID, and wait age. Attention tier sorts first, then recency.
 - **SELECTED detail box** at the foot: full detail for the highlighted row — blocked reason or last-message snippet, full ticket ID, cwd — plus the inline input for prompt and confirm actions.
 - **Main panel** (right): the live session in focus. `⏎` on a row jumps there.
 
@@ -123,9 +126,10 @@ The `PermissionRequest` hook is a **reporter only** — it forwards `tool_name`,
 **Guarded send-keys** is the single action transport, in strict order:
 
 1. Gate on the registry — state must match the action's precondition and `statusUpdatedAt` must be fresh.
-2. `tmux capture-pane` and verify the expected content (the permission-dialog tool line, an empty input box for prompt-send).
-3. Send only `Y` / `N` / `Esc` / `Enter` / bracketed-paste text (`set-buffer` + `paste-buffer -p`).
-4. Re-verify with capture-pane.
+2. Ask `#{pane_in_mode}` — a **Frozen** pane hands the keystroke to the mode's own key table, and `capture-pane` cannot reveal this, since it returns the live screen the mode is holding a view over. Asked before the capture: it is the cheaper question, and it decides whether the other is worth asking.
+3. `tmux capture-pane` and verify the expected content (the permission-dialog tool line, an empty input box for prompt-send).
+4. Send only `Y` / `N` / `Esc` / `Enter` / bracketed-paste text (`set-buffer` + `paste-buffer -p`).
+5. Re-verify with capture-pane.
 
 Any mismatch at any step means **do nothing and focus the pane instead**. Channels is the designated future replacement once it leaves research preview with a non-dangerous custom-channel opt-in.
 
@@ -165,7 +169,7 @@ Precedence is manual override → branch name → worktree directory name → no
 
 A config fragment at `~/.config/ganymede/tmux.conf` — `allow-passthrough on`, `focus-events on`, the status-line strip segment, and the root-table popup binding — sourced from a marked block in your `tmux.conf`; a Ghostty config fragment at `~/.config/ganymede/ghostty.conf` — fresh defaults (JetBrains Mono, a built-in dark theme) and the Cmd+F keybind — loaded from a marked block in `~/.config/ghostty/config.ghostty`; the dock's own config at `~/.config/ganymede/dock.conf`; its event socket at `~/.config/ganymede/events.sock`, owned by one dashboard at a time — a second `ganymede dashboard` refuses to start rather than take it; its own state at `~/.config/ganymede/state.json`, currently the tickets you set by hand and the per-repo activity the working set is built from, written a section at a time so that nothing else in it is disturbed; and its own hook entries in `~/.claude/settings.json`, which are replaced rather than repeated on every install and leave the rest of that file, permissions included, untouched.
 
-Two things in that fragment are the harness's to own: tmux's global `pane-focus-in` hook, which is how seeing a session clears its Ready badge, and the `@ganymede-seen` option it reads. A `pane-focus-in` hook of your own in `tmux.conf` would be replaced by it.
+Three things in that fragment are the harness's to own: tmux's global `pane-focus-in` hook, which is how seeing a session clears its Ready badge; its global `pane-mode-changed` hook, which is how a pane holding a mode over its live view earns the Frozen mark and loses it again; and the `@ganymede-seen` option both of them read. A `pane-focus-in` or `pane-mode-changed` hook of your own in `tmux.conf` would be replaced by them.
 
 ## Build order
 

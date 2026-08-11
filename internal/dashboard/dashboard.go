@@ -29,6 +29,11 @@ import (
 // whatever it is cautioning about.
 const caution = "⚠"
 
+// frozen is the mark a row carries while its pane is holding a mode over the
+// live Session: what that pane is showing you is a held view, and the keys you
+// type into it are going to the mode rather than to Claude.
+const frozen = "❄"
+
 // popupBusy is the mark a row carries while its own hidden Popup shell is
 // running something (§8) — never while it is only open and sitting at its
 // prompt, which is not worth a word.
@@ -56,6 +61,27 @@ type Cautions map[string]repo.Caution
 // but it is still a subprocess the goroutine drawing the tree must not wait
 // on.
 type PopupStatuses map[string]popup.Status
+
+// FrozenPanes is which Sessions are behind a pane holding a mode over the live
+// view, by Claude session id, as the half-minute cross-check last found them.
+//
+// Like Cautions it arrives as a message rather than being read where it is
+// drawn: asking tmux is a round trip, and a View that made one would make it
+// several times a second.
+type FrozenPanes map[string]bool
+
+// Froze says a Session's pane has started holding a mode over the live view,
+// and Thawed that it has stopped. Both name the Session by Claude's own id,
+// which is what the pane-mode-changed hook resolves the pane it fired for
+// into.
+//
+// They are the quick half of the answer: FrozenPanes on the half-minute clock
+// is what makes it true again after a Dashboard restart, a fragment not yet
+// sourced into a running server, or an edge that never arrived.
+type (
+	Froze  string
+	Thawed string
+)
 
 // watchEnded says the state model has stopped reporting. The Dashboard keeps
 // showing what it last drew rather than blanking the tree.
@@ -107,6 +133,15 @@ type Seen func(id string)
 // in rather than over here in the sidepanel.
 type Strip interface {
 	Show(waiting session.Attention) error
+}
+
+// Panes is what the harness can say about the tmux panes the Sessions are
+// running in.
+type Panes interface {
+	// Frozen says which of pids are running in a pane holding a mode over
+	// its live view. A pid it cannot place in a pane is left out, which is
+	// not the same answer as false.
+	Frozen(pids []int) (map[int]bool, error)
 }
 
 // Tickets is everything the harness does with a JIRA ticket: read which one a
@@ -179,6 +214,8 @@ type Harness struct {
 	// Popups is the Popup shell's busy status and the harness's memory of
 	// where the cursor is.
 	Popups Popups
+	// Panes is what tmux says about the panes the Sessions run in.
+	Panes Panes
 	// Approver answers a Blocked Session's dialog: the guard's default row,
 	// or the decline (§7.3).
 	Approver Approver
@@ -228,6 +265,12 @@ type Model struct {
 	// own — a sweep that found nothing new to report leaves the last one
 	// standing rather than blanking a marker mid-command.
 	popups PopupStatuses
+	// frozen is which Sessions the harness last heard were behind a pane
+	// holding a mode over the live view, by Claude session id. Never cleared
+	// on its own, only laid over by the next answer, for the reason cautions
+	// already documents: a mark that blinked out while tmux was being asked
+	// again is a mark you stop reading.
+	frozen map[string]bool
 	// selectedWritten is the directory last told to the harness as the
 	// cursor's own, so that a redraw the cursor has not moved through does
 	// not tell it the same thing again.
@@ -415,6 +458,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.popups = msg
 		m = m.rebuilt()
 		return m, nil
+	case FrozenPanes:
+		m.frozen = msg
+		m = m.rebuilt()
+		return m, nil
+	case Froze:
+		return m.freezing(string(msg), true), nil
+	case Thawed:
+		return m.freezing(string(msg), false), nil
 	case watchEnded:
 		return m, nil
 	case Tick:
@@ -424,7 +475,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// older than this one's will be — and it is bounded to once every half
 		// minute, which is the point of hanging it on the tick.
 		m.awaiting = true
-		return m, tea.Batch(ticking(), m.reading(), m.sweepingPopups())
+		return m, tea.Batch(ticking(), m.reading(), m.sweepingPopups(), m.sweepingFrozen())
 	case Discovered:
 		m.picker = m.picker.found(msg)
 		return m, nil
@@ -542,6 +593,7 @@ func (m Model) rebuilt() Model {
 		ticket:   m.ticketOf,
 		caution:  m.cautionOf,
 		popup:    m.popupOf,
+		frozen:   m.frozenOf,
 		claimed:  func(root string) (string, bool) { note, ok := claimed[root]; return note, ok },
 	})
 	m.waiting = session.AttentionIn(m.set)
@@ -654,6 +706,48 @@ func (m Model) sweepingPopups() tea.Cmd {
 			return nil
 		}
 		return PopupStatuses(statuses)
+	}
+}
+
+// sweepingFrozen asks tmux which Sessions are behind a pane holding a mode
+// over the live view.
+//
+// It is the cross-check under the pane-mode-changed hook, on the same
+// half-minute clock the cautions are re-read on: the hook is what makes the
+// mark quick, and this is what makes it true after a Dashboard restart, a
+// fragment not yet sourced into a running server, or an edge that never
+// arrived.
+//
+// tmux is asked in pids, the only name it could match a Session by, and
+// answers in them. The ids go back on here, where the working set this was
+// asked about is still in hand.
+func (m Model) sweepingFrozen() tea.Cmd {
+	if m.harness.Panes == nil || len(m.set) == 0 {
+		return nil
+	}
+	ids := make(map[int]string, len(m.set))
+	pids := make([]int, 0, len(m.set))
+	for _, s := range m.set {
+		ids[s.PID] = s.ID
+		pids = append(pids, s.PID)
+	}
+	ask := m.harness.Panes.Frozen
+	return func() tea.Msg {
+		held, err := ask(pids)
+		if err != nil {
+			// A sweep that failed said nothing about any pane, and
+			// reporting no message at all leaves the last answer standing
+			// — unlike a FrozenPanes of nothing, which would take every
+			// mark off the rail over a tmux that was briefly not there.
+			return nil
+		}
+		frozen := make(FrozenPanes, len(held))
+		for pid, inMode := range held {
+			if id := ids[pid]; id != "" {
+				frozen[id] = inMode
+			}
+		}
+		return frozen
 	}
 }
 
@@ -789,6 +883,29 @@ func (m Model) cautionOf(root string) (repo.Caution, bool) {
 // doing. Like cautionOf, it is not asked here: a directory with no popup at
 // all, or one the harness has not swept yet, reads as idle rather than busy.
 func (m Model) popupOf(dir string) popup.Status { return m.popups[dir] }
+
+// freezing records one mode edge against the Session it was about.
+//
+// The map is copied rather than written through: what is standing in m.frozen
+// arrived as a FrozenPanes message and belongs to whoever sent it, and a Model
+// that edited it would be reaching back into a message it has already handled.
+func (m Model) freezing(id string, held bool) Model {
+	next := make(map[string]bool, len(m.frozen)+1)
+	// Not `for session, frozen := range` — this package imports session,
+	// frozen is the mark's own const, and held is this function's parameter.
+	for behind, was := range m.frozen {
+		next[behind] = was
+	}
+	next[id] = held
+	m.frozen = next
+	return m.rebuilt()
+}
+
+// frozenOf says whether the Session with this id is behind a pane holding a
+// mode over the live view. A Session nothing has been said about is not
+// frozen, which is the right default: the mark claims something, and its
+// absence claims nothing.
+func (m Model) frozenOf(id string) bool { return m.frozen[id] }
 
 // selectedDir is the directory the cursor is currently on: a Session's own
 // on a Session row, or a repo header's Main root when it is not on one. It
@@ -1253,7 +1370,7 @@ func (m Model) line(i int) string {
 	const indent = "  "
 	glyph := r.session.State.Frame(m.spinner)
 	age := ageOf(*r.session)
-	mark := busyMark(r)
+	mark := marks(r)
 	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" "+mark)-lipgloss.Width(about(r.ticket)+" "+age)-1)
 	if i == m.cursor {
 		return selectedStyle.Width(m.width).Render(spread(indent+glyph+" "+mark+name, about(r.ticket)+" "+age, m.width))
@@ -1262,15 +1379,26 @@ func (m Model) line(i int) string {
 		ticketStyle(r.ticket).Render(about(r.ticket))+" "+quietStyle.Render(age), m.width)
 }
 
-// busyMark is a row's own busy-popup marker, with the trailing space that
-// separates it from whatever comes next — empty when its hidden Popup shell
-// is not running anything worth mentioning (§8), so a row with no popup at
-// all costs the layout nothing.
-func busyMark(r row) string {
-	if !r.popup.Busy {
+// marks are what you have done to a row, as against what its Session is
+// doing: that its pane is frozen, and that its hidden Popup shell is running
+// something (§8). They come with the trailing space that separates them from
+// whatever follows, and a row carrying neither costs the layout nothing.
+//
+// Frozen comes first. Whether the pane is still showing you the live Session
+// changes what the rest of the row means; what a popup underneath it is
+// running is a footnote to that.
+func marks(r row) string {
+	var said []string
+	if r.frozen {
+		said = append(said, frozen)
+	}
+	if r.popup.Busy {
+		said = append(said, popupBusy)
+	}
+	if len(said) == 0 {
 		return ""
 	}
-	return popupBusy + " "
+	return strings.Join(said, " ") + " "
 }
 
 // repoLine draws a repo's header row: its name, and at the far end the mark of
@@ -1282,7 +1410,7 @@ func busyMark(r row) string {
 // are read in that order: what the root is, then what is in it.
 func (m Model) repoLine(r row, selected bool) string {
 	glyph := m.repoGlyph(r)
-	mark := strings.TrimRight(busyMark(r), " ")
+	mark := strings.TrimRight(marks(r), " ")
 	// What the row has left for a caution once the name, the mark and the
 	// state glyph have had their columns. Where that leaves too little, the
 	// caution says less rather than nothing, and the name is truncated to
@@ -1492,6 +1620,12 @@ func (m Model) selected() []string {
 	standing := string(r.session.State)
 	if age := ageOf(*r.session); age != "" {
 		standing += " · " + age
+	}
+	if r.frozen {
+		// Last, and alongside the state rather than instead of it: the
+		// Session is still doing whatever it is doing, and the pane not
+		// showing you that is a separate fact about the same row.
+		standing += " · frozen"
 	}
 	lines := []string{
 		state.Render(r.session.State.Glyph()) + " " + truncate(standing, m.width-2),

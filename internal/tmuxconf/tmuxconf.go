@@ -76,6 +76,28 @@ const findHook = `
 bind -n ` + FindKey + ` copy-mode \; command-prompt -i -I "#{pane_search_string}" -T search -p "(search up)" { send-keys -X search-backward-incremental -- "%%" }
 `
 
+// frozenHook is what tells the harness a pane has started or stopped holding a
+// mode over its live view, which is what puts the Frozen mark on the rail and
+// takes it off again.
+//
+// pane-mode-changed fires on entering and on leaving, and #{pane_in_mode} reads
+// 0 on the leaving edge — so one command covers both directions, and the mark
+// goes the moment you leave the mode rather than waiting on the half-minute
+// cross-check to notice.
+//
+// Like seenHook it reads the harness's path out of @ganymede-seen rather than
+// carrying a second copy, leaves #{pane_pid} a format so it names the pane the
+// mode changed in rather than whichever pane this config was read from, and
+// takes -b so tmux is free the moment the command has started. It is set
+// rather than appended for the same reason too: re-sourcing this fragment onto
+// a server that already had it leaves one hook rather than another copy.
+//
+// That makes it the second global tmux hook the harness owns, with the same
+// consequence: a pane-mode-changed hook of your own would be replaced by it.
+const frozenHook = `
+set-hook -g pane-mode-changed 'run-shell -b "#{q:@ganymede-seen} frozen #{pane_pid} #{pane_in_mode}"'
+`
+
 // PopupToggleKey opens and closes the Popup shell (§8): one no-prefix key,
 // bound at the root table so it reaches every pane on every Session. Ghostty's
 // kitty keyboard protocol is what lets it transmit Ctrl+backtick distinctly
@@ -148,7 +170,7 @@ func fragment(l Layout) string {
 	if l.Command == "" {
 		return settings + strip + findHook
 	}
-	return settings + strip + findHook + fmt.Sprintf(seenHook, quoteForOption(l.Command)) + popupHook
+	return settings + strip + findHook + fmt.Sprintf(seenHook, quoteForOption(l.Command)) + popupHook + frozenHook
 }
 
 // quoteForOption writes a path into a tmux double-quoted string. What tmux

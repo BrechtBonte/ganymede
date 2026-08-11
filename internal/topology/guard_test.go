@@ -214,3 +214,40 @@ func TestApproveToAProcessInNoPaneSaysSo(t *testing.T) {
 		t.Fatal("Approve to a process in no pane reported success")
 	}
 }
+
+// A pane holding a mode hands every keystroke to the mode's own key table, so
+// a guarded send lands nowhere near the dialog. capture-pane cannot say so —
+// it returns the live screen the mode is holding a view over, which still
+// shows the dialog — so the pane passes the content check and the key goes
+// out anyway, to be reported half a second later as a dialog that did not
+// move. True, and useless: the dialog never got the key. The guard asks
+// first instead.
+func TestApproveRefusesAFrozenPaneAndSendsNothing(t *testing.T) {
+	h := guardable(t)
+	pid, keylog := dialogPane(t, h, true)
+	pane := "dialog-" + strings.ReplaceAll(t.Name(), "/", "-")
+	tmuxOn(t, h.Socket, "copy-mode", "-t", pane)
+
+	err := h.Approve(pid, "permission: Bash")
+	if err == nil {
+		t.Fatal("Approve reported success against a frozen pane")
+	}
+	// This is what says nothing went out, and the keylog below cannot: a key
+	// sent into a mode is swallowed by the mode rather than logged, so an
+	// absent keylog reads the same either way. Only the check that happens
+	// before the send produces this message — a guard that sent the key
+	// fails later and differently, with "still shows the dialog after Y was
+	// sent", which is what this test saw before the check existed.
+	if !strings.Contains(err.Error(), "frozen") {
+		t.Errorf("Approve refused with %q, which does not say the pane is frozen", err)
+	}
+	if _, err := os.Stat(keylog); err == nil {
+		t.Error("Approve sent a key into a frozen pane")
+	}
+	// The harness never clears the mode: a pane scrolled back on purpose is
+	// in the same state as one frozen by accident, and it cannot tell them
+	// apart. Refusing must leave the view exactly where you put it.
+	if got := tmuxOn(t, h.Socket, "display-message", "-p", "-t", pane, "#{pane_in_mode}"); got != "1" {
+		t.Errorf("pane_in_mode = %q after a refusal, want 1 — the guard disturbed a held view", got)
+	}
+}
