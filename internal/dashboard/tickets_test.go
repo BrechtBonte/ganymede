@@ -65,35 +65,18 @@ func types(model tea.Model, text string) tea.Model {
 	return model
 }
 
-// The ticket is what tells two Sessions in one repo apart at a glance, so it
-// belongs on the row rather than only in the box under it.
+// The ticket is what tells two Sessions in one checkout apart at a glance, so
+// it belongs on the row rather than only in the box under it — abbreviated
+// there, since the project key is the same on every row of every repo
+// (checkout_test.go).
 func TestSessionRowCarriesItsTicket(t *testing.T) {
 	model := knowing(
 		&known{of: map[string]ticket.Key{"/repos/service-billing": "FIRE-2841"}},
 		live("max-paging-numbers", "/repos/service-billing", session.Working),
 	)
 
-	line, ok := lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the Session:\n%s", tree(model))
-	}
-	if !strings.Contains(line, "FIRE-2841") {
+	if line := sessionRow(t, tree(model)); !strings.Contains(line, "F-2841") {
 		t.Errorf("row = %q, want the ticket on it", line)
-	}
-}
-
-// A Session with no ticket says so. The alternative is a blank column, which
-// reads as a harness that has not worked it out yet rather than as a Session
-// that is not about a ticket — and a placeholder key would be worse still.
-func TestSessionWithNoTicketSaysSoOnItsRow(t *testing.T) {
-	model := knowing(&known{}, live("ganymede-78", "/repos/ganymede", session.Idle))
-
-	line, ok := lineWith(tree(model), "ganymede-78")
-	if !ok {
-		t.Fatalf("no row for the Session:\n%s", tree(model))
-	}
-	if !strings.Contains(line, "no ticket") {
-		t.Errorf("row = %q, want it to say there is no ticket", line)
 	}
 }
 
@@ -229,7 +212,7 @@ func TestTicketIsAskedForAgainAsTheDashboardTicks(t *testing.T) {
 	about.of["/repos/service-billing"] = "CORE-119"
 	model, _ = model.Update(dashboard.Tick{})
 
-	if line, ok := lineWith(tree(model), "max-paging-numbers"); !ok || !strings.Contains(line, "CORE-119") {
+	if line := sessionRow(t, tree(model)); !strings.Contains(line, "C-119") {
 		t.Errorf("row = %q, want the ticket the checkout is about now", line)
 	}
 }
@@ -288,7 +271,7 @@ func TestTicketIsSetFromTheDetailBox(t *testing.T) {
 	if got := about.set["/repos/service-billing"]; got != "FIRE-2841" {
 		t.Errorf("set %q, want the ticket that was typed", got)
 	}
-	if line, ok := lineWith(tree(model), "max-paging-numbers"); !ok || !strings.Contains(line, "FIRE-2841") {
+	if line := sessionRow(t, tree(model)); !strings.Contains(line, "F-2841") {
 		t.Errorf("row = %q, want the ticket on it without waiting for anything", line)
 	}
 }
@@ -417,10 +400,10 @@ func TestTheInputOutlivesTheRowItWasOpenedOver(t *testing.T) {
 	ending := live("max-paging-numbers", "/repos/service-billing", session.Working)
 	staying := live("ganymede-78", "/repos/ganymede", session.Idle)
 	model := knowing(about, ending, staying)
-	// Onto the Session that is about to end.
-	for !strings.Contains(detail(model), "max-paging-numbers") {
-		model = press(model, tea.KeyDown)
-	}
+	// Onto the Session that is about to end. Its row is labelled after its
+	// checkout and its box names the repo, so what finds it is the one thing
+	// on it that is its own: the state it is in.
+	model = onto(t, model, string(session.Working))
 
 	model = types(model, "t")
 	model = types(model, "FIRE-2841")

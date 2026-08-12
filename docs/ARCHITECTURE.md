@@ -107,8 +107,8 @@ stateDiagram-v2
 
 ## Dashboard internals
 
-- **Repo tree** (~40 columns, always visible, left): repo header rows with root-state chip and git caution markers, indented session rows with state glyph, the marks for a Frozen pane (`❄`) and a busy popup (`⏵`), session/worktree name, abbreviated ticket ID, and wait age. Attention tier sorts first, then recency.
-- **SELECTED detail box** at the foot: full detail for the highlighted row — blocked reason or last-message snippet, full ticket ID, cwd — plus the inline input for prompt and confirm actions.
+- **Repo tree** (~40 columns, always visible, left): repo header rows with root-state chip and git caution markers, indented session rows with state glyph, the marks for a Frozen pane (`❄`) and a busy popup (`⏵`), the checkout the session is working in (`main`, or `wt·<worktree>`), abbreviated ticket ID, and wait age. Attention tier sorts first, then recency.
+- **SELECTED detail box** at the foot: full detail for the highlighted row — the repo, blocked reason or last-message snippet, full ticket ID, cwd — plus the inline input for prompt and confirm actions.
 - **Main panel** (right): the live session in focus. `⏎` on a row jumps there.
 
 ### Working set
@@ -163,7 +163,7 @@ Ending a session goes through the dashboard's `q` action → graceful exit → C
 
 ## JIRA tickets
 
-Precedence is manual override → branch name → worktree directory name → no ticket. Derivation takes the first match of `[A-Z][A-Z0-9]*-\d+` in the session's git branch name, else in the worktree dir name; dashboard-spawned sessions need nothing extra. A manual override (`t`) is stored keyed by **repo + branch/worktree path** — not session id, so it survives restarts — and evicted when that branch or worktree disappears. Sessions with no ticket render a dim "no ticket", never a placeholder key. Links go to `https://teamleader.atlassian.net/browse/<KEY>` and open with `o`. Ticket ID and link only — **no JIRA API dependency, ever**.
+Precedence is manual override → branch name → worktree directory name → no ticket. Derivation takes the first match of `[A-Z][A-Z0-9]*-\d+` in the session's git branch name, else in the worktree dir name; dashboard-spawned sessions need nothing extra. A manual override (`t`) is stored keyed by **repo + branch/worktree path** — not session id, so it survives restarts — and evicted when that branch or worktree disappears. A session with no ticket leaves its row's ticket column empty and renders a dim "no ticket" in the SELECTED box, where `t` is offered — never a placeholder key. The row abbreviates the key it does have to the project's initial and the number (`FIRE-2923` → `F-2923`); the box keeps the whole of it. Links go to `https://teamleader.atlassian.net/browse/<KEY>` and open with `o`. Ticket ID and link only — **no JIRA API dependency, ever**.
 
 ## What the harness writes
 

@@ -129,7 +129,7 @@ func TestRepoWithALiveSessionIsOnTheDashboardHoweverOldItsActivity(t *testing.T)
 	view := tree(dashboardOn(dashboard.Harness{Activity: state},
 		live("service-billing-a1", "/repos/service-billing", session.Idle)))
 
-	if _, ok := lineWith(view, "service-billing-a1"); !ok {
+	if _, ok := lineWith(view, "service-billing"); !ok || len(sessionRows(view)) != 1 {
 		t.Errorf("no row for a live Session in a long-untouched repo:\n%s", view)
 	}
 }
@@ -342,7 +342,7 @@ func TestEscapeClosesThePicker(t *testing.T) {
 
 	model = press(typing(model, "gany"), tea.KeyEsc)
 
-	if _, ok := lineWith(tree(model), "service-billing-a1"); !ok {
+	if view := tree(model); !strings.Contains(view, "service-billing") || len(sessionRows(view)) != 1 {
 		t.Errorf("the Dashboard did not come back after Escape:\n%s", drawn(model))
 	}
 	if len(opener.dirs) != 0 {

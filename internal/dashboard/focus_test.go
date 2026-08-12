@@ -25,18 +25,54 @@ func styleCodeOf(s lipgloss.Style) string {
 	return rendered[:strings.Index(rendered, "x")]
 }
 
+// panelLines is what the panel drew, twice over: as the eye reads it and as
+// the terminal is given it. Stripping never adds or removes a line, only the
+// escape codes inside one, so the two are the same length and a line found in
+// one is the same line in the other.
+func panelLines(model tea.Model) (stripped, raw []string) {
+	return strings.Split(drawn(model), "\n"), strings.Split(model.View(), "\n")
+}
+
 // rawLineFor is the unstripped line drawing want, found by its stripped
-// position: stripping never adds or removes a line, only the escape codes
-// inside one.
+// position.
 func rawLineFor(model tea.Model, want string) (string, bool) {
-	stripped := strings.Split(drawn(model), "\n")
-	raw := strings.Split(model.View(), "\n")
+	stripped, raw := panelLines(model)
 	for i, line := range stripped {
 		if strings.Contains(line, want) {
 			return raw[i], true
 		}
 	}
 	return "", false
+}
+
+// rawSessionRowFor is the unstripped Session row whose label is want — the
+// checkout its Session is working in, since that is what the row carries.
+func rawSessionRowFor(t *testing.T, model tea.Model, want string) string {
+	t.Helper()
+	stripped, raw := panelLines(model)
+	for i, line := range stripped {
+		if isSessionRow(line) && strings.Contains(line, want) {
+			return raw[i]
+		}
+	}
+	t.Fatalf("no Session row labelled %q:\n%s", want, drawn(model))
+	return ""
+}
+
+// rawSessionRow is the unstripped line drawing the tree's one Session row.
+func rawSessionRow(t *testing.T, model tea.Model) string {
+	t.Helper()
+	stripped, raw := panelLines(model)
+	var rows []string
+	for i, line := range stripped {
+		if isSessionRow(line) {
+			rows = append(rows, raw[i])
+		}
+	}
+	if len(rows) != 1 {
+		t.Fatalf("the tree drew %d Session rows, want exactly one:\n%s", len(rows), drawn(model))
+	}
+	return rows[0]
 }
 
 var (
@@ -83,19 +119,13 @@ func TestTheSelectedSessionRowDimsOnceTheDashboardIsBlurred(t *testing.T) {
 	model := sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", session.Idle))
 	model = press(model, tea.KeyDown)
 
-	line, ok := rawLineFor(model, "ganymede-78")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", drawn(model))
-	}
+	line := rawSessionRow(t, model)
 	if !strings.HasPrefix(line, styleCodeOf(reverseOnly)) {
 		t.Errorf("session row = %q, want plainly reversed before any Blur", line)
 	}
 
 	model, _ = model.Update(tea.BlurMsg{})
-	line, ok = rawLineFor(model, "ganymede-78")
-	if !ok {
-		t.Fatalf("no row for the session after Blur:\n%s", drawn(model))
-	}
+	line = rawSessionRow(t, model)
 	if !strings.HasPrefix(line, styleCodeOf(reverseFaint)) {
 		t.Errorf("session row = %q, want dimmer once the Dashboard is blurred", line)
 	}

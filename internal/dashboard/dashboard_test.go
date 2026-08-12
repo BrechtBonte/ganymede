@@ -89,6 +89,50 @@ func tree(model tea.Model) string {
 	return strings.Join(lines[rules[0]+1:rules[1]], "\n")
 }
 
+// isSessionRow says a drawn line is a Session's row: indented under the repo
+// header above it. A Session row says which checkout its Session is working in
+// rather than what the Session is called, so this indent is what a test finds
+// one by. It is the one place that rule is written down.
+func isSessionRow(line string) bool {
+	return strings.HasPrefix(line, "  ") && strings.TrimSpace(line) != ""
+}
+
+// sessionRows is every Session row the tree drew, in the order it drew them.
+func sessionRows(view string) []string {
+	var rows []string
+	for _, line := range strings.Split(view, "\n") {
+		if isSessionRow(line) {
+			rows = append(rows, line)
+		}
+	}
+	return rows
+}
+
+// sessionRow is the tree's one Session row, for the tests showing one Session.
+func sessionRow(t *testing.T, view string) string {
+	t.Helper()
+	rows := sessionRows(view)
+	if len(rows) != 1 {
+		t.Fatalf("the tree drew %d Session rows, want exactly one:\n%s", len(rows), view)
+	}
+	return rows[0]
+}
+
+// onto puts the cursor on the first row whose SELECTED box says want, stepping
+// down as a hand would, and gives up rather than pressing Down forever on a
+// tree that says it nowhere.
+func onto(t *testing.T, model tea.Model, want string) tea.Model {
+	t.Helper()
+	for range 20 {
+		if strings.Contains(detail(model), want) {
+			return model
+		}
+		model = press(model, tea.KeyDown)
+	}
+	t.Fatalf("no row whose SELECTED box says %q:\n%s", want, drawn(model))
+	return model
+}
+
 // press sends a keystroke to the Dashboard.
 func press(model tea.Model, key tea.KeyType) tea.Model {
 	model, _ = model.Update(tea.KeyMsg{Type: key})
@@ -178,17 +222,25 @@ func TestSessionsAreGroupedUnderTheirRepo(t *testing.T) {
 	if got := strings.Count(view, "service-ai-assistant"); got != 1 {
 		t.Errorf("service-ai-assistant appears on %d rows, want one header for the repo:\n%s", got, view)
 	}
-	for _, name := range []string{"ai-assistant-b3", "FIRE-2841-paging"} {
-		line, ok := lineWith(view, name)
-		if !ok {
-			t.Fatalf("no row for the Session %q:\n%s", name, view)
-		}
-		if !strings.HasPrefix(line, "  ") {
-			t.Errorf("the row for %q is not indented under its repo: %q", name, line)
-		}
-	}
 	if _, ok := lineWith(view, "service-billing"); !ok {
 		t.Errorf("no header for the second repo:\n%s", view)
+	}
+	// Every Session is indented under a header, and no header is: three
+	// Sessions in two repos read as five rows, three of them stepped in.
+	if rows := sessionRows(view); len(rows) != 3 {
+		t.Errorf("the tree drew %d indented rows, want one per Session:\n%s", len(rows), view)
+	}
+	lines := strings.Split(view, "\n")
+	header := 0
+	for i, line := range lines {
+		if strings.HasPrefix(line, "service-ai-assistant") {
+			header = i
+		}
+	}
+	for _, under := range lines[header+1 : header+3] {
+		if !strings.HasPrefix(under, "  ") {
+			t.Errorf("a row under the repo's header is not one of its Sessions: %q", under)
+		}
 	}
 }
 
@@ -303,10 +355,10 @@ func TestASessionThatIsGoneLosesItsRow(t *testing.T) {
 	model, _ = model.Update(dashboard.Sessions{staying})
 
 	view := tree(model)
-	if strings.Contains(view, "service-billing-a1") {
+	if strings.Contains(view, "service-billing") {
 		t.Errorf("the row for a Session that is Gone is still drawn:\n%s", view)
 	}
-	if !strings.Contains(view, "ganymede-78") {
+	if !strings.Contains(view, "ganymede") || len(sessionRows(view)) != 1 {
 		t.Errorf("the Session that is still running lost its row:\n%s", view)
 	}
 }
@@ -463,7 +515,7 @@ func TestAForgottenPidIsPrunedOnceItsSourceMovesOn(t *testing.T) {
 	again := live("ganymede-78", "/repos/ganymede", session.Idle)
 	model, _ = model.Update(dashboard.Sessions{again})
 
-	if !strings.Contains(tree(model), "ganymede-78") {
+	if len(sessionRows(tree(model))) != 1 {
 		t.Errorf("a pid stayed suppressed after its own source stopped reporting it gone:\n%s", tree(model))
 	}
 }
@@ -479,7 +531,7 @@ func TestAJumpThatCannotBeMadeLeavesTheRowInPlace(t *testing.T) {
 	model = press(model, tea.KeyDown)
 	model = press(model, tea.KeyEnter)
 
-	if !strings.Contains(tree(model), "ganymede-78") {
+	if len(sessionRows(tree(model))) != 1 {
 		t.Errorf("a merely-unplaceable jump removed the row:\n%s", tree(model))
 	}
 }
@@ -549,8 +601,8 @@ func TestTheDetailBoxSurvivesAWorkingSetTallerThanTheSidepanel(t *testing.T) {
 	if !strings.Contains(view, "SELECTED") {
 		t.Errorf("the detail box was pushed off the sidepanel:\n%s", view)
 	}
-	if !strings.Contains(tree(model), "session-l12") {
-		t.Errorf("the selected Session is not on the tree:\n%s", view)
+	if !strings.Contains(tree(model), "repo-l12") {
+		t.Errorf("the repo holding the selected Session is not on the tree:\n%s", view)
 	}
 }
 
@@ -565,14 +617,11 @@ func TestReadyIsDrawnDistinctlyFromIdle(t *testing.T) {
 	glyphs := map[string]session.State{}
 	for _, state := range []session.State{session.Working, session.Blocked, session.Ready, session.Idle, session.Shell} {
 		view := tree(sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", state)))
-		line, ok := lineWith(view, "ganymede-78")
-		if !ok {
-			t.Fatalf("no row for a %s Session:\n%s", state, view)
-		}
+		line := sessionRow(t, view)
 		// The mark is the first thing on the row after the indent, and the row
-		// carries a name and a wait age after it.
+		// carries its checkout label and a wait age after it.
 		glyph, _, _ := strings.Cut(strings.TrimSpace(line), " ")
-		if glyph == "" || strings.Contains(glyph, "ganymede-78") {
+		if glyph == "" || strings.Contains(glyph, "main") {
 			t.Errorf("a %s Session's row carries no state glyph: %q", state, line)
 		}
 		for drawn, other := range glyphs {
@@ -710,7 +759,8 @@ func TestAStripThatCannotBeWrittenLeavesTheRailAlone(t *testing.T) {
 
 	model := showing(strip, []session.Session{live("ganymede-78", "/repos/ganymede", session.Blocked)})
 
-	if view := drawn(model); !strings.Contains(view, "ganymede-78") || strings.Contains(view, "no server running") {
+	if view := drawn(model); !strings.Contains(view, "ganymede") || len(sessionRows(view)) != 1 ||
+		strings.Contains(view, "no server running") {
 		t.Errorf("a strip that could not be written cost the rail its tree:\n%s", view)
 	}
 }
@@ -781,11 +831,18 @@ func TestEveryRowSaysHowLongItHasBeenInItsState(t *testing.T) {
 
 	view := tree(sidepanel(&jumps{}, waiting, since))
 
-	if line, _ := lineWith(view, "FIRE-2841-paging"); !strings.HasSuffix(strings.TrimRight(line, " "), "4m") {
-		t.Errorf("the Blocked row does not say it has been waiting four minutes: %q", line)
+	// Both Sessions are working in their own repo's Main root, so their rows
+	// read alike and it is the tree's own order that tells them apart:
+	// Attention first, and the Blocked one is the whole of it.
+	rows := sessionRows(view)
+	if len(rows) != 2 {
+		t.Fatalf("the tree drew %d Session rows, want one per Session:\n%s", len(rows), view)
 	}
-	if line, _ := lineWith(view, "ganymede-78"); !strings.HasSuffix(strings.TrimRight(line, " "), "3h") {
-		t.Errorf("the Idle row does not say how long it has been there: %q", line)
+	if !strings.HasSuffix(strings.TrimRight(rows[0], " "), "4m") {
+		t.Errorf("the Blocked row does not say it has been waiting four minutes: %q", rows[0])
+	}
+	if !strings.HasSuffix(strings.TrimRight(rows[1], " "), "3h") {
+		t.Errorf("the Idle row does not say how long it has been there: %q", rows[1])
 	}
 }
 
@@ -797,7 +854,7 @@ func TestARowThatHasJustMovedSaysSo(t *testing.T) {
 
 	view := tree(sidepanel(&jumps{}, just))
 
-	if line, _ := lineWith(view, "ganymede-78"); !strings.Contains(line, "now") {
+	if line := sessionRow(t, view); !strings.Contains(line, "now") {
 		t.Errorf("a Session that has just moved reads %q", line)
 	}
 }
@@ -817,17 +874,10 @@ func TestTheDetailBoxSaysHowLongTheSessionHasBeenWaiting(t *testing.T) {
 	}
 }
 
-// The rail truncates a Session's name to fit; the detail box is where the whole
-// of it goes, because it is what you would type to find the thing again.
-func TestTheDetailBoxNamesTheSelectedSessionInFull(t *testing.T) {
-	long := live("FIRE-2841-max-paging-numbers", "/repos/service-billing", session.Ready)
-
-	model := press(sidepanel(&jumps{}, long), tea.KeyDown)
-
-	if box := detail(model); !strings.Contains(box, long.Name) {
-		t.Errorf("the detail box does not name the Session in full:\n%s", box)
-	}
-}
+// The box's identity line names the repo rather than the Session — the row
+// says which checkout, and main on its own would leave you not knowing whose.
+// It is asserted in checkout_test.go, where the rest of the row's recomposition
+// is.
 
 // detail is just the SELECTED box: everything below the second rule.
 func detail(model tea.Model) string {
