@@ -44,6 +44,39 @@ func TestTheWindowHoldsTheSelectedRowWhateverItsRowsDraw(t *testing.T) {
 	}
 }
 
+// Half the block is the rows-above share, not their limit: a repo header drawing
+// two lines cannot always take its half, and what the rows below then leave
+// unspent goes back to the rows above. A window left a line short of the block is
+// a line of the sidepanel drawn blank while a whole row was waiting for it — and
+// on a tree of two-line headers, the row waiting is usually the header saying
+// which repo the selected Session row is working in.
+func TestTheWindowSpendsTheWholeBlockRatherThanStoppingAtHalfOfIt(t *testing.T) {
+	for _, c := range []struct {
+		what   string
+		rows   []int
+		cursor int
+		space  int
+	}{
+		{"a repo per two-line header and a Session each", []int{2, 1, 2, 1, 2, 1, 2, 1}, 3, 4},
+		{"the same tree with a taller block", []int{2, 1, 2, 1, 2, 1, 2, 1}, 5, 7},
+		{"a line a row", []int{1, 1, 1, 1, 1, 1, 1, 1}, 4, 3},
+		{"two lines a row throughout", []int{2, 2, 2, 2, 2}, 3, 5},
+	} {
+		drawn := blocks(c.rows)
+		first, last := shown(drawn, c.cursor, c.space)
+
+		spare := c.space - linesIn(drawn[first:last])
+		if first > 0 && len(drawn[first-1]) <= spare {
+			t.Errorf("%s: the window holds rows [%d,%d), leaving %d lines of a %d-line block unused while row %d would have fitted in them",
+				c.what, first, last, spare, c.space, first-1)
+		}
+		if last < len(drawn) && len(drawn[last]) <= spare {
+			t.Errorf("%s: the window holds rows [%d,%d), leaving %d lines of a %d-line block unused while row %d would have fitted in them",
+				c.what, first, last, spare, c.space, last)
+		}
+	}
+}
+
 // A window on a tree that fits shows the whole of it, wherever the cursor is.
 func TestAWindowOnATreeThatFitsShowsAllOfIt(t *testing.T) {
 	drawn := blocks([]int{2, 1, 2, 1})

@@ -1499,7 +1499,26 @@ func shown(drawn [][]string, cursor, space int) (first, last int) {
 		}
 		used += len(drawn[last])
 	}
-	return first, last
+	// Half the block is the rows-above share rather than their limit, and a
+	// two-line repo header cannot always take its half: what the rows below left
+	// unspent goes back to the rows above. Otherwise a block of four lines draws
+	// three and leaves the fourth blank — and the row it had no room for is the
+	// header saying which repo the selected Session row is working in, on rows
+	// whose own label is main.
+	return climbing(drawn, first, space-used), last
+}
+
+// climbing walks a window's first row up the tree for as long as whole rows fit
+// in the room there is above it.
+func climbing(drawn [][]string, first, room int) int {
+	for i := first - 1; i >= 0; i-- {
+		if len(drawn[i]) > room {
+			break
+		}
+		room -= len(drawn[i])
+		first = i
+	}
+	return first
 }
 
 // lastStart is the furthest a window can start and still reach the last row:
