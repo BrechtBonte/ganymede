@@ -699,6 +699,60 @@ func TestTheDockLegendIsHonestAboutWhatTheKeysDo(t *testing.T) {
 	}
 }
 
+// Ctrl+backtick has to survive the Dock, which is the client the emulator
+// actually talks to: a terminal sends it apart from the NUL byte it otherwise
+// collapses to only when the application has asked for extended keys, and the
+// Sessions server asking is no use when the Dock in front of it has not. A Dock
+// that never asks hands the Sessions server a key indistinguishable from
+// Ctrl+Space, and the Popup shell's own toggle never fires however correctly it
+// is bound behind it.
+//
+// Driven through all three levels the harness really runs — an emulator, the
+// Dock, and the Sessions server — with the chord written in as an emulator that
+// has been asked for extended keys writes it.
+func TestThePopupChordSurvivesTheDock(t *testing.T) {
+	layout, record := installedWithRecorder(t)
+	tmuxWithConf(t, layout.UserConf)
+	sessions := sessionsSocket(t)
+
+	dock := shortSocket(sessions, "dock")
+	run(t, "tmux", "-L", dock, "-f", dockConf(t), "new-session", "-d", "-s", "dock",
+		"sh", "-c", "env -u TMUX tmux -L "+sessions+" attach -t =probe; sleep 60")
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", dock, "kill-server").Run() })
+
+	emulator := shortSocket(sessions, "em")
+	run(t, "tmux", "-L", emulator, "new-session", "-d", "-x", "160", "-y", "45",
+		"sh", "-c", "env -u TMUX tmux -L "+dock+" attach -t =dock; sleep 60")
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", emulator, "kill-server").Run() })
+
+	// Ctrl+backtick in the encoding a terminal that has been asked for extended
+	// keys sends: the key's own code point and the Control modifier, rather
+	// than the NUL every terminal falls back to. Written into the emulator's
+	// pane, which is the Dock client's own input, the way pressKey does.
+	if !settled(func() bool {
+		run(t, "tmux", "-L", emulator, "send-keys", "-H", "-t", ":0.0", "1b", "5b", "39", "36", "3b", "35", "75")
+		return strings.Contains(read(t, record), "popup open")
+	}) {
+		t.Errorf("the recorder got %q, want %s to have reached the Popup shell through the Dock", read(t, record), tmuxconf.PopupToggleKey)
+	}
+}
+
+// shortSocket names a socket after what it is for rather than after the test:
+// a unix socket's path runs out well before a Go test name does.
+func shortSocket(after, purpose string) string {
+	sum := fnv.New32a()
+	_, _ = sum.Write([]byte(after))
+	return fmt.Sprintf("gan-%s-%08x", purpose, sum.Sum32())
+}
+
+// run is a tmux command that has to work for the test to mean anything.
+func run(t *testing.T, name string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+	}
+}
+
 // The status line of the Session you are working in is where the ambient
 // attention strip goes, so the installed config has to keep that line and hand
 // its right-hand end to the harness.

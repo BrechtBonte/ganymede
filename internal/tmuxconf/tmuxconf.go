@@ -290,10 +290,18 @@ func Install(l Layout) error {
 // dockBody configures the dock server. The dock is mostly a frame: it holds
 // the sidepanel and the working client side by side and otherwise stays out of
 // the way, so its prefix is disabled and every key reaches the client inside
-// the pane. It needs passthrough and focus events of its own, because both have
-// to travel through the dock to reach the emulator and the Sessions behind it.
-// The one thing it says for itself is the key legend along its own status line
-// — the only full-width row in the Dock.
+// the pane. It needs passthrough, focus events and extended keys of its own,
+// because all three have to travel through the dock to reach the emulator and
+// the Sessions behind it. The one thing it says for itself is the key legend
+// along its own status line — the only full-width row in the Dock.
+//
+// extended-keys is the one that is easiest to miss and the one whose absence is
+// silent: the dock is the client the emulator actually talks to, so it is the
+// dock that has to ask for the keys an emulator will not otherwise send apart
+// — Ctrl+backtick above all, which every terminal collapses to the NUL byte
+// until something asks it not to. A dock that never asks hands the Sessions
+// server a key it cannot tell from Ctrl+Space, and the Popup shell's own toggle
+// (PopupToggleKey) never fires however correctly it is bound behind it.
 const dockBody = `# Managed by ganymede. Edit ganymede, not this file.
 set -g prefix None
 set -g prefix2 None
@@ -303,6 +311,7 @@ set -g base-index 0
 setw -g pane-base-index 0
 set -g allow-passthrough on
 set -g focus-events on
+set -g extended-keys on
 
 # %s moves between the sidepanel and the working client.
 bind -n %s select-pane -t :.+
