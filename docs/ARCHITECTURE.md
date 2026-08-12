@@ -103,11 +103,11 @@ stateDiagram-v2
 | **In use by agent** | *Any* live session has the root as cwd — **even an Idle one**, since an idle agent still holds context bound to that checkout | Strict; softened only by Takeover. |
 | **Claimed** | Explicitly reserved by you, optionally with a note (typically PR review) | Warns agent spawns away; released explicitly. The dashboard nudges release once the root is back on the default branch with a clean tree. |
 
-**Takeover** claims a root whose only occupant is an Idle session, ending that session in the same action. It is refused when the occupant is Working or Blocked. Git caution markers (off-default branch, dirty tree) show on the root row independently of these states.
+**Takeover** claims a root whose only occupant is an Idle session, ending that session in the same action. It is refused when the occupant is Working or Blocked. Git caution markers (off-default branch, dirty tree) show under the root's header row independently of these states.
 
 ## Dashboard internals
 
-- **Repo tree** (~40 columns, always visible, left): repo header rows with root-state chip and git caution markers, indented session rows with state glyph, the marks for a Frozen pane (`❄`) and a busy popup (`⏵`), the checkout the session is working in (`main`, or `wt·<worktree>`), abbreviated ticket ID, and wait age. Attention tier sorts first, then recency.
+- **Repo tree** (~40 columns, always visible, left): repo header rows with root-state chip, each carrying its git caution markers on an indented line of its own beneath the header (never a row of its own — `↑↓` steps over it and it is never selectable); indented session rows with state glyph, the marks for a Frozen pane (`❄`) and a busy popup (`⏵`), the checkout the session is working in (`main`, or `wt·<worktree>`), abbreviated ticket ID, and wait age. Attention tier sorts first, then recency. The tree's own viewport is therefore budgeted in lines while the cursor counts rows.
 - **SELECTED detail box** at the foot: full detail for the highlighted row — the repo, blocked reason or last-message snippet, full ticket ID, cwd — plus the inline input for prompt and confirm actions.
 - **Main panel** (right): the live session in focus. `⏎` on a row jumps there.
 

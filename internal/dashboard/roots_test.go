@@ -147,19 +147,19 @@ func TestRepoHeaderMarksAMainRootASessionIsWorkingIn(t *testing.T) {
 }
 
 // The cautions are about the checkout rather than about who has it, so they
-// show on the root's row whatever state the root is in. Free says a PR can be
-// checked out here; these say what is sitting in it first.
+// show under the root's header whatever state the root is in. Free says a PR can
+// be checked out here; these say what is sitting in it first.
 func TestRepoHeaderCarriesWhatTheMainRootIsCarrying(t *testing.T) {
 	root := mainRoot(t, "billing")
 	strayed(t, root, "toolbar")
 
-	line := headerOf(t, rail(t, live("billing-a1", root, session.Idle)), root)
+	line := cautionUnder(t, rail(t, live("billing-a1", root, session.Idle)), root)
 
 	if !strings.Contains(line, "toolbar") {
-		t.Errorf("header = %q, want it to caution that the root is off its default branch", line)
+		t.Errorf("caution line = %q, want it to caution that the root is off its default branch", line)
 	}
 	if !strings.Contains(line, "dirty") {
-		t.Errorf("header = %q, want it to caution that the root's tree is dirty", line)
+		t.Errorf("caution line = %q, want it to caution that the root's tree is dirty", line)
 	}
 }
 
@@ -174,8 +174,8 @@ func TestCautionsClearWhenTheMainRootIsPutBack(t *testing.T) {
 	root := mainRoot(t, "billing")
 	strayed(t, root, "toolbar")
 	model := rail(t, live("FIRE-2841-paging", worktree(t, root, "FIRE-2841-paging"), session.Idle))
-	if line := headerOf(t, model, root); !strings.Contains(line, caution) {
-		t.Fatalf("header = %q, want it to caution about the root before it is put back", line)
+	if _, cautioning := lineWith(tree(model), caution); !cautioning {
+		t.Fatalf("tree drew no caution about the root before it was put back:\n%s", tree(model))
 	}
 
 	git(t, root, "checkout", "-q", "main")
@@ -184,15 +184,18 @@ func TestCautionsClearWhenTheMainRootIsPutBack(t *testing.T) {
 	}
 	model, cmd := model.Update(dashboard.Tick{})
 
-	if line := headerOf(t, cautioned(t, model, cmd), root); strings.Contains(line, caution) {
-		t.Errorf("header = %q, want nothing left to caution about", line)
+	// The caution line goes with the reason for it, rather than being left
+	// behind as an indented blank under the header.
+	if line, cautioning := lineWith(tree(cautioned(t, model, cmd)), caution); cautioning {
+		t.Errorf("tree still draws %q, want nothing left to caution about", line)
 	}
 }
 
-// The rail is forty columns wide, and the caution is the part of a header row
-// that gives way. What it gives up is the branch name — that the root is off
-// its default branch at all is the caution, and the box below names the branch
-// — while a dirty tree said in five columns is either there or it is not.
+// The rail is forty columns wide, and a branch can be named at any length at
+// all. A caution line too long for the sidepanel would wrap and push every row
+// under it out of step with the selection, so the branch is what gives way —
+// that the root is off its default branch at all is the caution, and the box
+// below names the branch in full.
 func TestALongBranchGivesWayRatherThanOverflowingTheRail(t *testing.T) {
 	root := mainRoot(t, "service-billing")
 	strayed(t, root, "fix/FIRE-2841-max-paging-numbers-in-the-invoice-list")
@@ -204,56 +207,44 @@ func TestALongBranchGivesWayRatherThanOverflowingTheRail(t *testing.T) {
 			t.Errorf("line is %d columns, sidepanel is %d:\n%q", width, topology.SidepanelWidth, line)
 		}
 	}
-	if line := headerOf(t, model, root); !strings.Contains(line, "dirty") {
-		t.Errorf("header = %q, want the dirty tree to survive a branch name that could not", line)
+	if line := cautionUnder(t, model, root); !strings.Contains(line, "dirty") {
+		t.Errorf("caution line = %q, want the dirty tree to survive a branch name that could not", line)
 	}
 }
 
-// A repo named at length leaves no room for a branch name at all. The row keeps
-// the marks it can still be read by rather than saying half a branch — or, worse,
-// the punctuation between two marks with nothing left on either side of it.
-func TestARowWithNoRoomForTheBranchKeepsTheMarksItCanBeReadBy(t *testing.T) {
+// A repo named at length used to leave no room for a branch name at all — the
+// header gave up the branch, and then the name itself, to say anything about the
+// checkout. On a line of its own the caution has the whole sidepanel, so a name
+// like this one costs it nothing and the header keeps the whole of the name.
+func TestALongRepoNameNoLongerCostsItsCautionAnything(t *testing.T) {
 	root := mainRoot(t, "teamleadercrm-monolith-b7")
-	strayed(t, root, "fix/FIRE-2841-max-paging-numbers-in-the-invoice-list")
+	strayed(t, root, "fix/toolbar-focus")
 
-	line := headerOf(t, rail(t, live("billing-a1", root, session.Idle)), root)
+	model := rail(t, live("billing-a1", root, session.Idle))
 
-	if !strings.Contains(line, caution+" dirty") {
-		t.Errorf("header = %q, want the marks that still fit, said plainly", line)
+	if line := headerOf(t, model, root); !strings.Contains(line, "teamleadercrm-monolith-b7") {
+		t.Errorf("header = %q, want the whole repo name kept", line)
+	}
+	if line := cautionUnder(t, model, root); !strings.Contains(line, "fix/toolbar-focus") {
+		t.Errorf("caution line = %q, want the whole branch the root strayed to", line)
 	}
 }
 
-// A repo named at the width of the whole rail leaves room for nothing else, and
-// the mark is what the row gives up last. A caution dropped for want of room
-// would leave a root that is detached and dirty reading exactly like one that is
-// clean, on the row you go to precisely to find out which.
-func TestARowWithNoRoomAtAllKeepsTheCautionMarkAndGivesUpTheName(t *testing.T) {
-	root := mainRoot(t, "teamleadercrm-monolith-and-then-some-more")
-	strayed(t, root, "toolbar")
-
-	line, ok := lineWith(tree(rail(t, live("billing-a1", root, session.Idle))), "teamleadercrm-monolith")
-	if !ok {
-		t.Fatalf("no header row for %q", root)
-	}
-	if !strings.Contains(line, caution) {
-		t.Errorf("header = %q, want the caution mark kept and the name given up for it", line)
-	}
-}
-
-// A word cut in half says something the harness did not mean. Where there is no
-// room for the whole of a mark, the row says the marks it can and leaves the
-// rest to the box.
-func TestARowNeverSaysHalfOfAMark(t *testing.T) {
+// A dirty tree and nothing else gets the line a branch gets. Said inline where
+// there was room and given a line where there was not, the tree would reflow as
+// git changed underneath it — a row appearing and disappearing under the cursor
+// while you are reading the panel.
+func TestADirtyTreeAloneStillGetsALineOfItsOwn(t *testing.T) {
 	root := mainRoot(t, "teamleadercrm-monolith-invoicing")
 	git(t, root, "branch", "-M", "main")
 	if err := os.WriteFile(filepath.Join(root, "toolbar.go"), []byte("package ui\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	line := headerOf(t, rail(t, live("billing-a1", root, session.Idle)), root)
+	line := cautionUnder(t, rail(t, live("billing-a1", root, session.Idle)), root)
 
-	if strings.Contains(line, "dir") && !strings.Contains(line, "dirty") {
-		t.Errorf("header = %q, want no half-said mark on it", line)
+	if !strings.Contains(line, caution+" dirty") {
+		t.Errorf("caution line = %q, want the dirty tree said on its own line", line)
 	}
 }
 
@@ -273,8 +264,8 @@ func TestAnAnswerAboutOneRootLeavesTheOthersAlone(t *testing.T) {
 	// An older read, about one of the two roots only, landing last.
 	model, _ = model.Update(dashboard.Cautions{billing: repo.Caution{Branch: "toolbar"}})
 
-	if line := headerOf(t, model, assistant); !strings.Contains(line, caution) {
-		t.Errorf("header = %q, want the caution the other answer had already found", line)
+	if line := cautionUnder(t, model, assistant); !strings.Contains(line, "spike") {
+		t.Errorf("caution line = %q, want the caution the other answer had already found", line)
 	}
 }
 

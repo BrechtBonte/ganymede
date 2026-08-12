@@ -1439,12 +1439,12 @@ func (m Model) counts() string {
 // detail box below it sit at the sidepanel's foot, and the tree is what
 // absorbs the slack as the working set grows and shrinks.
 //
-// Space is a budget in lines rather than in rows. Every row draws exactly one
-// line today, so the two are the same number — but a repo header is to carry
-// its git caution on a line of its own, and a window counted in rows would
-// then run off the foot of the block. The window is measured in lines
-// throughout while the cursor goes on counting rows: the selection steps row
-// to row, and what has to stay on the panel is the lines those rows draw.
+// Space is a budget in lines rather than in rows, because the two are no longer
+// the same number: a repo header carrying a git caution draws two lines, and a
+// window counted in rows would run off the foot of the block by one line per
+// cautioned repo in it. The window is measured in lines throughout while the
+// cursor goes on counting rows: the selection steps row to row, and what has to
+// stay on the panel is the lines those rows draw.
 func (m Model) tree(space int) []string {
 	if len(m.rows) == 0 {
 		return fill(clip(m.nothingRunning(), space), space)
@@ -1463,10 +1463,18 @@ func (m Model) tree(space int) []string {
 	return fill(clip(lines, space), space)
 }
 
-// linesOf is every line one row of the tree draws — one, for now, for every
-// row there is.
+// linesOf is every line one row of the tree draws: its own, and — on a repo
+// header whose Main root is carrying something — the caution line beneath it.
+//
+// The caution is the row's second line rather than a row of its own, so that
+// ↑↓ goes on stepping repo header to Session row: it says something about the
+// header above it and there is nothing on it to select.
 func (m Model) linesOf(i int) []string {
-	return []string{m.line(i)}
+	lines := []string{m.line(i)}
+	if warning := m.cautionLine(m.rows[i]); warning != "" {
+		lines = append(lines, warning)
+	}
+	return lines
 }
 
 // shown is the run of rows the window holds, given what each of them draws.
@@ -1477,19 +1485,17 @@ func (m Model) linesOf(i int) []string {
 //
 // Whole rows only: a repo header drawn without the caution line belonging to
 // it would be a row saying something untrue, and one line at the foot of the
-// block is not worth that. The single exception is the selection's own row on
-// a block too short to hold it whole, which is drawn cut off rather than not
-// at all — a tree gone blank is worse than a caution line there was no room
-// for.
+// block is not worth that.
+//
+// The single exception is the selection's own row on a block too short to hold
+// it whole, which tree() draws cut off rather than not at all — a tree gone
+// blank is worse than a caution line there was no room for. That is the one
+// place a header can lose its caution, and it is the safe one: the row it
+// happens to is the selected row, and the SELECTED box pinned under the tree
+// spells that row's caution out in full whatever the tree had room for.
 func shown(drawn [][]string, cursor, space int) (first, last int) {
 	first = min(max(cursor, 0), len(drawn)-1)
-	for above, i := min(space/2, space-len(drawn[first])), first-1; i >= 0; i-- {
-		if len(drawn[i]) > above {
-			break
-		}
-		above -= len(drawn[i])
-		first = i
-	}
+	first = climbing(drawn, first, min(space/2, space-len(drawn[first])))
 	first = min(first, lastStart(drawn, space))
 
 	used := 0
@@ -1499,7 +1505,26 @@ func shown(drawn [][]string, cursor, space int) (first, last int) {
 		}
 		used += len(drawn[last])
 	}
-	return first, last
+	// Half the block is the rows-above share rather than their limit, and a
+	// two-line repo header cannot always take its half: what the rows below left
+	// unspent goes back to the rows above. Otherwise a block of four lines draws
+	// three and leaves the fourth blank — and the row it had no room for is the
+	// header saying which repo the selected Session row is working in, on rows
+	// whose own label is main.
+	return climbing(drawn, first, space-used), last
+}
+
+// climbing walks a window's first row up the tree for as long as whole rows fit
+// in the room there is above it.
+func climbing(drawn [][]string, first, room int) int {
+	for i := first - 1; i >= 0; i-- {
+		if len(drawn[i]) > room {
+			break
+		}
+		room -= len(drawn[i])
+		first = i
+	}
+	return first
 }
 
 // lastStart is the furthest a window can start and still reach the last row:
@@ -1614,37 +1639,70 @@ func marks(r row) string {
 // is asked most often about a repo — whether a PR can be checked out in it —
 // and it sits in the same column on every header row, so that running an eye
 // down the rail reads as a list of roots you can and cannot have.
-// The cautions its checkout is carrying go in front of the mark, because they
-// are read in that order: what the root is, then what is in it.
+//
+// The whole width is the name's and the mark's. What the checkout is carrying is
+// on the line underneath (cautionLine), because the two fighting over one line
+// cost the name its suffix and the branch everything past its eighteenth column
+// — on the eight repos in ten that carry a caution at all.
 func (m Model) repoLine(r row, selected bool) string {
 	glyph := m.repoGlyph(r)
 	mark := strings.TrimRight(marks(r), " ")
-	// What the row has left for a caution once the name, the mark and the
-	// state glyph have had their columns. Where that leaves too little, the
-	// caution says less rather than nothing, and the name is truncated to
-	// make room for what is left.
-	warning := carrying(r.caution, m.width-lipgloss.Width(r.repoName()+glyph+mark)-2)
-	// The caution, the state glyph and whatever you have done to the row, in
-	// that order and each only where there is one — joined the way a Session
-	// row's own far end is, so that the two kinds of row cannot drift apart in
-	// their spacing, and styled through rendered so that nothing stays nothing.
+	// The state glyph and whatever you have done to the row, in that order and
+	// each only where there is one — joined the way a Session row's own far end
+	// is, so that the two kinds of row cannot drift apart in their spacing.
 	if selected {
 		return m.selectedRowStyle().Width(m.width).
-			Render(spread(r.repoName(), joined(warning, glyph, mark), m.width))
+			Render(spread(r.repoName(), joined(glyph, mark), m.width))
 	}
-	marks := joined(rendered(cautionStyle, warning), rootStyle(r.state).Render(glyph), mark)
+	marks := joined(rootStyle(r.state).Render(glyph), mark)
 	return spread(repoStyle.Render(r.repoName()), marks, m.width)
 }
 
-// carrying is how a Main root's cautions read on its row, in the room the row
-// has left for them.
+// cautionIndent hangs a caution under the header it belongs to. One column,
+// where a Session row's own indent is two: the line is a footnote to the header
+// above it rather than another row beneath it, and the difference is in the
+// first character of both.
+const cautionIndent = " "
+
+// cautionLine is what a Main root's checkout is carrying, on the line under its
+// repo's header — and nothing at all for a root carrying nothing, or for a
+// Session row, which has no checkout of its own to caution about.
+//
+// It is drawn in the caution's own amber whether the header above it is selected
+// or not: the inversion marks the row you are on, and a row here is the header.
+// A caution swallowed by that inversion would be one you have to move the cursor
+// off to read.
+//
+// The room it is fitted to is the panel less the indent, so the line lands inside
+// the sidepanel at every width there is room for the mark in — and at the one
+// width there is not, it draws the mark anyway and overruns by a column, exactly
+// as the header row above it already does. carrying's last rung is a promise
+// about a root that is detached with work in it never reading like a clean one,
+// and a caller is not the place to take it back.
+func (m Model) cautionLine(r row) string {
+	if r.session != nil {
+		return ""
+	}
+	said := carrying(r.caution, m.width-lipgloss.Width(cautionIndent))
+	if said == "" {
+		return ""
+	}
+	return cautionIndent + cautionStyle.Render(said)
+}
+
+// carrying is how a Main root's cautions read on the line under its header, in
+// the room that line has for them.
 //
 // It says as much as fits and never part of a word: the whole of it, then the
 // branch name shortened, then the marks without the branch at all, and at the
 // very least the mark itself. That last one is said whether there is room for it
-// or not, and the name gives the column up for it — a caution dropped for want
-// of space would leave a root that is detached with work in it reading exactly
-// like one that is clean, on the row you are looking at to find out which.
+// or not — a caution dropped for want of space would leave a root that is
+// detached with work in it reading exactly like one that is clean, on the row
+// you are looking at to find out which.
+//
+// The room is the whole sidepanel less the indent, rather than the ten-odd
+// columns left over beside a repo name, so a branch reaching the lower rungs of
+// that ladder is now a sidepanel dragged narrow rather than an ordinary Tuesday.
 func carrying(c repo.Caution, room int) string {
 	where := c.Branch
 	if c.Detached {
