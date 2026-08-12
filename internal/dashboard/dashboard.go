@@ -1386,7 +1386,9 @@ func (m Model) View() string {
 	detail := m.detail()
 
 	// The frame the tree lives in: the title and its rule above, the detail
-	// box's rule and heading below.
+	// box's rule and heading below. The tree is given the whole of what is
+	// left and fills it, so the box lands on the sidepanel's last lines
+	// whatever the working set is doing — one place your eye can learn.
 	space := m.height - 4 - len(detail)
 	if space < 0 {
 		// A sidepanel with no room for both gives up detail before it gives up
@@ -1433,7 +1435,9 @@ func (m Model) counts() string {
 }
 
 // tree draws the repo tree, showing as much of it as space allows and keeping
-// the selection in view.
+// the selection in view. It fills the block it is given: the rule and the
+// detail box below it sit at the sidepanel's foot, and the tree is what
+// absorbs the slack as the working set grows and shrinks.
 //
 // Space is a budget in lines rather than in rows. Every row draws exactly one
 // line today, so the two are the same number — but a repo header is to carry
@@ -1443,7 +1447,7 @@ func (m Model) counts() string {
 // to row, and what has to stay on the panel is the lines those rows draw.
 func (m Model) tree(space int) []string {
 	if len(m.rows) == 0 {
-		return clip(m.nothingRunning(), space)
+		return fill(clip(m.nothingRunning(), space), space)
 	}
 
 	drawn := make([][]string, len(m.rows))
@@ -1456,7 +1460,7 @@ func (m Model) tree(space int) []string {
 	for _, row := range drawn[first:last] {
 		lines = append(lines, row...)
 	}
-	return clip(lines, space)
+	return fill(clip(lines, space), space)
 }
 
 // linesOf is every line one row of the tree draws — one, for now, for every
@@ -1939,6 +1943,15 @@ func clip(lines []string, space int) []string {
 		return lines
 	}
 	return lines[:max(0, space)]
+}
+
+// fill pads a block out to space lines, so that what is drawn under it lands
+// where it always lands rather than wherever the block happened to end.
+func fill(lines []string, space int) []string {
+	for len(lines) < space {
+		lines = append(lines, "")
+	}
+	return lines
 }
 
 // truncate keeps a line inside the sidepanel rather than letting it wrap.
