@@ -85,7 +85,7 @@ Whenever Ghostty isn't the frontmost app, Ganymede's notifier is the one place a
 
 Digit keys are never scripted, because permission-dialog rows are dynamic.
 
-The bottom row of the dock is this table, so the whole vocabulary is on screen while you're learning it. It lists every key, including the ones that do nothing on the row you happen to be standing on — the SELECTED box is the one that only ever offers what will actually fire.
+The bottom row of the dock is this table, so the whole vocabulary is on screen while you're learning it. It lists every key, including the ones that do nothing on the row you happen to be standing on — the SELECTED box is the one that only ever offers what will actually fire. A window too narrow for the whole list drops keys off the right-hand end, worth-least first.
 
 ## How to install
 
