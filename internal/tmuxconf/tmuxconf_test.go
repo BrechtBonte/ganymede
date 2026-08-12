@@ -672,13 +672,31 @@ func TestTheDockLegendLeadsWithTheKeysWorthMost(t *testing.T) {
 func TestTheDockLegendNamesTheChordsTheKeysAreBoundTo(t *testing.T) {
 	line := dockLegend(t)
 
-	for _, key := range []string{tmuxconf.FocusKey, tmuxconf.PopupToggleKey} {
+	for _, key := range []string{tmuxconf.FocusKey, tmuxconf.PopupToggleFallbackKey} {
 		if chord := macChord(key); !strings.Contains(line, chord) {
 			t.Errorf("the legend reads %q, want the chord %q for %s in it", line, chord, key)
 		}
 		if strings.Contains(line, key) {
 			t.Errorf("the legend reads %q, want %s written as it is pressed rather than in tmux's notation", line, key)
 		}
+	}
+}
+
+// The Popup shell answers to two keys, and the legend names the one that
+// arrives. Ctrl+backtick reaches the binding only on an emulator that
+// transmits it apart from the NUL byte every other terminal collapses it to,
+// and the Dock — the client Ghostty actually talks to — never asks for that,
+// so the primary chord is exactly the sort of key that would silently do
+// nothing. Alt+backtick is the fallback for that case and is what the legend
+// can promise.
+func TestTheDockLegendNamesThePopupChordThatArrives(t *testing.T) {
+	line := dockLegend(t)
+
+	if want := macChord(tmuxconf.PopupToggleFallbackKey) + " popup shell"; !strings.Contains(line, want) {
+		t.Errorf("the legend reads %q, want %q in it", line, want)
+	}
+	if unpromised := macChord(tmuxconf.PopupToggleKey); strings.Contains(line, unpromised) {
+		t.Errorf("the legend reads %q, want no %q on it — the Dock never asks for the keys that would carry it", line, unpromised)
 	}
 }
 
@@ -694,7 +712,7 @@ func TestTheDockLegendIsHonestAboutWhatTheKeysDo(t *testing.T) {
 			t.Errorf("the legend reads %q, want no %q in it", line, fiction)
 		}
 	}
-	if !strings.Contains(line, macChord(tmuxconf.PopupToggleKey)+" popup shell") {
+	if !strings.Contains(line, "popup shell") {
 		t.Errorf("the legend reads %q, want the Popup shell on the key that opens it", line)
 	}
 }

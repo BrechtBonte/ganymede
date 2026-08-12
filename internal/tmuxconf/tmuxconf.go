@@ -371,7 +371,13 @@ var legendKeys = []string{
 	"↑↓ select",
 	"⏎ jump",
 	macChord(FocusKey) + " focus",
-	macChord(PopupToggleKey) + " popup shell",
+	// The fallback rather than the primary, and deliberately. Ctrl+backtick
+	// arrives only when the emulator holds up its own end of the bargain the
+	// Dock's extended-keys asks for; nothing in a config file can promise
+	// that, and a legend is a promise. Alt+backtick is the chord every
+	// terminal sends apart from everything else — which is why it is bound at
+	// all (see PopupToggleFallbackKey) — so it is the one to advertise.
+	macChord(PopupToggleFallbackKey) + " popup shell",
 	"w spawn",
 	"c claim/release/takeover",
 	"p prompt/queue",
