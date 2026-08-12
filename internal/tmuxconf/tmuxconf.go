@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/BrechtBonte/ganymede/internal/config"
 )
 
@@ -145,23 +147,77 @@ const PopupDirOption = "@ganymede-popup-dir"
 // the Dashboard's.
 const AttentionOption = "@ganymede-attention"
 
+// The validated mock's palette, as the two status lines the harness dresses
+// read it: the Dock's own and the working client's. Literals of their own
+// rather than anything derived from a Session's state colour — the chrome is
+// not a state, and has to be free to move without dragging one with it, which
+// is how the Dashboard already keeps its brand and its ticket colour apart.
+const (
+	chromePanel      = "#161b22"
+	chromeForeground = "#c9d1d9"
+	chromeQuiet      = "#8b949e"
+	chromeFaint      = "#484f58"
+	chromeBrand      = "#58a6ff"
+)
+
+// signature is what the working client's status line signs itself, so that a
+// harness window is tellable from a plain terminal at a glance.
+const signature = "ganymede"
+
 // strip hands the right-hand end of the status line to the harness: the counts
 // of what is waiting on you, under your eye line in the Session you are working
-// in rather than only over in the sidepanel.
+// in rather than only over in the sidepanel, and the harness's own signature
+// after them.
 //
 // The Dashboard writes the whole strip — marks, counts and colours — into an
 // option of its own, so a status line redrawn on every keystroke costs tmux
 // nothing but a lookup, and a server whose Dashboard has never written to it
-// draws an empty strip rather than an error. Setting the option is enough to
-// put it on screen: tmux redraws its clients when an option changes.
+// draws the signature alone rather than an error. Setting the option is enough
+// to put it on screen: tmux redraws its clients when an option changes.
 //
-// The harness owns these two settings. A status line the user had turned off
-// is turned back on, because a strip nobody can see is not a strip, and a
-// right-hand segment of the user's own is replaced by this one.
+// The separator is inside the conditional rather than beside it, so a quiet
+// working set leaves no punctuation behind: tmux reads an unset or empty option
+// as false, which is exactly the case the Dashboard writes for nothing waiting.
+// The conditional is tmux's own, evaluated where the line is drawn, so this
+// stays one static setting rather than something the Dashboard has to rewrite.
+// It is drawn in the line's own foreground, not fainter, because the strip's
+// separator between its two tiers is — two intensities in one run read as a
+// fault rather than as a hierarchy.
+//
+// The signature goes first when the two cannot both be had. tmux trims this
+// segment from its left end, so on a pane too narrow for both it is the count
+// — the whole reason the line is here — that would be eaten, and the least
+// informative thing on it that would survive. signatureColumns is what the
+// widest strip and the signature need side by side.
+//
+// The styling is here for the same reason the strip is: stock tmux draws this
+// line in green, which would be the one loud thing in an otherwise dark Dock.
+// The current window is given its own weight, since the green it used to be
+// told apart by has gone.
+//
+// The harness owns these settings, as it already owned the two under them: a
+// status line the user had turned off is turned back on, because a strip nobody
+// can see is not a strip; a right-hand segment of the user's own is replaced by
+// this one; and a tmux server reading the user's own config is dressed in the
+// harness's colours whether or not the harness is what is running in it.
 const strip = `
 set -g status on
-set -g status-right "#{` + AttentionOption + `}"
+set -g status-style "bg=` + chromePanel + `,fg=` + chromeQuiet + `"
+set -g window-status-current-style "fg=` + chromeForeground + `,bold"
+set -g status-right-length 100
+set -g status-right "#{?` + AttentionOption + `,#{` + AttentionOption + `}` + signedWhenItFits + `,#[fg=` + chromeBrand + `]` + signature + `}#[default]"
 `
+
+// signatureColumns is the narrowest client that carries the counts and the
+// signature both: the widest strip the Dashboard writes ("█ 99 blocked · ● 99
+// ready") beside the signature and its separator, and the session's own name at
+// the other end of the line. Written as tmux reads it, since the line it goes
+// into is a const.
+const signatureColumns = "60"
+
+// signedWhenItFits is the signature as it appears after a strip that is already
+// there — dropped on a client too narrow to carry both.
+const signedWhenItFits = `#{?#{e|>=:#{client_width},` + signatureColumns + `}, · #[fg=` + chromeBrand + `]` + signature + `,}`
 
 // fragment is the harness's tmux configuration for a Layout. What the harness
 // cannot work without comes first, so that a line tmux will not read costs
@@ -231,24 +287,43 @@ func Install(l Layout) error {
 	return config.Replace(l.UserConf, []byte(body))
 }
 
-// dockBody configures the dock server. The dock is only a frame: it holds the
-// sidepanel and the working client side by side and otherwise stays out of the
-// way, so its prefix is disabled and every key reaches the client inside the
-// pane. It needs passthrough and focus events of its own, because both have to
-// travel through the dock to reach the emulator and the Sessions behind it.
+// dockBody configures the dock server. The dock is mostly a frame: it holds
+// the sidepanel and the working client side by side and otherwise stays out of
+// the way, so its prefix is disabled and every key reaches the client inside
+// the pane. It needs passthrough, focus events and extended keys of its own,
+// because all three have to travel through the dock to reach the emulator and
+// the Sessions behind it. The one thing it says for itself is the key legend
+// along its own status line — the only full-width row in the Dock.
+//
+// extended-keys is the one that is easiest to miss and the one whose absence is
+// silent: the dock is the client the emulator actually talks to, so it is the
+// dock that has to ask for the keys an emulator will not otherwise send apart
+// — Ctrl+backtick above all, which every terminal collapses to the NUL byte
+// until something asks it not to. A dock that never asks hands the Sessions
+// server a key it cannot tell from Ctrl+Space, and the Popup shell's own toggle
+// (PopupToggleKey) never fires however correctly it is bound behind it.
 const dockBody = `# Managed by ganymede. Edit ganymede, not this file.
 set -g prefix None
 set -g prefix2 None
-set -g status off
 set -g mouse off
 set -g escape-time 0
 set -g base-index 0
 setw -g pane-base-index 0
 set -g allow-passthrough on
 set -g focus-events on
+set -g extended-keys on
 
 # %s moves between the sidepanel and the working client.
 bind -n %s select-pane -t :.+
+
+# The Dock is the frame holding both panes, which makes its own status line the
+# only full-width row there is — so it is where the key legend goes, along the
+# bottom of the whole Dock. status-format is set rather than status-left, so the
+# line is the legend and nothing else: no window list to share it with, and none
+# of status-left's ten-column budget to be cut down to.
+set -g status on
+set -g status-style "bg=%s,fg=%s"
+set -g status-format[0] "%s"
 
 # The sidepanel keeps its width however the window is resized. window-resized
 # is the one that matters: client-resized fires before tmux has recalculated
@@ -262,9 +337,125 @@ set-hook -g window-resized 'resize-pane -t :.0 -x %d'
 // has no prefix, so this is a bare key in the root table.
 const FocusKey = "M-g"
 
+// legendKeys is the harness's complete vocabulary, in the order the keys are
+// worth: a Dock too narrow for all of it gives up the tail (see legend), so
+// what is worth least is what goes first.
+//
+// Moving about comes first, then the two chords nothing else advertises — the
+// SELECTED box offers a row's own keys as you land on it, but no row is ever
+// standing on the key that moves focus or opens the Popup shell. The rest is
+// §7.3's action set: what a repo header answers to, then a Session, then the
+// ticket, then the picker.
+//
+// The chords are built from the constants the keys are actually bound to, so
+// that a rebinding cannot leave the legend lying, and are written the way a Mac
+// user presses them rather than in tmux's own notation.
+//
+// This is deliberately the complete vocabulary rather than what would fire on
+// the row you are standing on — which is a legend listing keys that do nothing
+// here, and cuts against the rule the SELECTED box follows ("offering a key
+// that would silently do nothing is worse than not offering it"). The division
+// of labour is the point: the legend is for learning the harness, the box
+// remains the authority on what this row will actually do.
+//
+// Where a key's label changes with the row it is over, the legend says every
+// label rather than the first of them: c is claim, release and Takeover as the
+// root's state moves, and p queues rather than prompts on a Session that is
+// already Working. A legend saying only one of them would be the box's own
+// words used to mean something they do not.
+//
+// What it must never say is what the prototype's shared bar said — "!" for the
+// Popup shell, "x takeover" when x is interrupt, or "q quit" when q ends a
+// Session and the Dashboard answers to no quit key at all.
+var legendKeys = []string{
+	"↑↓ select",
+	"⏎ jump",
+	macChord(FocusKey) + " focus",
+	// The primary, which is §8's own key and now arrives: the Dock asks for
+	// extended keys (see dockBody), so Ghostty sends Ctrl+backtick apart from
+	// the NUL byte and the binding behind the Dock fires. It was worth nothing
+	// on the legend until that was true — a legend is a promise, and this one
+	// went unkept for as long as the frame swallowed the chord.
+	//
+	// PopupToggleFallbackKey stays bound for an emulator that cannot carry it,
+	// and stays off the legend: one key per gesture is what a legend is for.
+	macChord(PopupToggleKey) + " popup shell",
+	"w spawn",
+	"c claim/release/takeover",
+	"p prompt/queue",
+	"y approve",
+	"n deny",
+	"x interrupt",
+	"q end",
+	"t ticket",
+	"o open ticket",
+	"g repo picker",
+}
+
+// macChord writes a tmux key the way it is pressed on the keyboard in front of
+// you: tmux's M- is the Option key and its C- is Control, and a legend that
+// asked for "M-g" would be one more thing to translate rather than one less.
+func macChord(key string) string {
+	return strings.NewReplacer("M-", "⌥", "C-", "⌃").Replace(key)
+}
+
+// legendSeparator divides one key from the next, fainter than either, so what
+// the eye runs along is the keys.
+const legendSeparator = "#[fg=" + chromeFaint + "] · "
+
+// legend draws the vocabulary for the Dock's status line: the key itself in the
+// foreground and its label quiet behind it, which is how the SELECTED box
+// already draws the keys it offers — the two are one vocabulary and should read
+// as one.
+//
+// Everything past the first key is wrapped in a conditional on the width of the
+// client the line is being drawn for, so a Dock too narrow for the whole legend
+// drops whole keys off the tail. That is fitKeys' greedy fit, made by tmux at
+// draw time instead of by us at write time — and it has to be, because the
+// window this config is written for can be any width and can be resized after.
+// Left to tmux's own truncation the line would be cut wherever the last column
+// happened to fall: "x interrup", or a separator with nothing after it, which
+// reads as a Dock that has glitched rather than one that ran out of room.
+//
+// The width each key needs is the whole line up to and including it, measured
+// the way the Dashboard measures its own keys. Both the separator and the key
+// are inside the conditional, so a key that does not fit takes its separator
+// with it.
+func legend() string {
+	var format, line string
+	for _, key := range legendKeys {
+		entry, plain := hinted(key), key
+		if line != "" {
+			entry, plain = legendSeparator+entry, " · "+plain
+		}
+		line += plain
+		if format == "" {
+			// The first key is drawn whatever the width: a legend that could
+			// vanish altogether would leave the Dock's own row saying nothing.
+			format = entry
+			continue
+		}
+		format += fmt.Sprintf("#{?#{e|>=:#{client_width},%d},%s,}", lipgloss.Width(line), entry)
+	}
+	return format
+}
+
+// hinted draws one key: the character in the panel's own foreground and the
+// label quiet behind it. A label carrying a comma would end tmux's conditional
+// early, which is why they are written with slashes.
+func hinted(key string) string {
+	char, label, ok := strings.Cut(key, " ")
+	if !ok {
+		return "#[fg=" + chromeForeground + "]" + char
+	}
+	return "#[fg=" + chromeForeground + "]" + char + "#[fg=" + chromeQuiet + "] " + label
+}
+
 // WriteDockConf writes the dock server's configuration.
 func WriteDockConf(path string, sidepanelWidth int) error {
-	body := fmt.Sprintf(dockBody, FocusKey, FocusKey, sidepanelWidth, sidepanelWidth, sidepanelWidth)
+	body := fmt.Sprintf(dockBody, FocusKey, FocusKey,
+		chromePanel, chromeQuiet, legend(),
+		sidepanelWidth, sidepanelWidth, sidepanelWidth)
 	if err := config.Replace(path, []byte(body)); err != nil {
 		return fmt.Errorf("write dock config: %w", err)
 	}

@@ -1,9 +1,12 @@
 package tmuxconf_test
 
 import (
+	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -498,6 +501,275 @@ func pressKey(t *testing.T, socket, key string) {
 	}
 }
 
+// dockConf writes the Dock server's configuration into a throwaway directory
+// and returns the path tmux is to read it from.
+func dockConf(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "dock.conf")
+	if err := tmuxconf.WriteDockConf(path, 40); err != nil {
+		t.Fatalf("WriteDockConf: %v", err)
+	}
+	return path
+}
+
+// plain is a status line read the way the eye reads it: tmux's own style
+// directives taken back out, so a test asserts on what is drawn rather than on
+// the colours it is drawn in.
+func plain(line string) string {
+	for {
+		open := strings.Index(line, "#[")
+		if open < 0 {
+			return line
+		}
+		end := strings.Index(line[open:], "]")
+		if end < 0 {
+			return line
+		}
+		line = line[:open] + line[open+end+1:]
+	}
+}
+
+// macChord is the notation a legend has to be written in, restated here rather
+// than shared with the harness: a test that called the harness's own translation
+// would agree with it however wrong both were.
+func macChord(key string) string {
+	return strings.NewReplacer("M-", "⌥", "C-", "⌃").Replace(key)
+}
+
+// attachedAt opens a client this many columns wide onto the probe session, from
+// a tmux server of its own the way the emulator holds the dock, and hands back
+// what that client's status line — the last row of its screen — reads at any
+// moment. Reading the drawn line is the only way to test a fit: the option
+// holds the format, and the fit is what tmux makes of the format at that width.
+func attachedAt(t *testing.T, socket string, columns int) func() string {
+	t.Helper()
+	// Named short rather than after the test: a unix socket's path runs out
+	// well before a Go test name does.
+	sum := fnv.New32a()
+	_, _ = sum.Write([]byte(socket))
+	emulator := fmt.Sprintf("gan-em-%08x-%d", sum.Sum32(), columns)
+	out, err := exec.Command("tmux", "-L", emulator, "new-session", "-d",
+		"-x", strconv.Itoa(columns), "-y", "12", "sh", "-c",
+		"env -u TMUX tmux -L "+socket+" attach -t =probe").CombinedOutput()
+	if err != nil {
+		t.Fatalf("attach a %d-column client: %v\n%s", columns, err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", emulator, "kill-server").Run() })
+
+	return func() string {
+		shown, err := exec.Command("tmux", "-L", emulator, "capture-pane", "-p", "-t", ":0.0").Output()
+		if err != nil {
+			return ""
+		}
+		lines := strings.Split(strings.TrimRight(string(shown), "\n"), "\n")
+		return strings.TrimRight(lines[len(lines)-1], " ")
+	}
+}
+
+// drawnAt is the status line a client this many columns wide settles on.
+func drawnAt(t *testing.T, socket string, columns int) string {
+	t.Helper()
+	showing := attachedAt(t, socket, columns)
+	var last string
+	if !settled(func() bool {
+		last = showing()
+		return strings.TrimSpace(last) != ""
+	}) {
+		t.Fatalf("a %d-column client never drew a status line", columns)
+	}
+	return last
+}
+
+// dockLegend is what the Dock's status line draws for a client wide enough for
+// the whole of it.
+func dockLegend(t *testing.T) string {
+	t.Helper()
+	tmux := tmuxWithConf(t, dockConf(t))
+	if got := tmux("show-options", "-A", "-g", "-v", "status"); got != "on" {
+		t.Fatalf("the Dock's status = %q, want the line the legend is drawn on", got)
+	}
+	return drawnAt(t, sessionsSocket(t), 240)
+}
+
+// The Dock's own status line is the one full-width row in the Dock, so it is
+// where the legend goes: the complete vocabulary, for learning, beside the
+// SELECTED box's applicable subset for the row you are standing on.
+func TestTheDockStatusLineCarriesTheKeyLegend(t *testing.T) {
+	line := dockLegend(t)
+
+	for _, want := range []string{"↑↓ select", "⏎ jump", "w spawn", "y approve", "n deny", "x interrupt", "q end", "t ticket", "o open ticket", "g repo picker"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the Dock's legend reads %q, want %q offered in it", line, want)
+		}
+	}
+}
+
+// A key the Dashboard labels differently as the row under it changes is a key
+// the legend has to spell out in full: c gives a Claimed root back rather than
+// claiming it, and p on a Working Session queues rather than prompts. Half the
+// meanings would be the SELECTED box's own words used to mean something else.
+func TestTheDockLegendSpellsOutTheKeysThatChangeWithTheRow(t *testing.T) {
+	line := dockLegend(t)
+
+	for _, key := range []struct{ key, meaning string }{
+		{"c", "claim"}, {"c", "release"}, {"c", "takeover"},
+		{"p", "prompt"}, {"p", "queue"},
+	} {
+		if !strings.Contains(line, key.meaning) {
+			t.Errorf("the legend reads %q, want %q said of %q", line, key.meaning, key.key)
+		}
+	}
+}
+
+// A Dock too narrow for the whole legend gives up whole keys off the tail. Cut
+// wherever the last column happened to fall, the line would end in half a word
+// or in a separator with nothing after it — which reads as a Dock that has
+// glitched rather than one that ran out of room, and is the very thing the
+// SELECTED box's own fit exists to avoid.
+func TestANarrowDockDropsWholeKeysRatherThanCuttingOne(t *testing.T) {
+	tmuxWithConf(t, dockConf(t))
+	socket := sessionsSocket(t)
+	whole := strings.Split(strings.TrimSpace(drawnAt(t, socket, 240)), " · ")
+
+	for _, columns := range []int{60, 100, 140} {
+		line := drawnAt(t, socket, columns)
+		if width := len([]rune(strings.TrimRight(line, " "))); width > columns {
+			t.Errorf("a %d-column Dock draws %d columns of legend: %q", columns, width, line)
+		}
+		offered := strings.Split(strings.TrimSpace(line), " · ")
+		if len(offered) > len(whole) {
+			t.Fatalf("a %d-column Dock draws more keys than there are: %q", columns, line)
+		}
+		for i, key := range offered {
+			if key != whole[i] {
+				t.Errorf("a %d-column Dock draws %q, want whole keys off the front of %q — %q is not %q", columns, line, whole, key, whole[i])
+			}
+		}
+	}
+}
+
+// The legend is ordered so that the keys worth most survive a narrow window,
+// which tmux truncates a status line from the right to fit.
+func TestTheDockLegendLeadsWithTheKeysWorthMost(t *testing.T) {
+	line := dockLegend(t)
+
+	for _, pair := range [][2]string{
+		{"↑↓ select", "⏎ jump"},
+		{"⏎ jump", macChord(tmuxconf.FocusKey)},
+		{macChord(tmuxconf.FocusKey), "w spawn"},
+		{"w spawn", "o open ticket"},
+	} {
+		before, after := strings.Index(line, pair[0]), strings.Index(line, pair[1])
+		if before < 0 || after < 0 || before > after {
+			t.Errorf("the legend reads %q, want %q before %q — the tail is what a narrow window loses", line, pair[0], pair[1])
+		}
+	}
+}
+
+// The legend's chords are the keys the harness actually binds, written as a Mac
+// user presses them. Built from the constants rather than from copies: a legend
+// with its own spelling of M-g would go on offering it after a rebinding.
+func TestTheDockLegendNamesTheChordsTheKeysAreBoundTo(t *testing.T) {
+	line := dockLegend(t)
+
+	for _, key := range []string{tmuxconf.FocusKey, tmuxconf.PopupToggleKey} {
+		if chord := macChord(key); !strings.Contains(line, chord) {
+			t.Errorf("the legend reads %q, want the chord %q for %s in it", line, chord, key)
+		}
+		if strings.Contains(line, key) {
+			t.Errorf("the legend reads %q, want %s written as it is pressed rather than in tmux's notation", line, key)
+		}
+	}
+}
+
+// The Popup shell answers to two keys and the legend names one: the primary,
+// which is §8's own and which the Dock now carries — see the Dock's extended
+// keys, without which this entry was a promise the harness could not keep.
+// The fallback stays bound for an emulator that cannot transmit the primary,
+// and stays off the legend, which is a list of gestures rather than of
+// bindings.
+func TestTheDockLegendNamesOneChordForThePopupShell(t *testing.T) {
+	line := dockLegend(t)
+
+	if want := macChord(tmuxconf.PopupToggleKey) + " popup shell"; !strings.Contains(line, want) {
+		t.Errorf("the legend reads %q, want %q in it", line, want)
+	}
+	if spare := macChord(tmuxconf.PopupToggleFallbackKey); strings.Contains(line, spare) {
+		t.Errorf("the legend reads %q, want one key for the gesture rather than %q beside it", line, spare)
+	}
+}
+
+// A legend is only worth having if it is true (§7.3). The prototype's bar is
+// shared boilerplate across its four variants and is partly fiction: "!" is not
+// the Popup shell's key, "x" is interrupt rather than Takeover, and "q" ends a
+// Session — the Dashboard answers to no quit key at all.
+func TestTheDockLegendIsHonestAboutWhatTheKeysDo(t *testing.T) {
+	line := dockLegend(t)
+
+	for _, fiction := range []string{"! popup", "x takeover", "q quit"} {
+		if strings.Contains(line, fiction) {
+			t.Errorf("the legend reads %q, want no %q in it", line, fiction)
+		}
+	}
+	if !strings.Contains(line, "popup shell") {
+		t.Errorf("the legend reads %q, want the Popup shell on the key that opens it", line)
+	}
+}
+
+// Ctrl+backtick has to survive the Dock, which is the client the emulator
+// actually talks to: a terminal sends it apart from the NUL byte it otherwise
+// collapses to only when the application has asked for extended keys, and the
+// Sessions server asking is no use when the Dock in front of it has not. A Dock
+// that never asks hands the Sessions server a key indistinguishable from
+// Ctrl+Space, and the Popup shell's own toggle never fires however correctly it
+// is bound behind it.
+//
+// Driven through all three levels the harness really runs — an emulator, the
+// Dock, and the Sessions server — with the chord written in as an emulator that
+// has been asked for extended keys writes it.
+func TestThePopupChordSurvivesTheDock(t *testing.T) {
+	layout, record := installedWithRecorder(t)
+	tmuxWithConf(t, layout.UserConf)
+	sessions := sessionsSocket(t)
+
+	dock := shortSocket(sessions, "dock")
+	run(t, "tmux", "-L", dock, "-f", dockConf(t), "new-session", "-d", "-s", "dock",
+		"sh", "-c", "env -u TMUX tmux -L "+sessions+" attach -t =probe; sleep 60")
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", dock, "kill-server").Run() })
+
+	emulator := shortSocket(sessions, "em")
+	run(t, "tmux", "-L", emulator, "new-session", "-d", "-x", "160", "-y", "45",
+		"sh", "-c", "env -u TMUX tmux -L "+dock+" attach -t =dock; sleep 60")
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", emulator, "kill-server").Run() })
+
+	// Ctrl+backtick in the encoding a terminal that has been asked for extended
+	// keys sends: the key's own code point and the Control modifier, rather
+	// than the NUL every terminal falls back to. Written into the emulator's
+	// pane, which is the Dock client's own input, the way pressKey does.
+	if !settled(func() bool {
+		run(t, "tmux", "-L", emulator, "send-keys", "-H", "-t", ":0.0", "1b", "5b", "39", "36", "3b", "35", "75")
+		return strings.Contains(read(t, record), "popup open")
+	}) {
+		t.Errorf("the recorder got %q, want %s to have reached the Popup shell through the Dock", read(t, record), tmuxconf.PopupToggleKey)
+	}
+}
+
+// shortSocket names a socket after what it is for rather than after the test:
+// a unix socket's path runs out well before a Go test name does.
+func shortSocket(after, purpose string) string {
+	sum := fnv.New32a()
+	_, _ = sum.Write([]byte(after))
+	return fmt.Sprintf("gan-%s-%08x", purpose, sum.Sum32())
+}
+
+// run is a tmux command that has to work for the test to mean anything.
+func run(t *testing.T, name string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+	}
+}
+
 // The status line of the Session you are working in is where the ambient
 // attention strip goes, so the installed config has to keep that line and hand
 // its right-hand end to the harness.
@@ -518,8 +790,9 @@ func TestTheInstalledConfigKeepsTheStatusLineForTheAttentionStrip(t *testing.T) 
 }
 
 // tmux places the strip and the Dashboard writes it, so a server the Dashboard
-// has never spoken to draws nothing rather than an error, and one it has draws
-// the counts as they were written.
+// has never spoken to draws no counts rather than an error, and one it has
+// draws them as they were written. The signature beside them is the fragment's
+// own — see the test below.
 func TestTheStripShowsWhatTheDashboardHasWrittenAndNothingBefore(t *testing.T) {
 	layout := layoutIn(t)
 	if err := tmuxconf.Install(layout); err != nil {
@@ -527,7 +800,7 @@ func TestTheStripShowsWhatTheDashboardHasWrittenAndNothingBefore(t *testing.T) {
 	}
 	tmux := tmuxWithConf(t, layout.UserConf)
 
-	if got := tmux("display-message", "-p", "#{E:status-right}"); strings.TrimSpace(got) != "" {
+	if got := plain(tmux("display-message", "-p", "#{E:status-right}")); strings.TrimSpace(got) != "ganymede" {
 		t.Errorf("a Dashboard that has said nothing leaves %q on the status line", got)
 	}
 
@@ -535,6 +808,82 @@ func TestTheStripShowsWhatTheDashboardHasWrittenAndNothingBefore(t *testing.T) {
 
 	if got := tmux("display-message", "-p", "#{E:status-right}"); !strings.Contains(got, "█ 2 blocked") {
 		t.Errorf("status line shows %q, want what the Dashboard wrote", got)
+	}
+}
+
+// A harness window has to be tellable from a plain terminal, so the working
+// client's status line signs itself — and signs itself alone when nothing is
+// waiting on you, since a separator with nothing on the far side of it is
+// punctuation left behind rather than a strip.
+func TestTheStatusLineSignsItselfWithNoDanglingSeparator(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	tmux := tmuxWithConf(t, layout.UserConf)
+	showing := attachedAt(t, sessionsSocket(t), 120)
+
+	if !settled(func() bool { return signedAlone(showing()) }) {
+		t.Errorf("a Dashboard that has said nothing signs the status line %q, want %q with nothing hanging off it", showing(), "ganymede")
+	}
+
+	tmux("set", "-g", tmuxconf.AttentionOption, "█ 2 blocked")
+
+	if !settled(func() bool { return strings.HasSuffix(showing(), "█ 2 blocked · ganymede") }) {
+		t.Errorf("status line reads %q, want the count, the separator and the signature", showing())
+	}
+
+	// Written empty is not the same state as never written, and it is the one
+	// the Dashboard leaves behind every time the working set goes quiet.
+	tmux("set", "-g", tmuxconf.AttentionOption, "")
+
+	if !settled(func() bool { return signedAlone(showing()) }) {
+		t.Errorf("a working set gone quiet leaves %q on the status line, want the signature alone", showing())
+	}
+}
+
+// signedAlone is the status line of a harness nothing is waiting on: signed,
+// with no count and no punctuation left where one used to be.
+func signedAlone(line string) bool {
+	return strings.HasSuffix(line, "ganymede") && !strings.Contains(line, "·")
+}
+
+// A pane too narrow for both gives up the signature, not the count: tmux trims
+// this segment from its left end, so left to itself it would eat the number the
+// line exists to carry and keep the word that means least.
+func TestANarrowStatusLineKeepsTheCountAndGivesUpTheSignature(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	tmux := tmuxWithConf(t, layout.UserConf)
+	tmux("set", "-g", tmuxconf.AttentionOption, "█ 2 blocked · ● 3 ready")
+	showing := attachedAt(t, sessionsSocket(t), 40)
+
+	if !settled(func() bool { return strings.HasSuffix(showing(), "█ 2 blocked · ● 3 ready") }) {
+		t.Errorf("a 40-column status line reads %q, want both counts whole", showing())
+	}
+	if strings.Contains(showing(), "ganymede") {
+		t.Errorf("a 40-column status line reads %q, want the signature given up rather than the count", showing())
+	}
+}
+
+// Stock tmux draws its status line in green, which is the one loud thing in an
+// otherwise dark Dock. The harness owns that line already (it puts the strip
+// there), so it dresses it too.
+func TestTheWorkingClientsStatusLineIsDrawnInTheHarnessesPalette(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	tmux := tmuxWithConf(t, layout.UserConf)
+
+	style := tmux("show-options", "-A", "-g", "-v", "status-style")
+	if strings.Contains(style, "green") {
+		t.Errorf("status-style = %q, want the harness's own colours rather than tmux's default green", style)
+	}
+	if !strings.Contains(style, "bg=#") || !strings.Contains(style, "fg=#") {
+		t.Errorf("status-style = %q, want a foreground and a background of the harness's own", style)
 	}
 }
 
