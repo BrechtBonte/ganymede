@@ -1,9 +1,12 @@
 package tmuxconf_test
 
 import (
+	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -533,14 +536,59 @@ func macChord(key string) string {
 	return strings.NewReplacer("M-", "⌥", "C-", "⌃").Replace(key)
 }
 
-// dockLegend is what the Dock's status line is actually drawing.
+// attachedAt opens a client this many columns wide onto the probe session, from
+// a tmux server of its own the way the emulator holds the dock, and hands back
+// what that client's status line — the last row of its screen — reads at any
+// moment. Reading the drawn line is the only way to test a fit: the option
+// holds the format, and the fit is what tmux makes of the format at that width.
+func attachedAt(t *testing.T, socket string, columns int) func() string {
+	t.Helper()
+	// Named short rather than after the test: a unix socket's path runs out
+	// well before a Go test name does.
+	sum := fnv.New32a()
+	_, _ = sum.Write([]byte(socket))
+	emulator := fmt.Sprintf("gan-em-%08x-%d", sum.Sum32(), columns)
+	out, err := exec.Command("tmux", "-L", emulator, "new-session", "-d",
+		"-x", strconv.Itoa(columns), "-y", "12", "sh", "-c",
+		"env -u TMUX tmux -L "+socket+" attach -t =probe").CombinedOutput()
+	if err != nil {
+		t.Fatalf("attach a %d-column client: %v\n%s", columns, err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", emulator, "kill-server").Run() })
+
+	return func() string {
+		shown, err := exec.Command("tmux", "-L", emulator, "capture-pane", "-p", "-t", ":0.0").Output()
+		if err != nil {
+			return ""
+		}
+		lines := strings.Split(strings.TrimRight(string(shown), "\n"), "\n")
+		return strings.TrimRight(lines[len(lines)-1], " ")
+	}
+}
+
+// drawnAt is the status line a client this many columns wide settles on.
+func drawnAt(t *testing.T, socket string, columns int) string {
+	t.Helper()
+	showing := attachedAt(t, socket, columns)
+	var last string
+	if !settled(func() bool {
+		last = showing()
+		return strings.TrimSpace(last) != ""
+	}) {
+		t.Fatalf("a %d-column client never drew a status line", columns)
+	}
+	return last
+}
+
+// dockLegend is what the Dock's status line draws for a client wide enough for
+// the whole of it.
 func dockLegend(t *testing.T) string {
 	t.Helper()
 	tmux := tmuxWithConf(t, dockConf(t))
 	if got := tmux("show-options", "-A", "-g", "-v", "status"); got != "on" {
 		t.Fatalf("the Dock's status = %q, want the line the legend is drawn on", got)
 	}
-	return plain(tmux("display-message", "-p", "#{E:status-format[0]}"))
+	return drawnAt(t, sessionsSocket(t), 240)
 }
 
 // The Dock's own status line is the one full-width row in the Dock, so it is
@@ -552,6 +600,33 @@ func TestTheDockStatusLineCarriesTheKeyLegend(t *testing.T) {
 	for _, want := range []string{"↑↓ select", "⏎ jump", "w spawn", "p prompt", "y approve", "n deny", "x interrupt", "q end", "t ticket", "o open ticket"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the Dock's legend reads %q, want %q offered in it", line, want)
+		}
+	}
+}
+
+// A Dock too narrow for the whole legend gives up whole keys off the tail. Cut
+// wherever the last column happened to fall, the line would end in half a word
+// or in a separator with nothing after it — which reads as a Dock that has
+// glitched rather than one that ran out of room, and is the very thing the
+// SELECTED box's own fit exists to avoid.
+func TestANarrowDockDropsWholeKeysRatherThanCuttingOne(t *testing.T) {
+	tmuxWithConf(t, dockConf(t))
+	socket := sessionsSocket(t)
+	whole := strings.Split(strings.TrimSpace(drawnAt(t, socket, 240)), " · ")
+
+	for _, columns := range []int{60, 100, 140} {
+		line := drawnAt(t, socket, columns)
+		if width := len([]rune(strings.TrimRight(line, " "))); width > columns {
+			t.Errorf("a %d-column Dock draws %d columns of legend: %q", columns, width, line)
+		}
+		offered := strings.Split(strings.TrimSpace(line), " · ")
+		if len(offered) > len(whole) {
+			t.Fatalf("a %d-column Dock draws more keys than there are: %q", columns, line)
+		}
+		for i, key := range offered {
+			if key != whole[i] {
+				t.Errorf("a %d-column Dock draws %q, want whole keys off the front of %q — %q is not %q", columns, line, whole, key, whole[i])
+			}
 		}
 	}
 }

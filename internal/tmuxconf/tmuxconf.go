@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/BrechtBonte/ganymede/internal/config"
 )
 
@@ -178,7 +180,6 @@ const signature = "ganymede"
 // as false, which is exactly the case the Dashboard writes for nothing waiting.
 // The conditional is tmux's own, evaluated where the line is drawn, so this
 // stays one static setting rather than something the Dashboard has to rewrite.
-//
 // The styling is here for the same reason the strip is: stock tmux draws this
 // line in green, which would be the one loud thing in an otherwise dark Dock.
 // The current window is given its own weight, since the green it used to be
@@ -305,8 +306,8 @@ set-hook -g window-resized 'resize-pane -t :.0 -x %d'
 const FocusKey = "M-g"
 
 // legendKeys is the harness's complete vocabulary, in the order the keys are
-// worth: tmux truncates a status line from the right on a narrow window, so
-// what is worth least is what a narrow Dock gives up.
+// worth: a Dock too narrow for all of it gives up the tail (see legend), so
+// what is worth least is what goes first.
 //
 // Moving about comes first, then the two chords nothing else advertises — the
 // SELECTED box offers a row's own keys as you land on it, but no row is ever
@@ -327,8 +328,8 @@ const FocusKey = "M-g"
 //
 // Where a key's label changes with what it is over, the legend says both:
 // "c claim/takeover" is one key over a Free root and over one somebody else is
-// in. What it must never say is what the prototype's shared bar said — "!" for
-// the Popup shell, "x takeover" when x is interrupt, or "q quit" when q ends a
+// in. What it must never say is what the prototype's shared bar said — "!" for the
+// Popup shell, "x takeover" when x is interrupt, or "q quit" when q ends a
 // Session and the Dashboard answers to no quit key at all.
 var legendKeys = []string{
 	"↑↓ select",
@@ -354,22 +355,56 @@ func macChord(key string) string {
 	return strings.NewReplacer("M-", "⌥", "C-", "⌃").Replace(key)
 }
 
+// legendSeparator divides one key from the next, fainter than either, so what
+// the eye runs along is the keys.
+const legendSeparator = "#[fg=" + chromeFaint + "] · "
+
 // legend draws the vocabulary for the Dock's status line: the key itself in the
 // foreground and its label quiet behind it, which is how the SELECTED box
 // already draws the keys it offers — the two are one vocabulary and should read
-// as one. The separator is fainter still, so what the eye runs along is the
-// keys.
+// as one.
+//
+// Everything past the first key is wrapped in a conditional on the width of the
+// client the line is being drawn for, so a Dock too narrow for the whole legend
+// drops whole keys off the tail. That is fitKeys' greedy fit, made by tmux at
+// draw time instead of by us at write time — and it has to be, because the
+// window this config is written for can be any width and can be resized after.
+// Left to tmux's own truncation the line would be cut wherever the last column
+// happened to fall: "x interrup", or a separator with nothing after it, which
+// reads as a Dock that has glitched rather than one that ran out of room.
+//
+// The width each key needs is the whole line up to and including it, measured
+// the way the Dashboard measures its own keys. Both the separator and the key
+// are inside the conditional, so a key that does not fit takes its separator
+// with it.
 func legend() string {
-	drawn := make([]string, 0, len(legendKeys))
+	var format, line string
 	for _, key := range legendKeys {
-		char, label, ok := strings.Cut(key, " ")
-		if !ok {
-			drawn = append(drawn, "#[fg="+chromeForeground+"]"+char)
+		entry, plain := hinted(key), key
+		if line != "" {
+			entry, plain = legendSeparator+entry, " · "+plain
+		}
+		line += plain
+		if format == "" {
+			// The first key is drawn whatever the width: a legend that could
+			// vanish altogether would leave the Dock's own row saying nothing.
+			format = entry
 			continue
 		}
-		drawn = append(drawn, "#[fg="+chromeForeground+"]"+char+"#[fg="+chromeQuiet+"] "+label)
+		format += fmt.Sprintf("#{?#{e|>=:#{client_width},%d},%s,}", lipgloss.Width(line), entry)
 	}
-	return strings.Join(drawn, "#[fg="+chromeFaint+"] · ")
+	return format
+}
+
+// hinted draws one key: the character in the panel's own foreground and the
+// label quiet behind it. A label carrying a comma would end tmux's conditional
+// early, which is why they are written with slashes.
+func hinted(key string) string {
+	char, label, ok := strings.Cut(key, " ")
+	if !ok {
+		return "#[fg=" + chromeForeground + "]" + char
+	}
+	return "#[fg=" + chromeForeground + "]" + char + "#[fg=" + chromeQuiet + "] " + label
 }
 
 // WriteDockConf writes the dock server's configuration.
