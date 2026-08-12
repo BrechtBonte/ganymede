@@ -104,6 +104,7 @@ Clone this repo, then build the binary:
 
 ```sh
 go build -o bin/ganymede ./cmd/ganymede
+# or: make build
 ```
 
 ### Run
@@ -118,9 +119,14 @@ go build -o bin/ganymede ./cmd/ganymede
 
 ```sh
 ./bin/ganymede up
+# or: make up
 ```
 
 It's safe to re-run — it reuses whatever's already up and installs over itself rather than beside itself. Inside the window, `Alt+g` moves between the sidepanel and the working client; the dock itself runs with no prefix key, so `C-b` and everything else belongs to the session you're working in.
+
+Rebuilding the binary is not enough to pick up a change: `up` only ever reuses an already-running Dashboard rather than restarting it. `make refresh` (or `scripts/refresh.sh`) rebuilds and restarts the Dashboard's own tmux pane in place, leaving the dock, the working client and every repo Session untouched.
+
+`make launcher` installs a `Ganymede.app` into `~/Applications`, so you can bring the harness up from Spotlight instead of a terminal. Run it once; re-run it if this checkout ever moves, since the app bakes in its absolute path.
 
 ## Learn more
 
