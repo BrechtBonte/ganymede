@@ -1336,6 +1336,14 @@ var (
 	ruleStyle  = lipgloss.NewStyle().Faint(true)
 	quietStyle = lipgloss.NewStyle().Faint(true)
 	repoStyle  = lipgloss.NewStyle().Bold(true)
+	// The panel's own name, in the validated mock's blue: the harness's mark
+	// rather than another bold row.
+	//
+	// Its own style with its own literal hex, and deliberately not
+	// session.Working.Colour(). The two are the same triplet today, and the
+	// brand is not a state: it has to be free to move without dragging Working
+	// with it. ticketColour below is kept apart for the same reason.
+	brandStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#58a6ff"))
 	// A ticket is a reference, not a state: it reads in the colour the
 	// validated mock gives it, which is nobody's state colour.
 	ticketColour = lipgloss.NewStyle().Foreground(lipgloss.Color("#a5d6ff"))
@@ -1399,7 +1407,10 @@ func (m Model) View() string {
 
 	lines := []string{m.header(), rule}
 	lines = append(lines, m.tree(space)...)
-	lines = append(lines, rule, titleStyle.Render(truncate("SELECTED", m.width)))
+	// The label is drawn in the panel's quiet: it says what the lines under it
+	// are about, and a section label weighted like its own content is one more
+	// bold row for the eye to read past.
+	lines = append(lines, rule, quietStyle.Render(truncate("SELECTED", m.width)))
 	lines = append(lines, detail...)
 	if len(lines) > m.height {
 		lines = lines[:m.height]
@@ -1411,7 +1422,7 @@ func (m Model) View() string {
 // tree scrolls and the detail box shows one row; how much is asking something
 // of you is a number that should never have to be scrolled to.
 func (m Model) header() string {
-	return spread(titleStyle.Render("GANYMEDE"), m.counts(), m.width)
+	return spread(brandStyle.Render("GANYMEDE"), m.counts(), m.width)
 }
 
 // counts draws Attention as a mark and a number per tier, in the tier's own
