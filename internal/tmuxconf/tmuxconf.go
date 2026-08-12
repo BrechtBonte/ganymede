@@ -180,21 +180,44 @@ const signature = "ganymede"
 // as false, which is exactly the case the Dashboard writes for nothing waiting.
 // The conditional is tmux's own, evaluated where the line is drawn, so this
 // stays one static setting rather than something the Dashboard has to rewrite.
+// It is drawn in the line's own foreground, not fainter, because the strip's
+// separator between its two tiers is — two intensities in one run read as a
+// fault rather than as a hierarchy.
+//
+// The signature goes first when the two cannot both be had. tmux trims this
+// segment from its left end, so on a pane too narrow for both it is the count
+// — the whole reason the line is here — that would be eaten, and the least
+// informative thing on it that would survive. signatureColumns is what the
+// widest strip and the signature need side by side.
+//
 // The styling is here for the same reason the strip is: stock tmux draws this
 // line in green, which would be the one loud thing in an otherwise dark Dock.
 // The current window is given its own weight, since the green it used to be
 // told apart by has gone.
 //
-// The harness owns these settings. A status line the user had turned off is
-// turned back on, because a strip nobody can see is not a strip, and a
-// right-hand segment of the user's own is replaced by this one.
+// The harness owns these settings, as it already owned the two under them: a
+// status line the user had turned off is turned back on, because a strip nobody
+// can see is not a strip; a right-hand segment of the user's own is replaced by
+// this one; and a tmux server reading the user's own config is dressed in the
+// harness's colours whether or not the harness is what is running in it.
 const strip = `
 set -g status on
 set -g status-style "bg=` + chromePanel + `,fg=` + chromeQuiet + `"
 set -g window-status-current-style "fg=` + chromeForeground + `,bold"
 set -g status-right-length 100
-set -g status-right "#{?` + AttentionOption + `,#{` + AttentionOption + `} #[fg=` + chromeFaint + `]· ,}#[fg=` + chromeBrand + `]` + signature + `#[default]"
+set -g status-right "#{?` + AttentionOption + `,#{` + AttentionOption + `}` + signedWhenItFits + `,#[fg=` + chromeBrand + `]` + signature + `}#[default]"
 `
+
+// signatureColumns is the narrowest client that carries the counts and the
+// signature both: the widest strip the Dashboard writes ("█ 99 blocked · ● 99
+// ready") beside the signature and its separator, and the session's own name at
+// the other end of the line. Written as tmux reads it, since the line it goes
+// into is a const.
+const signatureColumns = "60"
+
+// signedWhenItFits is the signature as it appears after a strip that is already
+// there — dropped on a client too narrow to carry both.
+const signedWhenItFits = `#{?#{e|>=:#{client_width},` + signatureColumns + `}, · #[fg=` + chromeBrand + `]` + signature + `,}`
 
 // fragment is the harness's tmux configuration for a Layout. What the harness
 // cannot work without comes first, so that a line tmux will not read costs

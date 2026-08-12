@@ -750,15 +750,50 @@ func TestTheStatusLineSignsItselfWithNoDanglingSeparator(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 	tmux := tmuxWithConf(t, layout.UserConf)
+	showing := attachedAt(t, sessionsSocket(t), 120)
 
-	if got := plain(tmux("display-message", "-p", "#{E:status-right}")); strings.TrimSpace(got) != "ganymede" {
-		t.Errorf("a quiet working set signs the status line %q, want %q alone", got, "ganymede")
+	if !settled(func() bool { return signedAlone(showing()) }) {
+		t.Errorf("a Dashboard that has said nothing signs the status line %q, want %q with nothing hanging off it", showing(), "ganymede")
 	}
 
 	tmux("set", "-g", tmuxconf.AttentionOption, "█ 2 blocked")
 
-	if got := strings.TrimSpace(plain(tmux("display-message", "-p", "#{E:status-right}"))); got != "█ 2 blocked · ganymede" {
-		t.Errorf("status line reads %q, want the count, the separator and the signature", got)
+	if !settled(func() bool { return strings.HasSuffix(showing(), "█ 2 blocked · ganymede") }) {
+		t.Errorf("status line reads %q, want the count, the separator and the signature", showing())
+	}
+
+	// Written empty is not the same state as never written, and it is the one
+	// the Dashboard leaves behind every time the working set goes quiet.
+	tmux("set", "-g", tmuxconf.AttentionOption, "")
+
+	if !settled(func() bool { return signedAlone(showing()) }) {
+		t.Errorf("a working set gone quiet leaves %q on the status line, want the signature alone", showing())
+	}
+}
+
+// signedAlone is the status line of a harness nothing is waiting on: signed,
+// with no count and no punctuation left where one used to be.
+func signedAlone(line string) bool {
+	return strings.HasSuffix(line, "ganymede") && !strings.Contains(line, "·")
+}
+
+// A pane too narrow for both gives up the signature, not the count: tmux trims
+// this segment from its left end, so left to itself it would eat the number the
+// line exists to carry and keep the word that means least.
+func TestANarrowStatusLineKeepsTheCountAndGivesUpTheSignature(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	tmux := tmuxWithConf(t, layout.UserConf)
+	tmux("set", "-g", tmuxconf.AttentionOption, "█ 2 blocked · ● 3 ready")
+	showing := attachedAt(t, sessionsSocket(t), 40)
+
+	if !settled(func() bool { return strings.HasSuffix(showing(), "█ 2 blocked · ● 3 ready") }) {
+		t.Errorf("a 40-column status line reads %q, want both counts whole", showing())
+	}
+	if strings.Contains(showing(), "ganymede") {
+		t.Errorf("a 40-column status line reads %q, want the signature given up rather than the count", showing())
 	}
 }
 
