@@ -627,8 +627,9 @@ func TestTheInstalledConfigKeepsTheStatusLineForTheAttentionStrip(t *testing.T) 
 }
 
 // tmux places the strip and the Dashboard writes it, so a server the Dashboard
-// has never spoken to draws nothing rather than an error, and one it has draws
-// the counts as they were written.
+// has never spoken to draws no counts rather than an error, and one it has
+// draws them as they were written. The signature beside them is the fragment's
+// own — see the test below.
 func TestTheStripShowsWhatTheDashboardHasWrittenAndNothingBefore(t *testing.T) {
 	layout := layoutIn(t)
 	if err := tmuxconf.Install(layout); err != nil {
@@ -636,7 +637,7 @@ func TestTheStripShowsWhatTheDashboardHasWrittenAndNothingBefore(t *testing.T) {
 	}
 	tmux := tmuxWithConf(t, layout.UserConf)
 
-	if got := tmux("display-message", "-p", "#{E:status-right}"); strings.TrimSpace(got) != "" {
+	if got := plain(tmux("display-message", "-p", "#{E:status-right}")); strings.TrimSpace(got) != "ganymede" {
 		t.Errorf("a Dashboard that has said nothing leaves %q on the status line", got)
 	}
 
@@ -644,6 +645,47 @@ func TestTheStripShowsWhatTheDashboardHasWrittenAndNothingBefore(t *testing.T) {
 
 	if got := tmux("display-message", "-p", "#{E:status-right}"); !strings.Contains(got, "█ 2 blocked") {
 		t.Errorf("status line shows %q, want what the Dashboard wrote", got)
+	}
+}
+
+// A harness window has to be tellable from a plain terminal, so the working
+// client's status line signs itself — and signs itself alone when nothing is
+// waiting on you, since a separator with nothing on the far side of it is
+// punctuation left behind rather than a strip.
+func TestTheStatusLineSignsItselfWithNoDanglingSeparator(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	tmux := tmuxWithConf(t, layout.UserConf)
+
+	if got := plain(tmux("display-message", "-p", "#{E:status-right}")); strings.TrimSpace(got) != "ganymede" {
+		t.Errorf("a quiet working set signs the status line %q, want %q alone", got, "ganymede")
+	}
+
+	tmux("set", "-g", tmuxconf.AttentionOption, "█ 2 blocked")
+
+	if got := strings.TrimSpace(plain(tmux("display-message", "-p", "#{E:status-right}"))); got != "█ 2 blocked · ganymede" {
+		t.Errorf("status line reads %q, want the count, the separator and the signature", got)
+	}
+}
+
+// Stock tmux draws its status line in green, which is the one loud thing in an
+// otherwise dark Dock. The harness owns that line already (it puts the strip
+// there), so it dresses it too.
+func TestTheWorkingClientsStatusLineIsDrawnInTheHarnessesPalette(t *testing.T) {
+	layout := layoutIn(t)
+	if err := tmuxconf.Install(layout); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	tmux := tmuxWithConf(t, layout.UserConf)
+
+	style := tmux("show-options", "-A", "-g", "-v", "status-style")
+	if strings.Contains(style, "green") {
+		t.Errorf("status-style = %q, want the harness's own colours rather than tmux's default green", style)
+	}
+	if !strings.Contains(style, "bg=#") || !strings.Contains(style, "fg=#") {
+		t.Errorf("status-style = %q, want a foreground and a background of the harness's own", style)
 	}
 }
 

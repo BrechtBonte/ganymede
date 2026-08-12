@@ -145,34 +145,54 @@ const PopupDirOption = "@ganymede-popup-dir"
 // the Dashboard's.
 const AttentionOption = "@ganymede-attention"
 
-// The validated mock's palette, as the status lines the harness dresses read
-// it. Literals of their own rather than anything derived from a Session's state
-// colour — the chrome is not a state, and has to be free to move without
-// dragging one with it, which is how the Dashboard already keeps its brand and
-// its ticket colour apart.
+// The validated mock's palette, as the two status lines the harness dresses
+// read it: the Dock's own and the working client's. Literals of their own
+// rather than anything derived from a Session's state colour — the chrome is
+// not a state, and has to be free to move without dragging one with it, which
+// is how the Dashboard already keeps its brand and its ticket colour apart.
 const (
 	chromePanel      = "#161b22"
 	chromeForeground = "#c9d1d9"
 	chromeQuiet      = "#8b949e"
 	chromeFaint      = "#484f58"
+	chromeBrand      = "#58a6ff"
 )
+
+// signature is what the working client's status line signs itself, so that a
+// harness window is tellable from a plain terminal at a glance.
+const signature = "ganymede"
 
 // strip hands the right-hand end of the status line to the harness: the counts
 // of what is waiting on you, under your eye line in the Session you are working
-// in rather than only over in the sidepanel.
+// in rather than only over in the sidepanel, and the harness's own signature
+// after them.
 //
 // The Dashboard writes the whole strip — marks, counts and colours — into an
 // option of its own, so a status line redrawn on every keystroke costs tmux
 // nothing but a lookup, and a server whose Dashboard has never written to it
-// draws an empty strip rather than an error. Setting the option is enough to
-// put it on screen: tmux redraws its clients when an option changes.
+// draws the signature alone rather than an error. Setting the option is enough
+// to put it on screen: tmux redraws its clients when an option changes.
 //
-// The harness owns these two settings. A status line the user had turned off
-// is turned back on, because a strip nobody can see is not a strip, and a
+// The separator is inside the conditional rather than beside it, so a quiet
+// working set leaves no punctuation behind: tmux reads an unset or empty option
+// as false, which is exactly the case the Dashboard writes for nothing waiting.
+// The conditional is tmux's own, evaluated where the line is drawn, so this
+// stays one static setting rather than something the Dashboard has to rewrite.
+//
+// The styling is here for the same reason the strip is: stock tmux draws this
+// line in green, which would be the one loud thing in an otherwise dark Dock.
+// The current window is given its own weight, since the green it used to be
+// told apart by has gone.
+//
+// The harness owns these settings. A status line the user had turned off is
+// turned back on, because a strip nobody can see is not a strip, and a
 // right-hand segment of the user's own is replaced by this one.
 const strip = `
 set -g status on
-set -g status-right "#{` + AttentionOption + `}"
+set -g status-style "bg=` + chromePanel + `,fg=` + chromeQuiet + `"
+set -g window-status-current-style "fg=` + chromeForeground + `,bold"
+set -g status-right-length 100
+set -g status-right "#{?` + AttentionOption + `,#{` + AttentionOption + `} #[fg=` + chromeFaint + `]· ,}#[fg=` + chromeBrand + `]` + signature + `#[default]"
 `
 
 // fragment is the harness's tmux configuration for a Layout. What the harness
