@@ -371,7 +371,7 @@ func New(sessions <-chan []session.Session, harness Harness) Model {
 	}
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(waitFor(m.sessions), ticking()) }
+func (m Model) Init() tea.Cmd { return tea.Batch(waitFor(m.sessions), ticking(), minutely()) }
 
 // Tick is the Dashboard asking to be drawn again with nothing new to show.
 type Tick struct{}
@@ -383,6 +383,30 @@ type Tick struct{}
 // itself sits at its prompt and reports nothing.
 func ticking() tea.Cmd {
 	return tea.Tick(30*time.Second, func(time.Time) tea.Msg { return Tick{} })
+}
+
+// Minute is the Dashboard asking to be drawn again because the clock in its
+// header has turned over.
+type Minute struct{}
+
+// minutely drives the header's clock, and is a clock of its own rather than
+// another passenger on ticking().
+//
+// The half-minute tick fires thirty seconds after it last fired, whenever that
+// was — a clock hung on it would read up to half a minute late, which is the one
+// thing a clock must not do. This one is scheduled to the next minute boundary
+// instead, so the face changes when the minute does. It also never stops, unlike
+// spinning(): the time goes on being the time whether or not anything on the
+// rail is animating.
+func minutely() tea.Cmd {
+	return tea.Tick(untilMinute(time.Now()), func(time.Time) tea.Msg { return Minute{} })
+}
+
+// untilMinute is what is left of the minute now falls in — the delay that lands
+// the next redraw on the far side of the turn rather than on the minute that is
+// ending.
+func untilMinute(now time.Time) time.Duration {
+	return now.Truncate(time.Minute).Add(time.Minute).Sub(now)
 }
 
 // Spin is the Dashboard asking to be drawn one frame further into whatever is
@@ -461,6 +485,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(waitFor(m.sessions), cmd, spin)
 		}
 		return m, tea.Batch(waitFor(m.sessions), spin)
+	case Minute:
+		// Nothing to work out: the header reads the time where it draws it. All
+		// this owes the clock is the next redraw, and it is owed unconditionally
+		// — a Dashboard with nothing running on it is exactly the one you are
+		// most likely to be reading the time off.
+		return m, minutely()
 	case Spin:
 		m.spinner++
 		if !m.animating() {
@@ -1336,6 +1366,14 @@ var (
 	ruleStyle  = lipgloss.NewStyle().Faint(true)
 	quietStyle = lipgloss.NewStyle().Faint(true)
 	repoStyle  = lipgloss.NewStyle().Bold(true)
+	// The panel's own name, in the validated mock's blue: the harness's mark
+	// rather than another bold row.
+	//
+	// Its own style with its own literal hex, and deliberately not
+	// session.Working.Colour(). The two are the same triplet today, and the
+	// brand is not a state: it has to be free to move without dragging Working
+	// with it. ticketColour below is kept apart for the same reason.
+	brandStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#58a6ff"))
 	// A ticket is a reference, not a state: it reads in the colour the
 	// validated mock gives it, which is nobody's state colour.
 	ticketColour = lipgloss.NewStyle().Foreground(lipgloss.Color("#a5d6ff"))
@@ -1399,7 +1437,10 @@ func (m Model) View() string {
 
 	lines := []string{m.header(), rule}
 	lines = append(lines, m.tree(space)...)
-	lines = append(lines, rule, titleStyle.Render(truncate("SELECTED", m.width)))
+	// The label is drawn in the panel's quiet: it says what the lines under it
+	// are about, and a section label weighted like its own content is one more
+	// bold row for the eye to read past.
+	lines = append(lines, rule, quietStyle.Render(truncate("SELECTED", m.width)))
 	lines = append(lines, detail...)
 	if len(lines) > m.height {
 		lines = lines[:m.height]
@@ -1407,11 +1448,25 @@ func (m Model) View() string {
 	return strings.Join(lines, "\n")
 }
 
-// header names the Dashboard, and counts what is waiting on you beside it. The
-// tree scrolls and the detail box shows one row; how much is asking something
-// of you is a number that should never have to be scrolled to.
+// header names the Dashboard, and counts what is waiting on you beside it,
+// with the time at the far end. The tree scrolls and the detail box shows one
+// row; how much is asking something of you is a number that should never have
+// to be scrolled to.
+//
+// The clock is here because there is nowhere else: Ghostty runs fullscreen with
+// the menu bar hidden, so the Dock is the whole of the screen and the header is
+// the only line on it that says anything about the harness rather than about a
+// repo. It is joined to the counts rather than concatenated, so a working set
+// asking nothing of you spends no column on the counts it does not draw.
 func (m Model) header() string {
-	return spread(titleStyle.Render("GANYMEDE"), m.counts(), m.width)
+	return spread(brandStyle.Render("GANYMEDE"), joined(m.counts(), m.clock()), m.width)
+}
+
+// clock is the time, quiet, as the mock draws it: 24-hour, to the minute. The
+// seconds are left off — a sidepanel is glanced at, not read, and a second hand
+// on it would be the one thing moving whenever nothing else was.
+func (m Model) clock() string {
+	return quietStyle.Render(time.Now().Format("15:04"))
 }
 
 // counts draws Attention as a mark and a number per tier, in the tier's own
@@ -1884,7 +1939,9 @@ func (m Model) selected() []string {
 		}
 		return append(lines,
 			quietStyle.Render(shorten(r.root, m.width)),
-			quietStyle.Render(m.repoOffering(r)))
+			// Like a Session row's offering, this draws its own quiet key by
+			// key: what stays plain in it is the key character.
+			m.repoOffering(r))
 	}
 
 	// What the Session is doing and how long it has been doing it, then the
@@ -1921,7 +1978,9 @@ func (m Model) selected() []string {
 	}
 	return append(lines,
 		quietStyle.Render(shorten(r.session.Dir, m.width)),
-		quietStyle.Render(offering(r, m.width)),
+		// The offering draws its own quiet, key by key: what stays plain in it
+		// is the key character.
+		offering(r, m.width),
 	)
 }
 
@@ -1981,8 +2040,14 @@ func offering(r row, width int) string {
 // fitKeys is offering's own greedy fit, shared with a repo header's row
 // (repoOffering): as many whole keys as fit, in the order they matter most,
 // and never one cut off mid-word.
+//
+// The fit is measured on the plain phrases and the styling goes on what fitted:
+// a line measured with its escape codes in it would be measured several columns
+// wider than anything the panel ever draws, and would drop keys there was room
+// for.
 func fitKeys(keys []string, width int) string {
 	var line string
+	hints := make([]string, 0, len(keys))
 	for _, key := range keys {
 		next := key
 		if line != "" {
@@ -1992,8 +2057,24 @@ func fitKeys(keys []string, width int) string {
 			break
 		}
 		line = next
+		hints = append(hints, hinted(key))
 	}
-	return line
+	return strings.Join(hints, quietStyle.Render(" · "))
+}
+
+// hinted draws one key the box is offering: the key character in the panel's
+// normal foreground, the label saying what it does quiet behind it. The key is
+// what you are looking for, and the phrase around it is what you would
+// otherwise have to read to find it.
+//
+// The labels themselves are left exactly as they were written — `⏎ go to repo`
+// on a header row is doing honest work that a shorter phrase would blur.
+func hinted(key string) string {
+	char, label, ok := strings.Cut(key, " ")
+	if !ok {
+		return char
+	}
+	return char + " " + quietStyle.Render(label)
 }
 
 // spread puts left at one end of a line width columns wide and right at the
