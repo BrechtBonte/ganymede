@@ -1624,26 +1624,15 @@ func (m Model) repoLine(r row, selected bool) string {
 	// caution says less rather than nothing, and the name is truncated to
 	// make room for what is left.
 	warning := carrying(r.caution, m.width-lipgloss.Width(r.repoName()+glyph+mark)-2)
-	// Nothing is styled until there is something to style: a style applied to an
-	// empty string is escape codes around nothing, which is empty to the eye and
-	// a string with something in it to everything that measures one.
-	marks := glyph
+	// The caution, the state glyph and whatever you have done to the row, in
+	// that order and each only where there is one — joined the way a Session
+	// row's own far end is, so that the two kinds of row cannot drift apart in
+	// their spacing, and styled through rendered so that nothing stays nothing.
 	if selected {
-		if warning != "" {
-			marks = warning + " " + glyph
-		}
-		if mark != "" {
-			marks += " " + mark
-		}
-		return m.selectedRowStyle().Width(m.width).Render(spread(r.repoName(), marks, m.width))
+		return m.selectedRowStyle().Width(m.width).
+			Render(spread(r.repoName(), joined(warning, glyph, mark), m.width))
 	}
-	marks = rootStyle(r.state).Render(glyph)
-	if warning != "" {
-		marks = cautionStyle.Render(warning) + " " + marks
-	}
-	if mark != "" {
-		marks += " " + mark
-	}
+	marks := joined(rendered(cautionStyle, warning), rootStyle(r.state).Render(glyph), mark)
 	return spread(repoStyle.Render(r.repoName()), marks, m.width)
 }
 
