@@ -240,6 +240,12 @@ type Model struct {
 	harness       Harness
 	rows          []row
 	cursor        int
+	// active is the PID of the Session the working client's pane last
+	// actually showed, tracked apart from the cursor: the cursor is what
+	// you're browsing, this is what's on screen, and jumping there usually
+	// but not always keeps them the same row. Zero means no Session has
+	// been shown yet.
+	active int
 	// focused says the dock's keyboard focus is on the Dashboard's own pane
 	// rather than the working client's. It starts true, since a terminal that
 	// never forwards tmux's focus-events should draw exactly as it always has
@@ -1202,6 +1208,10 @@ func (m Model) jumpTo(s session.Session, moveFocus bool) Model {
 		m.notice = err.Error()
 		return m
 	}
+	// The pane really changed, whether or not keyboard focus followed it:
+	// the async guard fallback (moveFocus == false) repoints the working
+	// client exactly as much as the direct Enter gesture does.
+	m.active = s.PID
 	if m.harness.Seen != nil {
 		m.harness.Seen(s.ID)
 	}
@@ -1222,6 +1232,13 @@ func (m Model) forget(pid int) Model {
 	m.forgotten[pid] = struct{}{}
 	m.set = withoutForgotten(m.set, m.forgotten)
 	m.notice = "session ended — removed from the dashboard"
+	if m.active == pid {
+		// The pid this named is confirmed gone; if the OS ever hands it to
+		// an unrelated process, the registry will report that as a new
+		// Session that was never jumped to, and it must not inherit this
+		// mark.
+		m.active = 0
+	}
 	return m.rebuilt()
 }
 
@@ -1268,8 +1285,8 @@ func pruneForgotten(forgotten map[int]struct{}, sessions []session.Session) map[
 // guard's own explanation of what went wrong, so a jump that also fails is
 // left unsaid rather than overwriting it.
 func (m Model) focusPane(pid int) Model {
-	if m.harness.Jumper != nil {
-		_ = m.harness.Jumper.Jump(pid)
+	if m.harness.Jumper != nil && m.harness.Jumper.Jump(pid) == nil {
+		m.active = pid
 	}
 	return m
 }
@@ -1288,6 +1305,9 @@ func (m Model) goTo(root string) Model {
 		m.notice = err.Error()
 		return m
 	}
+	// A bare repo has no Session in it at all, so nothing on the rail
+	// should keep reading as the one the working client is showing.
+	m.active = 0
 	if m.harness.Activity != nil {
 		if err := m.harness.Activity.Touch(root, time.Now()); err != nil {
 			m.notice = err.Error()
@@ -1330,9 +1350,12 @@ var (
 	// The selected row is inverted and otherwise drawn plainly: a state colour
 	// nested inside the inversion fights with it.
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
-	// blurredSelectedStyle is the same inversion, dimmed: what the cursor's row
-	// wears while the dock's keyboard focus is over in the working client
-	// rather than on the Dashboard.
+	// blurredSelectedStyle is the same inversion, dimmed: the weaker of the
+	// rail's two marks, for whatever is on screen but is not also where your
+	// keystrokes are landing right now — the cursor's own row once the
+	// dock's keyboard focus has moved to the working client, and any other
+	// row the working client is actually showing while the cursor sits
+	// elsewhere.
 	blurredSelectedStyle = selectedStyle.Faint(true)
 )
 
@@ -1460,11 +1483,15 @@ func (m Model) line(i int) string {
 	age := ageOf(*r.session)
 	mark := marks(r)
 	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" "+mark)-lipgloss.Width(about(r.ticket)+" "+age)-1)
-	if i == m.cursor {
+	switch {
+	case i == m.cursor:
 		return m.selectedRowStyle().Width(m.width).Render(spread(indent+glyph+" "+mark+name, about(r.ticket)+" "+age, m.width))
+	case r.session.PID == m.active:
+		return blurredSelectedStyle.Width(m.width).Render(spread(indent+glyph+" "+mark+name, about(r.ticket)+" "+age, m.width))
+	default:
+		return spread(indent+styleOf(r.session.State).Render(glyph)+" "+mark+name,
+			ticketStyle(r.ticket).Render(about(r.ticket))+" "+quietStyle.Render(age), m.width)
 	}
-	return spread(indent+styleOf(r.session.State).Render(glyph)+" "+mark+name,
-		ticketStyle(r.ticket).Render(about(r.ticket))+" "+quietStyle.Render(age), m.width)
 }
 
 // marks are what you have done to a row, as against what its Session is
