@@ -371,13 +371,15 @@ var legendKeys = []string{
 	"↑↓ select",
 	"⏎ jump",
 	macChord(FocusKey) + " focus",
-	// The fallback rather than the primary, and deliberately. Ctrl+backtick
-	// arrives only when the emulator holds up its own end of the bargain the
-	// Dock's extended-keys asks for; nothing in a config file can promise
-	// that, and a legend is a promise. Alt+backtick is the chord every
-	// terminal sends apart from everything else — which is why it is bound at
-	// all (see PopupToggleFallbackKey) — so it is the one to advertise.
-	macChord(PopupToggleFallbackKey) + " popup shell",
+	// The primary, which is §8's own key and now arrives: the Dock asks for
+	// extended keys (see dockBody), so Ghostty sends Ctrl+backtick apart from
+	// the NUL byte and the binding behind the Dock fires. It was worth nothing
+	// on the legend until that was true — a legend is a promise, and this one
+	// went unkept for as long as the frame swallowed the chord.
+	//
+	// PopupToggleFallbackKey stays bound for an emulator that cannot carry it,
+	// and stays off the legend: one key per gesture is what a legend is for.
+	macChord(PopupToggleKey) + " popup shell",
 	"w spawn",
 	"c claim/release/takeover",
 	"p prompt/queue",

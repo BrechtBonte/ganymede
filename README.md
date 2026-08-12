@@ -78,7 +78,7 @@ Whenever Ghostty isn't the frontmost app, Ganymede's notifier is the one place a
 | `g` | anywhere | Fuzzy repo picker over the full inventory |
 | `t` | session row | Set or correct the JIRA ticket |
 | `o` | session row | Open the ticket link in the browser |
-| `` Alt+` `` | global, no prefix | Toggle the popup shell — a scratch shell in the current session's directory. Closing hides it, never kills it. `` Ctrl+` `` does the same wherever the emulator sends it apart from `Ctrl+Space`, which is why the legend advertises the Alt chord |
+| `` Ctrl+` `` | global, no prefix | Toggle the popup shell — a scratch shell in the current session's directory. Closing hides it, never kills it. `` Alt+` `` is bound to the same action, for an emulator that can't send `` Ctrl+` `` apart from `Ctrl+Space` |
 | `↑` / `↓` | anywhere | Move the selection |
 | `Alt+g` | anywhere | Move focus between the sidepanel and the working client |
 | `Shift+⏎` | typing to Claude | Newline instead of sending — it sends what `Alt+⏎` sends |

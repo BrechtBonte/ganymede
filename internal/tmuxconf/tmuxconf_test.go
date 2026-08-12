@@ -672,7 +672,7 @@ func TestTheDockLegendLeadsWithTheKeysWorthMost(t *testing.T) {
 func TestTheDockLegendNamesTheChordsTheKeysAreBoundTo(t *testing.T) {
 	line := dockLegend(t)
 
-	for _, key := range []string{tmuxconf.FocusKey, tmuxconf.PopupToggleFallbackKey} {
+	for _, key := range []string{tmuxconf.FocusKey, tmuxconf.PopupToggleKey} {
 		if chord := macChord(key); !strings.Contains(line, chord) {
 			t.Errorf("the legend reads %q, want the chord %q for %s in it", line, chord, key)
 		}
@@ -682,21 +682,20 @@ func TestTheDockLegendNamesTheChordsTheKeysAreBoundTo(t *testing.T) {
 	}
 }
 
-// The Popup shell answers to two keys, and the legend names the one that
-// arrives. Ctrl+backtick reaches the binding only on an emulator that
-// transmits it apart from the NUL byte every other terminal collapses it to,
-// and the Dock — the client Ghostty actually talks to — never asks for that,
-// so the primary chord is exactly the sort of key that would silently do
-// nothing. Alt+backtick is the fallback for that case and is what the legend
-// can promise.
-func TestTheDockLegendNamesThePopupChordThatArrives(t *testing.T) {
+// The Popup shell answers to two keys and the legend names one: the primary,
+// which is §8's own and which the Dock now carries — see the Dock's extended
+// keys, without which this entry was a promise the harness could not keep.
+// The fallback stays bound for an emulator that cannot transmit the primary,
+// and stays off the legend, which is a list of gestures rather than of
+// bindings.
+func TestTheDockLegendNamesOneChordForThePopupShell(t *testing.T) {
 	line := dockLegend(t)
 
-	if want := macChord(tmuxconf.PopupToggleFallbackKey) + " popup shell"; !strings.Contains(line, want) {
+	if want := macChord(tmuxconf.PopupToggleKey) + " popup shell"; !strings.Contains(line, want) {
 		t.Errorf("the legend reads %q, want %q in it", line, want)
 	}
-	if unpromised := macChord(tmuxconf.PopupToggleKey); strings.Contains(line, unpromised) {
-		t.Errorf("the legend reads %q, want no %q on it — the Dock never asks for the keys that would carry it", line, unpromised)
+	if spare := macChord(tmuxconf.PopupToggleFallbackKey); strings.Contains(line, spare) {
+		t.Errorf("the legend reads %q, want one key for the gesture rather than %q beside it", line, spare)
 	}
 }
 
