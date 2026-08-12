@@ -1434,21 +1434,82 @@ func (m Model) counts() string {
 
 // tree draws the repo tree, showing as much of it as space allows and keeping
 // the selection in view.
+//
+// Space is a budget in lines rather than in rows. Every row draws exactly one
+// line today, so the two are the same number — but a repo header is to carry
+// its git caution on a line of its own, and a window counted in rows would
+// then run off the foot of the block. The window is measured in lines
+// throughout while the cursor goes on counting rows: the selection steps row
+// to row, and what has to stay on the panel is the lines those rows draw.
 func (m Model) tree(space int) []string {
 	if len(m.rows) == 0 {
 		return clip(m.nothingRunning(), space)
 	}
 
-	first := 0
-	if len(m.rows) > space {
-		// Centre what is on show on the selection.
-		first = min(max(0, m.cursor-space/2), len(m.rows)-space)
+	drawn := make([][]string, len(m.rows))
+	for i := range m.rows {
+		drawn[i] = m.linesOf(i)
 	}
+
 	lines := make([]string, 0, space)
-	for i := first; i < len(m.rows) && len(lines) < space; i++ {
-		lines = append(lines, m.line(i))
+	first, last := shown(drawn, m.cursor, space)
+	for _, row := range drawn[first:last] {
+		lines = append(lines, row...)
 	}
-	return lines
+	return clip(lines, space)
+}
+
+// linesOf is every line one row of the tree draws — one, for now, for every
+// row there is.
+func (m Model) linesOf(i int) []string {
+	return []string{m.line(i)}
+}
+
+// shown is the run of rows the window holds, given what each of them draws.
+// The selection's own row is what the window is for, so its lines are spent
+// first; half of what is left goes to the rows above it and the rest to the
+// rows below, and the window is held back from scrolling off the end of the
+// tree.
+//
+// Whole rows only: a repo header drawn without the caution line belonging to
+// it would be a row saying something untrue, and one line at the foot of the
+// block is not worth that. The single exception is the selection's own row on
+// a block too short to hold it whole, which is drawn cut off rather than not
+// at all — a tree gone blank is worse than a caution line there was no room
+// for.
+func shown(drawn [][]string, cursor, space int) (first, last int) {
+	first = min(max(cursor, 0), len(drawn)-1)
+	for above, i := min(space/2, space-len(drawn[first])), first-1; i >= 0; i-- {
+		if len(drawn[i]) > above {
+			break
+		}
+		above -= len(drawn[i])
+		first = i
+	}
+	first = min(first, lastStart(drawn, space))
+
+	used := 0
+	for last = first; last < len(drawn); last++ {
+		if used+len(drawn[last]) > space && last > first {
+			break
+		}
+		used += len(drawn[last])
+	}
+	return first, last
+}
+
+// lastStart is the furthest a window can start and still reach the last row:
+// from there to the end is the last runful of rows that fits.
+func lastStart(drawn [][]string, space int) int {
+	first := len(drawn)
+	for below, i := 0, len(drawn)-1; i >= 0; i-- {
+		if below+len(drawn[i]) > space {
+			break
+		}
+		below += len(drawn[i])
+		first = i
+	}
+	return first
 }
 
 // nothingRunning says so, rather than leaving an empty frame that reads as a
