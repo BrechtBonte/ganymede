@@ -86,7 +86,7 @@ func (m Model) claim() (Model, tea.Cmd) {
 
 	switch r.state {
 	case repo.Free:
-		m.claiming = &claiming{root: r.root, label: r.label(), popupNote: popupMention(r)}
+		m.claiming = &claiming{root: r.root, label: r.repoName(), popupNote: popupMention(r)}
 		return m, nil
 	case repo.Claimed:
 		return m.released(r.root), nil
@@ -99,7 +99,7 @@ func (m Model) claim() (Model, tea.Cmd) {
 		if m.harness.Claimer != nil {
 			note, _ = m.harness.Claimer.NoteOf(r.root)
 		}
-		m.takingOver = &takingOver{root: r.root, label: r.label(), pid: target.PID, name: target.Name, note: note, popupNote: popupMention(r)}
+		m.takingOver = &takingOver{root: r.root, label: r.repoName(), pid: target.PID, name: target.Name, note: note, popupNote: popupMention(r)}
 		return m, nil
 	}
 	return m, nil

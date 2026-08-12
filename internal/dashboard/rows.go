@@ -64,6 +64,12 @@ type row struct {
 	// grouped under the repo, a Worktree session included. It is what a
 	// Takeover reads to find the root's sole occupant (claim.go).
 	holdsRoot bool
+	// checkout is the checkout a Session row's Session has its hands on, which
+	// is what the row is labelled after. It is the checkout rather than the
+	// Session's own directory: a Session standing in a subdirectory of a
+	// worktree is working in that worktree, and a row named after the
+	// subdirectory would say something else.
+	checkout string
 }
 
 // answers is what laying the tree out has to ask about a directory or a root.
@@ -93,12 +99,77 @@ type answers struct {
 	claimed func(root string) (string, bool)
 }
 
-// label is what the row is called.
-func (r row) label() string {
-	if r.session == nil {
-		return filepath.Base(r.root)
+// repoName is the repository the row belongs to: what a repo's header row is
+// called, and what a Session row's own box names — a row reading main would
+// otherwise leave you not knowing whose.
+//
+// A Session the cross-check reported without a directory has no root to name,
+// and is called by its own name here for the same reason holding gives.
+func (r row) repoName() string {
+	if r.root == "" && r.session != nil {
+		return r.session.Name
 	}
-	return r.session.Name
+	return filepath.Base(r.root)
+}
+
+// mainRoot is how a Session holding its repo's Main root reads: the checkout
+// every worktree in the repo was spawned from, and never the branch that
+// happens to be in it.
+const mainRoot = "main"
+
+// worktreeMark opens the label of a Session working in a worktree, so that the
+// two kinds of row differ in their first character rather than somewhere in
+// the middle of a name.
+const worktreeMark = "wt·"
+
+// holding is which checkout a Session has its hands on, which is what its row
+// says where it used to say Claude Code's auto-generated name for it. For a
+// Session in the Main root that name was the repo header directly above the
+// row; for a Worktree session it was the worktree name this draws anyway.
+//
+// Two Sessions sharing one checkout therefore read identically here. The
+// ticket and the age are what tell them apart, and that is the trade: the
+// question the row is answering is which checkout is being worked in, not
+// which process is doing it.
+func (r row) holding() string {
+	if r.holdsRoot {
+		return mainRoot
+	}
+	if r.session.Dir == "" {
+		// A Session the cross-check reported without a directory at all has
+		// no checkout to be named after: asking git about nothing answers
+		// with the Dashboard's own working directory, and a row reading
+		// wt·ganymede would name a checkout that Session has never been in.
+		// Its own name is all that is left to call it, which is what the row
+		// said before any of this.
+		return r.session.Name
+	}
+	return worktreeMark + withoutTicket(filepath.Base(r.checkout), r.ticket)
+}
+
+// withoutTicket drops the ticket key a worktree is named after, and the
+// separator behind it, when the row is already showing that ticket in its own
+// column — so that what is left is the part one worktree can be told from
+// another by.
+//
+// The key goes only when something is left to read: a worktree named for its
+// ticket and nothing else keeps the whole of it, since wt· on its own says
+// nothing at all. A separator is required too, so that FIRE-28419 is not read
+// as FIRE-2841 with a 9 after it.
+//
+// The two are compared without case. Unlike ticket.In, which reads keys out of
+// branch names and needs upper case to tell a ticket from a dependency bump,
+// the key here is already known — and a worktree spelling it in lower case is
+// still the row saying the same ticket twice.
+func withoutTicket(name string, key ticket.Key) string {
+	if key == "" || len(name) < len(key) || !strings.EqualFold(name[:len(key)], string(key)) {
+		return name
+	}
+	rest := name[len(key):]
+	if left := strings.TrimLeft(rest, "-_./ "); left != rest && left != "" {
+		return left
+	}
+	return name
 }
 
 // key identifies a row across redraws, so the selection stays on what you put
@@ -172,9 +243,10 @@ func rowsOf(sessions []session.Session, working []string, ask answers) []row {
 		})
 		for i := range byRoot[root] {
 			running := &byRoot[root][i]
+			checkout := ask.checkout(running.Dir)
 			rows = append(rows, row{
 				root: root, session: running, ticket: ask.ticket(running.Dir, root), popup: ask.popup(running.Dir),
-				holdsRoot: ask.checkout(running.Dir) == root, frozen: ask.frozen(running.ID),
+				checkout: checkout, holdsRoot: checkout == root, frozen: ask.frozen(running.ID),
 			})
 		}
 	}

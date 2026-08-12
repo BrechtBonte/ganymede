@@ -162,7 +162,7 @@ func (m Model) spawn() Model {
 	if r.session != nil {
 		return m
 	}
-	m.spawning = &spawning{root: r.root, label: r.label(), claimWarning: m.claimedWarning(r.root)}
+	m.spawning = &spawning{root: r.root, label: r.repoName(), claimWarning: m.claimedWarning(r.root)}
 	return m
 }
 

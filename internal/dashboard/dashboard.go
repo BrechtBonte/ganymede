@@ -1538,25 +1538,53 @@ func (m Model) line(i int) string {
 	}
 
 	// Two columns of indent put a Session under its repo; then the state
-	// glyph, which is what the eye runs down; then the ticket and the age at
-	// the far end. The age is what the ordering within a tier is made of — the
-	// row above has been waiting on you longer, and the rail should be able to
-	// show that — and the ticket is what tells two Sessions in one repo apart
-	// before their names do.
+	// glyph, which is what the eye runs down; then the checkout the Session
+	// has its hands on, and the ticket and the age at the far end. The age is
+	// what the ordering within a tier is made of — the row above has been
+	// waiting on you longer, and the rail should be able to show that — and
+	// the ticket is what tells two Sessions in one checkout apart.
 	const indent = "  "
 	glyph := r.session.State.Frame(m.spinner)
 	age := ageOf(*r.session)
 	mark := marks(r)
-	name := truncate(r.session.Name, m.width-lipgloss.Width(indent+glyph+" "+mark)-lipgloss.Width(about(r.ticket)+" "+age)-1)
+	key := abbreviated(r.ticket)
+	tail := joined(key, age)
+	// Elided rather than cut: a worktree name that runs off the end of its
+	// column would leave you unable to tell how much of it you are reading.
+	label := elide(r.holding(), m.width-lipgloss.Width(indent+glyph+" "+mark)-lipgloss.Width(tail)-1)
 	switch {
 	case i == m.cursor:
-		return m.selectedRowStyle().Width(m.width).Render(spread(indent+glyph+" "+mark+name, about(r.ticket)+" "+age, m.width))
+		return m.selectedRowStyle().Width(m.width).Render(spread(indent+glyph+" "+mark+label, tail, m.width))
 	case r.session.PID == m.active:
-		return blurredSelectedStyle.Width(m.width).Render(spread(indent+glyph+" "+mark+name, about(r.ticket)+" "+age, m.width))
+		return blurredSelectedStyle.Width(m.width).Render(spread(indent+glyph+" "+mark+label, tail, m.width))
 	default:
-		return spread(indent+styleOf(r.session.State).Render(glyph)+" "+mark+name,
-			ticketStyle(r.ticket).Render(about(r.ticket))+" "+quietStyle.Render(age), m.width)
+		return spread(indent+styleOf(r.session.State).Render(glyph)+" "+mark+label,
+			joined(rendered(ticketColour, key), rendered(quietStyle, age)), m.width)
 	}
+}
+
+// joined puts the far end of a row together out of the parts that are there.
+// A part that is not — the ticket of a Session about none, or the age of a
+// registry record with no clock on it — costs the row nothing at all, not even
+// the space in front of it.
+func joined(parts ...string) string {
+	said := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			said = append(said, part)
+		}
+	}
+	return strings.Join(said, " ")
+}
+
+// rendered styles text, and leaves nothing as nothing: a style around an empty
+// string is escape codes the eye cannot see and everything that measures a line
+// can.
+func rendered(style lipgloss.Style, text string) string {
+	if text == "" {
+		return ""
+	}
+	return style.Render(text)
 }
 
 // marks are what you have done to a row, as against what its Session is
@@ -1595,28 +1623,17 @@ func (m Model) repoLine(r row, selected bool) string {
 	// state glyph have had their columns. Where that leaves too little, the
 	// caution says less rather than nothing, and the name is truncated to
 	// make room for what is left.
-	warning := carrying(r.caution, m.width-lipgloss.Width(r.label()+glyph+mark)-2)
-	// Nothing is styled until there is something to style: a style applied to an
-	// empty string is escape codes around nothing, which is empty to the eye and
-	// a string with something in it to everything that measures one.
-	marks := glyph
+	warning := carrying(r.caution, m.width-lipgloss.Width(r.repoName()+glyph+mark)-2)
+	// The caution, the state glyph and whatever you have done to the row, in
+	// that order and each only where there is one — joined the way a Session
+	// row's own far end is, so that the two kinds of row cannot drift apart in
+	// their spacing, and styled through rendered so that nothing stays nothing.
 	if selected {
-		if warning != "" {
-			marks = warning + " " + glyph
-		}
-		if mark != "" {
-			marks += " " + mark
-		}
-		return m.selectedRowStyle().Width(m.width).Render(spread(r.label(), marks, m.width))
+		return m.selectedRowStyle().Width(m.width).
+			Render(spread(r.repoName(), joined(warning, glyph, mark), m.width))
 	}
-	marks = rootStyle(r.state).Render(glyph)
-	if warning != "" {
-		marks = cautionStyle.Render(warning) + " " + marks
-	}
-	if mark != "" {
-		marks += " " + mark
-	}
-	return spread(repoStyle.Render(r.label()), marks, m.width)
+	marks := joined(rendered(cautionStyle, warning), rootStyle(r.state).Render(glyph), mark)
+	return spread(repoStyle.Render(r.repoName()), marks, m.width)
 }
 
 // carrying is how a Main root's cautions read on its row, in the room the row
@@ -1694,14 +1711,34 @@ func (m Model) repoGlyph(r row) string {
 	return r.state.Glyph()
 }
 
-// about is how a ticket reads on a row. A Session about no ticket says so,
-// rather than leaving a gap that reads as a harness which has not worked it out
-// yet — and never a placeholder key, which would read as an answer.
+// about is how a ticket reads in the SELECTED box. A Session about no ticket
+// says so, rather than leaving a gap that reads as a harness which has not
+// worked it out yet — and never a placeholder key, which would read as an
+// answer. The box is where that is said, and where the key that sets one is
+// offered; the row leaves the column empty.
 func about(key ticket.Key) string {
 	if key == "" {
 		return "no ticket"
 	}
 	return string(key)
+}
+
+// abbreviated is how a ticket reads on a Session row: the project's initial,
+// the hyphen and the number. The project key is the same on every row of every
+// repo, so the row spells only the part that differs, and the columns it saves
+// go to the checkout label beside it.
+//
+// Two projects sharing an initial collide — FIRE-1 and FOCUS-1 both read F-1 —
+// which costs nothing, since the whole key is in the SELECTED box on the same
+// screen. Anything not shaped like a key is left as it is rather than cut down
+// to its first character.
+func abbreviated(key ticket.Key) string {
+	project, number, ok := strings.Cut(string(key), "-")
+	if !ok || project == "" {
+		return string(key)
+	}
+	initial := []rune(project)[0]
+	return string(initial) + "-" + number
 }
 
 // ticketStyle draws a ticket in its own colour, and the absence of one in the
@@ -1772,7 +1809,7 @@ func (m Model) selected() []string {
 		// the question a repo is on the rail to answer, and the box is where the
 		// answer is spelled rather than drawn.
 		lines := []string{
-			repoStyle.Render(truncate(r.label(), m.width)),
+			repoStyle.Render(truncate(r.repoName(), m.width)),
 			rootStyle(r.state).Render(m.repoGlyph(r)) + " " + truncate("root: "+string(r.state), m.width-2),
 		}
 		if r.state == repo.Claimed && r.claimNote != "" {
@@ -1792,10 +1829,14 @@ func (m Model) selected() []string {
 			quietStyle.Render(m.repoOffering(r)))
 	}
 
-	// What the Session is doing and how long it has been doing it, then its
-	// name with the whole width to itself: the rail has to give the indent,
-	// the mark and the age their columns first, and a worktree name — which is
-	// what carries the ticket — is the row most likely to have run out of them.
+	// What the Session is doing and how long it has been doing it, then the
+	// repo it is in: the row above says which checkout the Session has its
+	// hands on, and main on its own would leave you not knowing whose.
+	//
+	// The Session's own name is dropped rather than given a line of its own.
+	// It is either Claude Code's auto-generated <repo>-<xx> or the worktree
+	// name the row already shows, and the directory line below identifies the
+	// checkout either way.
 	state := styleOf(r.session.State)
 	standing := string(r.session.State)
 	if age := ageOf(*r.session); age != "" {
@@ -1809,7 +1850,7 @@ func (m Model) selected() []string {
 	}
 	lines := []string{
 		state.Render(r.session.State.Glyph()) + " " + truncate(standing, m.width-2),
-		elide(r.session.Name, m.width),
+		elide(r.repoName(), m.width),
 		ticketStyle(r.ticket).Render(truncate(about(r.ticket), m.width)),
 	}
 	if r.session.Reason != "" {

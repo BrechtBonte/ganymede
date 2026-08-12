@@ -78,10 +78,7 @@ func TestASessionRowShowsABusyPopupMarker(t *testing.T) {
 		"/repos/service-billing": {Command: "composer install", Busy: true},
 	})
 
-	line, ok := lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", tree(model))
-	}
+	line := sessionRow(t, tree(model))
 	if !strings.Contains(line, popupBusy) {
 		t.Errorf("row = %q, want the busy-popup marker", line)
 	}
@@ -96,10 +93,7 @@ func TestASessionRowShowsNoMarkerWhenItsPopupIsIdle(t *testing.T) {
 		"/repos/service-billing": {Command: "bash", Busy: false},
 	})
 
-	line, ok := lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", tree(model))
-	}
+	line := sessionRow(t, tree(model))
 	if strings.Contains(line, popupBusy) {
 		t.Errorf("row = %q, want no busy marker for an idle popup", line)
 	}

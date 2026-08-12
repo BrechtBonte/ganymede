@@ -2,7 +2,6 @@ package dashboard_test
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -12,8 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// workingSet is n repos with one Session each, named so that every row carries
-// a token of its own that no other row's does.
+// workingSet is n repos with one Session each, each repo named so that its
+// header carries a token no other row's does.
 func workingSet(n int) []session.Session {
 	var many []session.Session
 	for i := range n {
@@ -22,9 +21,6 @@ func workingSet(n int) []session.Session {
 	}
 	return many
 }
-
-// rowID is the token workingSet puts on each of its rows.
-var rowID = regexp.MustCompile(`[rs][0-9][0-9]`)
 
 // fromFoot is how many lines up from the panel's last line want was drawn, and
 // -1 when it was not drawn at all.
@@ -123,27 +119,49 @@ func TestAShortSidepanelStillFitsWhatItCanDraw(t *testing.T) {
 func TestTheTreeKeepsTheSelectionInViewAsTheCursorWalksPastTheFoot(t *testing.T) {
 	many := workingSet(10)
 
-	// A panel tall enough for the whole tree says which order the rows are in.
-	var labels []string
+	// A panel tall enough for the whole tree says how many rows there are to
+	// walk: a header and a Session each.
+	var rows int
 	for _, line := range strings.Split(tree(sidepanel(&jumps{}, many...)), "\n") {
-		if id := rowID.FindString(line); id != "" {
-			labels = append(labels, id)
+		if strings.TrimSpace(line) != "" {
+			rows++
 		}
 	}
-	if len(labels) != 2*len(many) {
-		t.Fatalf("read %d rows off a full-height sidepanel, want one per repo and per Session (%d)", len(labels), 2*len(many))
+	if rows != 2*len(many) {
+		t.Fatalf("read %d rows off a full-height sidepanel, want one per repo and per Session (%d)", rows, 2*len(many))
 	}
 
 	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: &jumps{}})
 	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 20})
 	model, _ = model.Update(dashboard.Sessions(many))
 
-	for i, label := range labels {
+	// A Session row carries the checkout it is working in rather than a name
+	// of its own, so what a test follows down the tree is the inversion the
+	// cursor draws: the selection is in view exactly when its row is drawn.
+	for i := range rows {
 		if i > 0 {
 			model = press(model, tea.KeyDown)
 		}
-		if !strings.Contains(tree(model), label) {
-			t.Fatalf("row %d (%s) scrolled out of view:\n%s", i, label, drawn(model))
+		if _, ok := selectedRow(model); !ok {
+			t.Fatalf("row %d scrolled out of view:\n%s", i, drawn(model))
 		}
 	}
+	// And the walk really reached the foot rather than stopping short: the
+	// last row is the last repo's Session, which is what its box names.
+	if box := detail(model); !strings.Contains(box, "r09") {
+		t.Errorf("SELECTED = %q, want the walk to have ended on the last repo's Session", box)
+	}
+}
+
+// selectedRow is the drawn row the cursor is on: the one the panel inverts,
+// which is how a test finds the selection now that rows carry no token of
+// their own.
+func selectedRow(model tea.Model) (string, bool) {
+	stripped, raw := panelLines(model)
+	for i, line := range raw {
+		if strings.HasPrefix(line, styleCodeOf(reverseOnly)) {
+			return stripped[i], true
+		}
+	}
+	return "", false
 }

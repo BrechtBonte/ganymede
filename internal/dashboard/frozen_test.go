@@ -24,10 +24,7 @@ func TestASessionRowShowsTheFrozenMark(t *testing.T) {
 
 	model, _ = model.Update(dashboard.FrozenPanes{"max-paging-numbers-id": true})
 
-	line, ok := lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", tree(model))
-	}
+	line := sessionRow(t, tree(model))
 	if !strings.Contains(line, frozenMark) {
 		t.Errorf("row = %q, want the Frozen mark", line)
 	}
@@ -40,10 +37,7 @@ func TestASessionRowShowsNoFrozenMarkWhenItsPaneIsLive(t *testing.T) {
 
 	model, _ = model.Update(dashboard.FrozenPanes{"max-paging-numbers-id": false})
 
-	line, ok := lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", tree(model))
-	}
+	line := sessionRow(t, tree(model))
 	if strings.Contains(line, frozenMark) {
 		t.Errorf("row = %q, want no Frozen mark for a pane showing the live Session", line)
 	}
@@ -61,10 +55,7 @@ func TestAFrozenRowStillShowsItsBusyPopupMark(t *testing.T) {
 		"/repos/service-billing": {Command: "composer install", Busy: true},
 	})
 
-	line, ok := lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", tree(model))
-	}
+	line := sessionRow(t, tree(model))
 	if !strings.Contains(line, frozenMark) || !strings.Contains(line, popupBusy) {
 		t.Fatalf("row = %q, want both the Frozen and busy-popup marks", line)
 	}
@@ -193,10 +184,7 @@ func TestTheTickSweepsForFrozenPanes(t *testing.T) {
 	_, cmd := model.Update(dashboard.Tick{})
 	model = sweptFrozen(t, model, cmd)
 
-	line, ok := lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", tree(model))
-	}
+	line := sessionRow(t, tree(model))
 	if !strings.Contains(line, frozenMark) {
 		t.Errorf("row = %q, want the Frozen mark the sweep found", line)
 	}
@@ -222,10 +210,7 @@ func TestAFailedSweepLeavesTheLastAnswerStanding(t *testing.T) {
 		go cmd()
 	}
 
-	line, ok := lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", tree(model))
-	}
+	line := sessionRow(t, tree(model))
 	if !strings.Contains(line, frozenMark) {
 		t.Errorf("row = %q, want a failed sweep to leave the Frozen mark standing", line)
 	}
@@ -238,19 +223,13 @@ func TestTheMarkFollowsTheModeEdges(t *testing.T) {
 	model := sidepanel(&jumps{}, live("max-paging-numbers", "/repos/service-billing", session.Working))
 
 	model, _ = model.Update(dashboard.Froze("max-paging-numbers-id"))
-	line, ok := lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", tree(model))
-	}
+	line := sessionRow(t, tree(model))
 	if !strings.Contains(line, frozenMark) {
 		t.Errorf("row = %q after Froze, want the Frozen mark", line)
 	}
 
 	model, _ = model.Update(dashboard.Thawed("max-paging-numbers-id"))
-	line, ok = lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", tree(model))
-	}
+	line = sessionRow(t, tree(model))
 	if strings.Contains(line, frozenMark) {
 		t.Errorf("row = %q after Thawed, want the Frozen mark gone", line)
 	}
@@ -282,10 +261,7 @@ func TestAnEdgeAheadOfTheWorkingSetStillLands(t *testing.T) {
 		live("max-paging-numbers", "/repos/service-billing", session.Working),
 	})
 
-	line, ok := lineWith(tree(model), "max-paging-numbers")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", tree(model))
-	}
+	line := sessionRow(t, tree(model))
 	if !strings.Contains(line, frozenMark) {
 		t.Errorf("row = %q, want the Frozen mark an edge reported before the row existed", line)
 	}

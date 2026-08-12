@@ -24,10 +24,7 @@ func TestTheJumpedToSessionStaysMarkedAfterBrowsingAway(t *testing.T) {
 	model = press(model, tea.KeyEnter) // jump: marks it active
 	model = press(model, tea.KeyUp)    // back to the repo header row
 
-	line, ok := rawLineFor(model, "ganymede-78")
-	if !ok {
-		t.Fatalf("no row for the session:\n%s", drawn(model))
-	}
+	line := rawSessionRow(t, model)
 	if !strings.HasPrefix(line, styleCodeOf(reverseFaint)) {
 		t.Errorf("session row = %q, want it still marked dim-reverse as the active row", line)
 	}
@@ -49,12 +46,16 @@ func TestTheJumpedToSessionStaysMarkedAfterBrowsingAway(t *testing.T) {
 func TestTheGuardsApproveMismatchMarksItsRowEvenAfterTheCursorMovedOn(t *testing.T) {
 	approver := &approvals{err: errors.New("pane does not show the dialog it was reported waiting on")}
 	jumper := &jumps{}
-	a := session.Session{PID: 111, ID: "sess-a", Dir: "/repos/service-billing",
+	// One in the repo's Main root and one in a worktree of it, so that the two
+	// rows are told apart by the checkout each is labelled with — a Session
+	// row carries no name of its own.
+	root := mainRoot(t, "service-billing")
+	a := session.Session{PID: 111, ID: "sess-a", Dir: root,
 		Name: "aaa-blocked", State: session.Blocked, Reason: "permission: Bash", Since: epoch}
-	b := session.Session{PID: 222, ID: "sess-b", Dir: "/repos/service-billing",
+	b := session.Session{PID: 222, ID: "sess-b", Dir: worktree(t, root, "paging"),
 		Name: "bbb-blocked", State: session.Blocked, Reason: "permission: Bash", Since: epoch}
 	model := withApprover(approver, jumper, a, b)
-	model = press(model, tea.KeyDown) // onto a's row
+	model = press(model, tea.KeyDown) // onto a's row, which sorts first by name
 
 	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	if cmd == nil {
@@ -65,10 +66,7 @@ func TestTheGuardsApproveMismatchMarksItsRowEvenAfterTheCursorMovedOn(t *testing
 
 	model, _ = model.Update(cmd())
 
-	line, ok := rawLineFor(model, "aaa-blocked")
-	if !ok {
-		t.Fatalf("no row for aaa-blocked:\n%s", drawn(model))
-	}
+	line := rawSessionRowFor(t, model, "main")
 	if !strings.HasPrefix(line, styleCodeOf(reverseFaint)) {
 		t.Errorf("aaa-blocked row = %q, want it marked as the row the working client is actually showing", line)
 	}
@@ -80,21 +78,19 @@ func TestTheGuardsApproveMismatchMarksItsRowEvenAfterTheCursorMovedOn(t *testing
 // must not be marked active over that.
 func TestAJumpThatFailsDoesNotMarkItsRowActive(t *testing.T) {
 	jumper := &jumps{err: errors.New("no tmux pane is running process 4242")}
-	// Different-length names on the same dir so live()'s PID (len(name) +
-	// len(dir)) does not collide between the two — a and b must stay two
-	// distinct Sessions for this test to mean anything.
-	a := live("aaa-idle", "/repos/ganymede", session.Idle)
-	b := live("bbb-idle-2", "/repos/ganymede", session.Idle)
+	// One in the Main root and one in a worktree of it: the checkout each row
+	// is labelled with is what tells the two apart, and their directories'
+	// differing lengths keep live()'s PID (len(name) + len(dir)) distinct.
+	root := mainRoot(t, "ganymede")
+	a := live("aaa-idle", root, session.Idle)
+	b := live("bbb-idle", worktree(t, root, "paging"), session.Idle)
 	model := sidepanel(jumper, a, b)
 
-	model = press(model, tea.KeyDown)  // onto a's row
+	model = press(model, tea.KeyDown)  // onto a's row, which sorts first by name
 	model = press(model, tea.KeyEnter) // jump fails
 	model = press(model, tea.KeyDown)  // onto b's row
 
-	line, ok := rawLineFor(model, "aaa-idle")
-	if !ok {
-		t.Fatalf("no row for aaa-idle:\n%s", drawn(model))
-	}
+	line := rawSessionRowFor(t, model, "main")
 	if strings.HasPrefix(line, styleCodeOf(reverseFaint)) || strings.HasPrefix(line, styleCodeOf(reverseOnly)) {
 		t.Errorf("aaa-idle row = %q, want no mark left behind by a jump that failed", line)
 	}
@@ -107,12 +103,14 @@ func TestAJumpThatFailsDoesNotMarkItsRowActive(t *testing.T) {
 func TestTheGuardsSendMismatchMarksItsRowEvenAfterTheCursorMovedOn(t *testing.T) {
 	prompter := &prompts{err: errors.New("pane does not show an empty input box to send into")}
 	jumper := &jumps{}
-	// Different-length names on the same dir so live()'s PID (len(name) +
-	// len(dir)) does not collide between the two.
-	a := live("aaa-idle", "/repos/ganymede", session.Idle)
-	b := live("bbb-idle-2", "/repos/ganymede", session.Idle)
+	// One in the Main root and one in a worktree of it: the checkout each row
+	// is labelled with is what tells the two apart, and their directories'
+	// differing lengths keep live()'s PID (len(name) + len(dir)) distinct.
+	root := mainRoot(t, "ganymede")
+	a := live("aaa-idle", root, session.Idle)
+	b := live("bbb-idle", worktree(t, root, "paging"), session.Idle)
 	model := withPrompter(prompter, jumper, a, b)
-	model = press(model, tea.KeyDown) // onto a's row
+	model = press(model, tea.KeyDown) // onto a's row, which sorts first by name
 
 	model = sendingKey(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	model = typeInto(model, "fix it")
@@ -125,10 +123,7 @@ func TestTheGuardsSendMismatchMarksItsRowEvenAfterTheCursorMovedOn(t *testing.T)
 
 	model, _ = model.Update(cmd())
 
-	line, ok := rawLineFor(model, "aaa-idle")
-	if !ok {
-		t.Fatalf("no row for aaa-idle:\n%s", drawn(model))
-	}
+	line := rawSessionRowFor(t, model, "main")
 	if !strings.HasPrefix(line, styleCodeOf(reverseFaint)) {
 		t.Errorf("aaa-idle row = %q, want it marked as the row the working client is actually showing", line)
 	}
@@ -154,12 +149,9 @@ func TestOpeningABareRepoClearsTheActiveRow(t *testing.T) {
 		t.Fatalf("opened %v, want [/repos/other-repo]", opener.dirs)
 	}
 
-	line, ok := rawLineFor(model, "ganymede-78")
-	if !ok {
-		t.Fatalf("no row for ganymede-78:\n%s", drawn(model))
-	}
+	line := rawSessionRow(t, model)
 	if strings.HasPrefix(line, styleCodeOf(reverseFaint)) {
-		t.Errorf("ganymede-78 row = %q, want the active mark cleared once a bare repo is opened", line)
+		t.Errorf("the Session's row = %q, want the active mark cleared once a bare repo is opened", line)
 	}
 }
 
@@ -188,11 +180,8 @@ func TestForgettingAGoneSessionClearsTheActiveMarkForWhoeverReusesItsPid(t *test
 		Name: "ganymede-new", State: session.Idle, Since: epoch}
 	model, _ = model.Update(dashboard.Sessions{reused})
 
-	line, ok := rawLineFor(model, "ganymede-new")
-	if !ok {
-		t.Fatalf("no row for the reused pid's Session:\n%s", drawn(model))
-	}
+	line := rawSessionRow(t, model)
 	if strings.HasPrefix(line, styleCodeOf(reverseFaint)) {
-		t.Errorf("ganymede-new row = %q, want a forgotten pid's old active mark not carried onto whoever reuses it", line)
+		t.Errorf("the reused pid's row = %q, want a forgotten pid's old active mark not carried onto whoever reuses it", line)
 	}
 }
