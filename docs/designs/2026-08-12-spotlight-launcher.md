@@ -30,7 +30,8 @@ gets built:
 macos/launcher/
   Info.plist       # static bundle metadata
   run.sh            # template; @@REPO_DIR@@ substituted at install time
-  Ganymede.icns     # app icon (moon artwork, supplied by the user)
+  Ganymede.icns     # app icon (moon artwork), copied in during implementation
+                     # from ~/Downloads/Moon_rzwvYKRUV2_icns-5907758bd0.icns
 ```
 
 ### `Info.plist`
@@ -44,14 +45,16 @@ Static — no substitution needed:
 | `CFBundleExecutable` | `Ganymede` |
 | `CFBundleIconFile` | `Ganymede` (resolves to `Ganymede.icns`) |
 | `CFBundlePackageType` | `APPL` |
-| `LSUIElement` | `true` — the bundle's own process has no window and no
-  reason to sit in the Dock or Cmd+Tab; Ghostty's window is the real UI. |
+| `LSUIElement` | `<true/>` (the plist boolean tag, not the string `"true"`)
+  — the bundle's own process has no window and no reason to sit in the Dock
+  or Cmd+Tab; Ghostty's window is the real UI. |
 
 ### `run.sh`
 
 ```sh
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 exec "@@REPO_DIR@@/bin/ganymede" up "@@REPO_DIR@@"
 ```
 
@@ -60,6 +63,14 @@ bundle is materialized, so the installed app always calls this checkout's
 binary, opened at this checkout as the first Session's main root — matching
 today's `make up`.
 
+The explicit `PATH` export matters here in a way it wouldn't for a plain
+shell script: a process launched by LaunchServices (double-click, Spotlight,
+`open`) inherits the login session's default environment, not an interactive
+shell's rc-augmented one, so Homebrew's `/opt/homebrew/bin` is not guaranteed
+to be on it. `up` shells out to `tmux` and looks up `terminal-notifier` by
+bare name — both Homebrew-installed — so without this export a Spotlight
+launch could fail even though `make up` works fine from a terminal.
+
 Launching again while the harness is already up costs nothing extra:
 `ganymede up` is already idempotent (`harness.Attached()` → `Activate()`), so
 a repeat Spotlight launch just refocuses the existing Ghostty window, which is
@@ -67,7 +78,8 @@ exactly what you want from an app icon.
 
 ### Makefile
 
-New `.PHONY` target, `launcher`, depending on `build`:
+New `.PHONY` target, `launcher`, depending on `build` — added to the existing
+`.PHONY: build up refresh` line as `.PHONY: build up refresh launcher`:
 
 ```makefile
 LAUNCHER_APP := $(HOME)/Applications/Ganymede.app
