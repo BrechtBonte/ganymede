@@ -326,9 +326,13 @@ const FocusKey = "M-g"
 // of labour is the point: the legend is for learning the harness, the box
 // remains the authority on what this row will actually do.
 //
-// Where a key's label changes with what it is over, the legend says both:
-// "c claim/takeover" is one key over a Free root and over one somebody else is
-// in. What it must never say is what the prototype's shared bar said — "!" for the
+// Where a key's label changes with the row it is over, the legend says every
+// label rather than the first of them: c is claim, release and Takeover as the
+// root's state moves, and p queues rather than prompts on a Session that is
+// already Working. A legend saying only one of them would be the box's own
+// words used to mean something they do not.
+//
+// What it must never say is what the prototype's shared bar said — "!" for the
 // Popup shell, "x takeover" when x is interrupt, or "q quit" when q ends a
 // Session and the Dashboard answers to no quit key at all.
 var legendKeys = []string{
@@ -337,8 +341,8 @@ var legendKeys = []string{
 	macChord(FocusKey) + " focus",
 	macChord(PopupToggleKey) + " popup shell",
 	"w spawn",
-	"c claim/takeover",
-	"p prompt",
+	"c claim/release/takeover",
+	"p prompt/queue",
 	"y approve",
 	"n deny",
 	"x interrupt",

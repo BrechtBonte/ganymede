@@ -597,9 +597,26 @@ func dockLegend(t *testing.T) string {
 func TestTheDockStatusLineCarriesTheKeyLegend(t *testing.T) {
 	line := dockLegend(t)
 
-	for _, want := range []string{"↑↓ select", "⏎ jump", "w spawn", "p prompt", "y approve", "n deny", "x interrupt", "q end", "t ticket", "o open ticket"} {
+	for _, want := range []string{"↑↓ select", "⏎ jump", "w spawn", "y approve", "n deny", "x interrupt", "q end", "t ticket", "o open ticket", "g repo picker"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the Dock's legend reads %q, want %q offered in it", line, want)
+		}
+	}
+}
+
+// A key the Dashboard labels differently as the row under it changes is a key
+// the legend has to spell out in full: c gives a Claimed root back rather than
+// claiming it, and p on a Working Session queues rather than prompts. Half the
+// meanings would be the SELECTED box's own words used to mean something else.
+func TestTheDockLegendSpellsOutTheKeysThatChangeWithTheRow(t *testing.T) {
+	line := dockLegend(t)
+
+	for _, key := range []struct{ key, meaning string }{
+		{"c", "claim"}, {"c", "release"}, {"c", "takeover"},
+		{"p", "prompt"}, {"p", "queue"},
+	} {
+		if !strings.Contains(line, key.meaning) {
+			t.Errorf("the legend reads %q, want %q said of %q", line, key.meaning, key.key)
 		}
 	}
 }
