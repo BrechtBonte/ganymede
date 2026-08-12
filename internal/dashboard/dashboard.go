@@ -1895,7 +1895,9 @@ func (m Model) selected() []string {
 		}
 		return append(lines,
 			quietStyle.Render(shorten(r.root, m.width)),
-			quietStyle.Render(m.repoOffering(r)))
+			// Like a Session row's offering, this draws its own quiet key by
+			// key: what stays plain in it is the key character.
+			m.repoOffering(r))
 	}
 
 	// What the Session is doing and how long it has been doing it, then the
@@ -1932,7 +1934,9 @@ func (m Model) selected() []string {
 	}
 	return append(lines,
 		quietStyle.Render(shorten(r.session.Dir, m.width)),
-		quietStyle.Render(offering(r, m.width)),
+		// The offering draws its own quiet, key by key: what stays plain in it
+		// is the key character.
+		offering(r, m.width),
 	)
 }
 
@@ -1992,8 +1996,14 @@ func offering(r row, width int) string {
 // fitKeys is offering's own greedy fit, shared with a repo header's row
 // (repoOffering): as many whole keys as fit, in the order they matter most,
 // and never one cut off mid-word.
+//
+// The fit is measured on the plain phrases and the styling goes on what fitted:
+// a line measured with its escape codes in it would be measured several columns
+// wider than anything the panel ever draws, and would drop keys there was room
+// for.
 func fitKeys(keys []string, width int) string {
 	var line string
+	hints := make([]string, 0, len(keys))
 	for _, key := range keys {
 		next := key
 		if line != "" {
@@ -2003,8 +2013,24 @@ func fitKeys(keys []string, width int) string {
 			break
 		}
 		line = next
+		hints = append(hints, hinted(key))
 	}
-	return line
+	return strings.Join(hints, quietStyle.Render(" · "))
+}
+
+// hinted draws one key the box is offering: the key character in the panel's
+// normal foreground, the label saying what it does quiet behind it. The key is
+// what you are looking for, and the phrase around it is what you would
+// otherwise have to read to find it.
+//
+// The labels themselves are left exactly as they were written — `⏎ go to repo`
+// on a header row is doing honest work that a shorter phrase would blur.
+func hinted(key string) string {
+	char, label, ok := strings.Cut(key, " ")
+	if !ok {
+		return char
+	}
+	return char + " " + quietStyle.Render(label)
 }
 
 // spread puts left at one end of a line width columns wide and right at the
