@@ -498,6 +498,115 @@ func pressKey(t *testing.T, socket, key string) {
 	}
 }
 
+// dockConf writes the Dock server's configuration into a throwaway directory
+// and returns the path tmux is to read it from.
+func dockConf(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "dock.conf")
+	if err := tmuxconf.WriteDockConf(path, 40); err != nil {
+		t.Fatalf("WriteDockConf: %v", err)
+	}
+	return path
+}
+
+// plain is a status line read the way the eye reads it: tmux's own style
+// directives taken back out, so a test asserts on what is drawn rather than on
+// the colours it is drawn in.
+func plain(line string) string {
+	for {
+		open := strings.Index(line, "#[")
+		if open < 0 {
+			return line
+		}
+		end := strings.Index(line[open:], "]")
+		if end < 0 {
+			return line
+		}
+		line = line[:open] + line[open+end+1:]
+	}
+}
+
+// macChord is the notation a legend has to be written in, restated here rather
+// than shared with the harness: a test that called the harness's own translation
+// would agree with it however wrong both were.
+func macChord(key string) string {
+	return strings.NewReplacer("M-", "⌥", "C-", "⌃").Replace(key)
+}
+
+// dockLegend is what the Dock's status line is actually drawing.
+func dockLegend(t *testing.T) string {
+	t.Helper()
+	tmux := tmuxWithConf(t, dockConf(t))
+	if got := tmux("show-options", "-A", "-g", "-v", "status"); got != "on" {
+		t.Fatalf("the Dock's status = %q, want the line the legend is drawn on", got)
+	}
+	return plain(tmux("display-message", "-p", "#{E:status-format[0]}"))
+}
+
+// The Dock's own status line is the one full-width row in the Dock, so it is
+// where the legend goes: the complete vocabulary, for learning, beside the
+// SELECTED box's applicable subset for the row you are standing on.
+func TestTheDockStatusLineCarriesTheKeyLegend(t *testing.T) {
+	line := dockLegend(t)
+
+	for _, want := range []string{"↑↓ select", "⏎ jump", "w spawn", "p prompt", "y approve", "n deny", "x interrupt", "q end", "t ticket", "o open ticket"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the Dock's legend reads %q, want %q offered in it", line, want)
+		}
+	}
+}
+
+// The legend is ordered so that the keys worth most survive a narrow window,
+// which tmux truncates a status line from the right to fit.
+func TestTheDockLegendLeadsWithTheKeysWorthMost(t *testing.T) {
+	line := dockLegend(t)
+
+	for _, pair := range [][2]string{
+		{"↑↓ select", "⏎ jump"},
+		{"⏎ jump", macChord(tmuxconf.FocusKey)},
+		{macChord(tmuxconf.FocusKey), "w spawn"},
+		{"w spawn", "o open ticket"},
+	} {
+		before, after := strings.Index(line, pair[0]), strings.Index(line, pair[1])
+		if before < 0 || after < 0 || before > after {
+			t.Errorf("the legend reads %q, want %q before %q — the tail is what a narrow window loses", line, pair[0], pair[1])
+		}
+	}
+}
+
+// The legend's chords are the keys the harness actually binds, written as a Mac
+// user presses them. Built from the constants rather than from copies: a legend
+// with its own spelling of M-g would go on offering it after a rebinding.
+func TestTheDockLegendNamesTheChordsTheKeysAreBoundTo(t *testing.T) {
+	line := dockLegend(t)
+
+	for _, key := range []string{tmuxconf.FocusKey, tmuxconf.PopupToggleKey} {
+		if chord := macChord(key); !strings.Contains(line, chord) {
+			t.Errorf("the legend reads %q, want the chord %q for %s in it", line, chord, key)
+		}
+		if strings.Contains(line, key) {
+			t.Errorf("the legend reads %q, want %s written as it is pressed rather than in tmux's notation", line, key)
+		}
+	}
+}
+
+// A legend is only worth having if it is true (§7.3). The prototype's bar is
+// shared boilerplate across its four variants and is partly fiction: "!" is not
+// the Popup shell's key, "x" is interrupt rather than Takeover, and "q" ends a
+// Session — the Dashboard answers to no quit key at all.
+func TestTheDockLegendIsHonestAboutWhatTheKeysDo(t *testing.T) {
+	line := dockLegend(t)
+
+	for _, fiction := range []string{"! popup", "x takeover", "q quit"} {
+		if strings.Contains(line, fiction) {
+			t.Errorf("the legend reads %q, want no %q in it", line, fiction)
+		}
+	}
+	if !strings.Contains(line, macChord(tmuxconf.PopupToggleKey)+" popup shell") {
+		t.Errorf("the legend reads %q, want the Popup shell on the key that opens it", line)
+	}
+}
+
 // The status line of the Session you are working in is where the ambient
 // attention strip goes, so the installed config has to keep that line and hand
 // its right-hand end to the harness.

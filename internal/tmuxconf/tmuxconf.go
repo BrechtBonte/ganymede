@@ -145,6 +145,18 @@ const PopupDirOption = "@ganymede-popup-dir"
 // the Dashboard's.
 const AttentionOption = "@ganymede-attention"
 
+// The validated mock's palette, as the status lines the harness dresses read
+// it. Literals of their own rather than anything derived from a Session's state
+// colour — the chrome is not a state, and has to be free to move without
+// dragging one with it, which is how the Dashboard already keeps its brand and
+// its ticket colour apart.
+const (
+	chromePanel      = "#161b22"
+	chromeForeground = "#c9d1d9"
+	chromeQuiet      = "#8b949e"
+	chromeFaint      = "#484f58"
+)
+
 // strip hands the right-hand end of the status line to the harness: the counts
 // of what is waiting on you, under your eye line in the Session you are working
 // in rather than only over in the sidepanel.
@@ -231,15 +243,16 @@ func Install(l Layout) error {
 	return config.Replace(l.UserConf, []byte(body))
 }
 
-// dockBody configures the dock server. The dock is only a frame: it holds the
-// sidepanel and the working client side by side and otherwise stays out of the
-// way, so its prefix is disabled and every key reaches the client inside the
-// pane. It needs passthrough and focus events of its own, because both have to
-// travel through the dock to reach the emulator and the Sessions behind it.
+// dockBody configures the dock server. The dock is mostly a frame: it holds
+// the sidepanel and the working client side by side and otherwise stays out of
+// the way, so its prefix is disabled and every key reaches the client inside
+// the pane. It needs passthrough and focus events of its own, because both have
+// to travel through the dock to reach the emulator and the Sessions behind it.
+// The one thing it says for itself is the key legend along its own status line
+// — the only full-width row in the Dock.
 const dockBody = `# Managed by ganymede. Edit ganymede, not this file.
 set -g prefix None
 set -g prefix2 None
-set -g status off
 set -g mouse off
 set -g escape-time 0
 set -g base-index 0
@@ -249,6 +262,15 @@ set -g focus-events on
 
 # %s moves between the sidepanel and the working client.
 bind -n %s select-pane -t :.+
+
+# The Dock is the frame holding both panes, which makes its own status line the
+# only full-width row there is — so it is where the key legend goes, along the
+# bottom of the whole Dock. status-format is set rather than status-left, so the
+# line is the legend and nothing else: no window list to share it with, and none
+# of status-left's ten-column budget to be cut down to.
+set -g status on
+set -g status-style "bg=%s,fg=%s"
+set -g status-format[0] "%s"
 
 # The sidepanel keeps its width however the window is resized. window-resized
 # is the one that matters: client-resized fires before tmux has recalculated
@@ -262,9 +284,79 @@ set-hook -g window-resized 'resize-pane -t :.0 -x %d'
 // has no prefix, so this is a bare key in the root table.
 const FocusKey = "M-g"
 
+// legendKeys is the harness's complete vocabulary, in the order the keys are
+// worth: tmux truncates a status line from the right on a narrow window, so
+// what is worth least is what a narrow Dock gives up.
+//
+// Moving about comes first, then the two chords nothing else advertises — the
+// SELECTED box offers a row's own keys as you land on it, but no row is ever
+// standing on the key that moves focus or opens the Popup shell. The rest is
+// §7.3's action set: what a repo header answers to, then a Session, then the
+// ticket, then the picker.
+//
+// The chords are built from the constants the keys are actually bound to, so
+// that a rebinding cannot leave the legend lying, and are written the way a Mac
+// user presses them rather than in tmux's own notation.
+//
+// This is deliberately the complete vocabulary rather than what would fire on
+// the row you are standing on — which is a legend listing keys that do nothing
+// here, and cuts against the rule the SELECTED box follows ("offering a key
+// that would silently do nothing is worse than not offering it"). The division
+// of labour is the point: the legend is for learning the harness, the box
+// remains the authority on what this row will actually do.
+//
+// Where a key's label changes with what it is over, the legend says both:
+// "c claim/takeover" is one key over a Free root and over one somebody else is
+// in. What it must never say is what the prototype's shared bar said — "!" for
+// the Popup shell, "x takeover" when x is interrupt, or "q quit" when q ends a
+// Session and the Dashboard answers to no quit key at all.
+var legendKeys = []string{
+	"↑↓ select",
+	"⏎ jump",
+	macChord(FocusKey) + " focus",
+	macChord(PopupToggleKey) + " popup shell",
+	"w spawn",
+	"c claim/takeover",
+	"p prompt",
+	"y approve",
+	"n deny",
+	"x interrupt",
+	"q end",
+	"t ticket",
+	"o open ticket",
+	"g repo picker",
+}
+
+// macChord writes a tmux key the way it is pressed on the keyboard in front of
+// you: tmux's M- is the Option key and its C- is Control, and a legend that
+// asked for "M-g" would be one more thing to translate rather than one less.
+func macChord(key string) string {
+	return strings.NewReplacer("M-", "⌥", "C-", "⌃").Replace(key)
+}
+
+// legend draws the vocabulary for the Dock's status line: the key itself in the
+// foreground and its label quiet behind it, which is how the SELECTED box
+// already draws the keys it offers — the two are one vocabulary and should read
+// as one. The separator is fainter still, so what the eye runs along is the
+// keys.
+func legend() string {
+	drawn := make([]string, 0, len(legendKeys))
+	for _, key := range legendKeys {
+		char, label, ok := strings.Cut(key, " ")
+		if !ok {
+			drawn = append(drawn, "#[fg="+chromeForeground+"]"+char)
+			continue
+		}
+		drawn = append(drawn, "#[fg="+chromeForeground+"]"+char+"#[fg="+chromeQuiet+"] "+label)
+	}
+	return strings.Join(drawn, "#[fg="+chromeFaint+"] · ")
+}
+
 // WriteDockConf writes the dock server's configuration.
 func WriteDockConf(path string, sidepanelWidth int) error {
-	body := fmt.Sprintf(dockBody, FocusKey, FocusKey, sidepanelWidth, sidepanelWidth, sidepanelWidth)
+	body := fmt.Sprintf(dockBody, FocusKey, FocusKey,
+		chromePanel, chromeQuiet, legend(),
+		sidepanelWidth, sidepanelWidth, sidepanelWidth)
 	if err := config.Replace(path, []byte(body)); err != nil {
 		return fmt.Errorf("write dock config: %w", err)
 	}
