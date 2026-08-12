@@ -812,12 +812,19 @@ func TestTheDashboardHeaderCountsWhatIsWaitingOnYou(t *testing.T) {
 }
 
 // A working set asking nothing of you leaves the header as quiet as the strip.
+//
+// What has to be absent is the tiers' own marks rather than every digit on the
+// line: the header carries the time at its far end, and a clock is not a count.
+// That the counts' absence costs the clock no column of its own is asserted in
+// clock_test.go.
 func TestTheHeaderCountsNothingWhenNothingIsWaiting(t *testing.T) {
 	view := drawn(sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", session.Working)))
 
 	header, _, _ := strings.Cut(view, "\n")
-	if strings.ContainsAny(header, "0123456789") {
-		t.Errorf("the header counts something with nothing waiting on you: %q", header)
+	for _, tier := range []session.State{session.Blocked, session.Ready} {
+		if strings.Contains(header, tier.Glyph()) {
+			t.Errorf("the header counts %s with nothing waiting on you: %q", tier, header)
+		}
 	}
 }
 

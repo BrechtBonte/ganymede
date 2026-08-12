@@ -371,7 +371,7 @@ func New(sessions <-chan []session.Session, harness Harness) Model {
 	}
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(waitFor(m.sessions), ticking()) }
+func (m Model) Init() tea.Cmd { return tea.Batch(waitFor(m.sessions), ticking(), minutely()) }
 
 // Tick is the Dashboard asking to be drawn again with nothing new to show.
 type Tick struct{}
@@ -383,6 +383,30 @@ type Tick struct{}
 // itself sits at its prompt and reports nothing.
 func ticking() tea.Cmd {
 	return tea.Tick(30*time.Second, func(time.Time) tea.Msg { return Tick{} })
+}
+
+// Minute is the Dashboard asking to be drawn again because the clock in its
+// header has turned over.
+type Minute struct{}
+
+// minutely drives the header's clock, and is a clock of its own rather than
+// another passenger on ticking().
+//
+// The half-minute tick fires thirty seconds after it last fired, whenever that
+// was — a clock hung on it would read up to half a minute late, which is the one
+// thing a clock must not do. This one is scheduled to the next minute boundary
+// instead, so the face changes when the minute does. It also never stops, unlike
+// spinning(): the time goes on being the time whether or not anything on the
+// rail is animating.
+func minutely() tea.Cmd {
+	return tea.Tick(untilMinute(time.Now()), func(time.Time) tea.Msg { return Minute{} })
+}
+
+// untilMinute is what is left of the minute now falls in — the delay that lands
+// the next redraw on the far side of the turn rather than on the minute that is
+// ending.
+func untilMinute(now time.Time) time.Duration {
+	return now.Truncate(time.Minute).Add(time.Minute).Sub(now)
 }
 
 // Spin is the Dashboard asking to be drawn one frame further into whatever is
@@ -461,6 +485,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(waitFor(m.sessions), cmd, spin)
 		}
 		return m, tea.Batch(waitFor(m.sessions), spin)
+	case Minute:
+		// Nothing to work out: the header reads the time where it draws it. All
+		// this owes the clock is the next redraw, and it is owed unconditionally
+		// — a Dashboard with nothing running on it is exactly the one you are
+		// most likely to be reading the time off.
+		return m, minutely()
 	case Spin:
 		m.spinner++
 		if !m.animating() {
@@ -1418,11 +1448,25 @@ func (m Model) View() string {
 	return strings.Join(lines, "\n")
 }
 
-// header names the Dashboard, and counts what is waiting on you beside it. The
-// tree scrolls and the detail box shows one row; how much is asking something
-// of you is a number that should never have to be scrolled to.
+// header names the Dashboard, and counts what is waiting on you beside it,
+// with the time at the far end. The tree scrolls and the detail box shows one
+// row; how much is asking something of you is a number that should never have
+// to be scrolled to.
+//
+// The clock is here because there is nowhere else: Ghostty runs fullscreen with
+// the menu bar hidden, so the Dock is the whole of the screen and the header is
+// the only line on it that says anything about the harness rather than about a
+// repo. It is joined to the counts rather than concatenated, so a working set
+// asking nothing of you spends no column on the counts it does not draw.
 func (m Model) header() string {
-	return spread(brandStyle.Render("GANYMEDE"), m.counts(), m.width)
+	return spread(brandStyle.Render("GANYMEDE"), joined(m.counts(), m.clock()), m.width)
+}
+
+// clock is the time, quiet, as the mock draws it: 24-hour, to the minute. The
+// seconds are left off — a sidepanel is glanced at, not read, and a second hand
+// on it would be the one thing moving whenever nothing else was.
+func (m Model) clock() string {
+	return quietStyle.Render(time.Now().Format("15:04"))
 }
 
 // counts draws Attention as a mark and a number per tier, in the tier's own
