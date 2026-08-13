@@ -224,8 +224,8 @@ func runDashboard() error {
 	// the emulator window altogether — Ganymede's own Dock tile, which is
 	// nothing at all on a machine where `make launcher` was never run.
 	hands := dashboard.Harness{
-		Jumper: harness, Opener: harness, Focuser: harness, Strip: harness, Tile: tile.Default(), Spawner: harness, Popups: harness, Approver: harness,
-		Prompter: harness, Stopper: harness, Seen: model.Seen, Tickets: tickets, Panes: harness,
+		Jumper: harness, Opener: harness, Focuser: harness, Strip: harness, Tile: tile.Default(), Spawner: harness, Popups: harness,
+		Stopper: harness, Seen: model.Seen, Tickets: tickets, Panes: harness,
 	}
 	// Root Claims, like the tickets set by hand: a state file that cannot be
 	// read costs the Claims in it and nothing else, and the Dashboard is not

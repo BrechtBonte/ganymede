@@ -10,6 +10,42 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// stopCall is one pid the guard was asked to act on.
+type stopCall struct{ pid int }
+
+// stops records every call the Dashboard asked to have acted on, standing in
+// for the guarded send-keys engine actually touching tmux.
+type stops struct {
+	ended []stopCall
+	err   error
+}
+
+func (s *stops) End(pid int) error {
+	s.ended = append(s.ended, stopCall{pid})
+	return s.err
+}
+
+// sendingKey delivers a full key message and, when the guard has something
+// to send, lets its answer come back before returning — the send itself runs
+// off the main loop, so a test has to run the command it was handed the same
+// way the runtime would.
+func sendingKey(model tea.Model, msg tea.KeyMsg) tea.Model {
+	model, cmd := model.Update(msg)
+	if cmd == nil {
+		return model
+	}
+	model, _ = model.Update(cmd())
+	return model
+}
+
+// typeInto types each rune of text into whatever dialog is currently open.
+func typeInto(model tea.Model, text string) tea.Model {
+	for _, r := range text {
+		model = sendingKey(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	return model
+}
+
 // claims records every Claim and Release the Dashboard asked for, standing
 // in for the harness's own persisted Claims (internal/claim).
 type claims struct {

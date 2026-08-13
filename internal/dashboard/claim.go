@@ -8,6 +8,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// Stopper is the guarded send-keys engine's one remaining consumer: the
+// graceful exit Takeover fires against an Idle occupant before claiming its
+// root.
+type Stopper interface {
+	End(pid int) error
+}
+
 // claiming is the Claim dialog open over a Free repo header: the note being
 // typed, and the busy-popup mention (§8) to carry through to claimingView.
 //

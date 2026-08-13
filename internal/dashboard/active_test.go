@@ -38,40 +38,6 @@ func TestTheJumpedToSessionStaysMarkedAfterBrowsingAway(t *testing.T) {
 	}
 }
 
-// The guard's own mismatch fires from a background send with no idea what
-// you're doing on the Dashboard right now (approve.go's respond): the
-// cursor can move on before the answer comes back, and the row jumpTo
-// points at must still pick up the mark even though moveFocus is false and
-// the cursor never went near it.
-func TestTheGuardsApproveMismatchMarksItsRowEvenAfterTheCursorMovedOn(t *testing.T) {
-	approver := &approvals{err: errors.New("pane does not show the dialog it was reported waiting on")}
-	jumper := &jumps{}
-	// One in the repo's Main root and one in a worktree of it, so that the two
-	// rows are told apart by the checkout each is labelled with — a Session
-	// row carries no name of its own.
-	root := mainRoot(t, "service-billing")
-	a := session.Session{PID: 111, ID: "sess-a", Dir: root,
-		Name: "aaa-blocked", State: session.Blocked, Reason: "permission: Bash", Since: epoch}
-	b := session.Session{PID: 222, ID: "sess-b", Dir: worktree(t, root, "paging"),
-		Name: "bbb-blocked", State: session.Blocked, Reason: "permission: Bash", Since: epoch}
-	model := withApprover(approver, jumper, a, b)
-	model = press(model, tea.KeyDown) // onto a's row, which sorts first by name
-
-	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	if cmd == nil {
-		t.Fatal("y on a Blocked row asked for no guarded send")
-	}
-
-	model = press(model, tea.KeyDown) // browse onto b's row before the answer lands
-
-	model, _ = model.Update(cmd())
-
-	line := rawSessionRowFor(t, model, "main")
-	if !strings.HasPrefix(line, styleCodeOf(reverseFaint)) {
-		t.Errorf("aaa-blocked row = %q, want it marked as the row the working client is actually showing", line)
-	}
-}
-
 // A jump that fails outright — the harness could not reach the pane at
 // all, as against Gone's "the process itself has ended" — leaves the
 // working client showing whatever it already was. The row it failed on
@@ -93,39 +59,6 @@ func TestAJumpThatFailsDoesNotMarkItsRowActive(t *testing.T) {
 	line := rawSessionRowFor(t, model, "main")
 	if strings.HasPrefix(line, styleCodeOf(reverseFaint)) || strings.HasPrefix(line, styleCodeOf(reverseOnly)) {
 		t.Errorf("aaa-idle row = %q, want no mark left behind by a jump that failed", line)
-	}
-}
-
-// The send guard's own mismatch (prompt.go's delivering/dashboard.go's
-// `sent` case) reaches the pane through focusPane, not jumpTo, and shares
-// the same property: the cursor can move on before the async answer lands,
-// and the row it focuses must still pick up the mark.
-func TestTheGuardsSendMismatchMarksItsRowEvenAfterTheCursorMovedOn(t *testing.T) {
-	prompter := &prompts{err: errors.New("pane does not show an empty input box to send into")}
-	jumper := &jumps{}
-	// One in the Main root and one in a worktree of it: the checkout each row
-	// is labelled with is what tells the two apart, and their directories'
-	// differing lengths keep live()'s PID (len(name) + len(dir)) distinct.
-	root := mainRoot(t, "ganymede")
-	a := live("aaa-idle", root, session.Idle)
-	b := live("bbb-idle", worktree(t, root, "paging"), session.Idle)
-	model := withPrompter(prompter, jumper, a, b)
-	model = press(model, tea.KeyDown) // onto a's row, which sorts first by name
-
-	model = sendingKey(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
-	model = typeInto(model, "fix it")
-	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("Enter in the prompt dialog asked for no guarded send")
-	}
-
-	model = press(model, tea.KeyDown) // browse onto b's row before the send lands
-
-	model, _ = model.Update(cmd())
-
-	line := rawSessionRowFor(t, model, "main")
-	if !strings.HasPrefix(line, styleCodeOf(reverseFaint)) {
-		t.Errorf("aaa-idle row = %q, want it marked as the row the working client is actually showing", line)
 	}
 }
 
