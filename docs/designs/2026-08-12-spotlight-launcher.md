@@ -1,5 +1,11 @@
 # Spotlight launcher
 
+> **Partly superseded** by `docs/superpowers/specs/2026-08-13-blocked-count-tile-design.md`.
+> The bundle's `run.sh` is gone: its executable is now a compiled Swift binary
+> with two roles, and the `@@REPO_DIR@@` substitution happens in `Info.plist`
+> rather than in a script. Everything else here — why a hand-rolled bundle, the
+> install location, the absent signing — still holds.
+
 ## Problem
 
 Bringing up the harness today means opening a terminal and running `make up`

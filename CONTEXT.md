@@ -34,6 +34,10 @@ _Avoid_: background session, side session
 The toggleable overlay shell belonging to the session in focus, opening in that session's current directory. Hidden, not killed, on close; never an occupant of a main root.
 _Avoid_: scratch terminal, quick terminal, drawer
 
+**Tile**:
+Ganymede's own macOS Dock tile and the menu-bar item beside it, carrying the number of Blocked sessions — the harness's presence outside the emulator window. Lives exactly as long as the dashboard.
+_Avoid_: dock icon, dock badge, app badge — the Dock is the tmux frame, not macOS's
+
 ### Session states
 
 **Working**:
