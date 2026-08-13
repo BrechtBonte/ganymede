@@ -8,6 +8,7 @@ import (
 
 	"github.com/BrechtBonte/ganymede/internal/dashboard"
 	"github.com/BrechtBonte/ganymede/internal/session"
+	"github.com/BrechtBonte/ganymede/internal/tile"
 	"github.com/BrechtBonte/ganymede/internal/topology"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -934,13 +935,13 @@ func TestAJumpThatCouldNotBeMadeLeavesTheBadgeAlone(t *testing.T) {
 // tiles records what the Dashboard put on Ganymede's own Dock tile, standing
 // in for the app bundle's process.
 type tiles struct {
-	badged []session.Attention
+	badged []tile.Counts
 	closed bool
 	err    error
 }
 
-func (t *tiles) Badge(waiting session.Attention) error {
-	t.badged = append(t.badged, waiting)
+func (t *tiles) Badge(counts tile.Counts) error {
+	t.badged = append(t.badged, counts)
 	return t.err
 }
 
@@ -960,50 +961,56 @@ func badging(strip dashboard.Strip, tile dashboard.Tile, sets ...[]session.Sessi
 	return model
 }
 
-// One working set, counted once: the Tile is told the same Attention the strip
-// is, in the same update, so the two surfaces cannot disagree about how many
-// Sessions are waiting on a decision.
+// One working set, counted once: the Tile's Blocked/Ready match the strip's
+// Attention exactly, in the same update, so the two surfaces cannot disagree
+// about how many Sessions are waiting on a decision. Working is the Tile's
+// alone — the strip has no notion of it.
 func TestTheTileIsToldTheSameCountsAsTheStrip(t *testing.T) {
-	strip, tile := &strips{}, &tiles{}
+	strip, tileFake := &strips{}, &tiles{}
 
-	badging(strip, tile, []session.Session{
+	badging(strip, tileFake, []session.Session{
 		live("aaa-blocked", "/repos/service-billing", session.Blocked),
 		live("bbb-blocked", "/repos/ganymede", session.Blocked),
 		live("ccc-ready", "/repos/ganymede", session.Ready),
+		live("ddd-working", "/repos/ganymede", session.Working),
 	})
 
-	if len(tile.badged) == 0 {
+	if len(tileFake.badged) == 0 {
 		t.Fatal("the Dashboard never told the Tile anything")
 	}
-	if last, want := tile.badged[len(tile.badged)-1], (session.Attention{Blocked: 2, Ready: 1}); last != want {
+	last, want := tileFake.badged[len(tileFake.badged)-1], tile.Counts{Blocked: 2, Ready: 1, Working: 1}
+	if last != want {
 		t.Errorf("the Tile was told %+v, want %+v", last, want)
 	}
-	if last := strip.shown[len(strip.shown)-1]; last != tile.badged[len(tile.badged)-1] {
-		t.Errorf("the strip reads %+v and the Tile %+v, want one count", last, tile.badged[len(tile.badged)-1])
+	shown := strip.shown[len(strip.shown)-1]
+	if last.Blocked != shown.Blocked || last.Ready != shown.Ready {
+		t.Errorf("the strip reads %+v and the Tile %+v, want matching Blocked/Ready", shown, last)
 	}
 }
 
-// Counts that have not moved reach neither sink. The working set is rebuilt
-// whenever anything at all changes, and neither surface is worth a write for
-// news it already has.
-func TestNeitherSinkHearsCountsThatHaveNotChanged(t *testing.T) {
-	strip, tile := &strips{}, &tiles{}
+// A Working-only change carries no Attention, so the strip — which only ever
+// reads Blocked and Ready — never hears it. The Tile does: CountsIn is
+// recomputed from the working set on every pass, whether or not Attention
+// moved, so its dropdown stays current on Working even while the strip stays
+// silent.
+func TestAWorkingOnlyChangeReachesTheTileNotTheStrip(t *testing.T) {
+	strip, tileFake := &strips{}, &tiles{}
 	blocked := live("FIRE-2841-paging", "/repos/service-billing", session.Blocked)
-	elsewhere := live("ganymede-78", "/repos/ganymede", session.Idle)
-	working := elsewhere
+	idle := live("ganymede-78", "/repos/ganymede", session.Idle)
+	working := idle
 	working.State = session.Working
 
-	badging(strip, tile,
-		[]session.Session{blocked, elsewhere},
+	badging(strip, tileFake,
+		[]session.Session{blocked, idle},
 		[]session.Session{blocked, working},
-		[]session.Session{blocked, elsewhere},
 	)
 
-	if len(tile.badged) != 1 {
-		t.Errorf("the Dashboard told the Tile %d times for one set of counts: %+v", len(tile.badged), tile.badged)
-	}
 	if len(strip.shown) != 1 {
-		t.Errorf("the Dashboard wrote the strip %d times for one set of counts: %+v", len(strip.shown), strip.shown)
+		t.Errorf("the strip heard a Working-only change %d times, want it to stay silent", len(strip.shown))
+	}
+	last, want := tileFake.badged[len(tileFake.badged)-1], tile.Counts{Blocked: 1, Working: 1}
+	if last != want {
+		t.Errorf("the Tile's last count was %+v, want %+v — the Working change never reached it", last, want)
 	}
 }
 
