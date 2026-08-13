@@ -12,7 +12,7 @@ The Dashboard's sidepanel currently lets you act on a selected Session without j
 
 **Net effect:** a Blocked or Ready Session can no longer be acted on from the sidepanel at all. You jump in (`⏎`) and answer Claude Code directly. `w` (spawn), `c` (claim/release/takeover), `t`/`o` (ticket), and `g` (picker) are untouched.
 
-This touches four separate surfaces: the Dashboard's own dialogs and hints, the guarded tmux engine behind them, the Dock's status-line legend, and the README.
+This touches five separate surfaces: the Dashboard's own dialogs and hints, the guarded tmux engine behind them, the Dock's status-line legend, the README, and the architecture reference.
 
 ## Changes by surface
 
@@ -56,6 +56,18 @@ Drop `Approver: harness` and `Prompter: harness` from the wiring struct literal.
 - Remove the "Digit keys are never scripted, because permission-dialog rows are dynamic" line — it's rationale for the permission-prompt content being deleted and has nothing to attach to afterward.
 - Add a one-line note under "See what needs you" that a Blocked or Ready Session is acted on by jumping in (`⏎`), since the sidepanel no longer scripts a response itself.
 - Reword the top status line: "claim/takeover, worktree spawn, **inline actions**, and notifications all work day-to-day" — "inline actions" named this exact feature, so it comes out.
+
+### `docs/ARCHITECTURE.md`
+
+Missed in the original pass — found while implementing, by sweeping `docs/*.md` for the same terms the reviewer checked against source. This doc documents the feature at length, not just in passing:
+
+- **"Acting on sessions"** section: rewrite. It currently frames the whole guarded send-keys protocol — including a `#{pane_in_mode}` Frozen-pane check — as backing all five removed actions. That Frozen check is actually specific to `guard.go`'s `answer` (Approve/Deny only): `Send`/`located`/`End` never called `modeHeld` at all, confirmed by grepping for it — so the rewritten protocol is both narrower (End only) and more accurate (drops a step that was never true for End) than the original. The `PermissionRequest` hook paragraph stays as-is — it's about Blocked-reason reporting for the state model, not about the removed inline actions.
+- **SELECTED detail box** bullet (Dashboard internals): "plus the inline input for prompt and confirm actions" → reword to name what's actually still there (claim, spawn, ticket entry, and the Takeover confirmation) — "prompt" specifically meant the removed `p` dialog.
+- **Worktree sessions** section: "Ending a session goes through the dashboard's `q` action → graceful exit → Claude Code's own cleanup prompt" is no longer true for the general case — only Takeover still scripts an ending, and only as a side effect of claiming a root. Reword to say ending now happens the same way starting does (from inside the pane), with Takeover called out as the one path that still scripts it.
+- **Build order** item 4, "Inline actions — the guarded send-keys engine, then `y`/`n`, `p`, `x`, `q`": reword to "Guarded send-keys — the engine now backing Takeover's End," dropping the dead key list while keeping the milestone.
+- The data-flow mermaid diagram's `ACT["Action engine<br/>guarded send-keys"]` node and edge stay unchanged — still accurate, since guarded send-keys still exists for End.
+
+A repo-wide sweep of `docs/*.md` and `docs/agents/*.md` for the same terms turned up nothing else. `docs/superpowers/**` is historical planning material for other, already-shipped features and is out of scope.
 
 ### `CONTEXT.md`
 
