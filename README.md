@@ -15,6 +15,7 @@
   - [Prerequisites](#prerequisites)
   - [Install](#install)
   - [Run](#run)
+- [Development](#development)
 - [Learn more](#learn-more)
 - [License](#license)
 
@@ -115,6 +116,19 @@ It's safe to re-run — it reuses whatever's already up and installs over itself
 Rebuilding the binary is not enough to pick up a change: `up` only ever reuses an already-running Dashboard rather than restarting it. `make refresh` (or `scripts/refresh.sh`) rebuilds and restarts the Dashboard's own tmux pane in place, leaving the dock, the working client and every repo Session untouched.
 
 `make launcher` installs a `Ganymede.app` into `~/Applications`, so you can bring the harness up from Spotlight instead of a terminal. Run it once; re-run it if this checkout ever moves, since the app bakes in its absolute path.
+
+## Development
+
+Commands for changing Ganymede itself, rather than just running it:
+
+| Command | Does |
+|---|---|
+| `go build -o bin/ganymede ./cmd/ganymede` (or `make build`) | Compile the binary |
+| `make refresh` | Rebuild and restart the Dashboard's own tmux pane in place — the way to pick up a code change, since `up` only ever reuses an already-running Dashboard rather than restarting it |
+| `go test ./...` | Run the test suite |
+| `go vet ./...` | Run Go's static checks |
+| `gofmt -l .` | List files that aren't gofmt-formatted (`gofmt -w .` to fix them) |
+| `make launcher` | Rebuild `Ganymede.app` after editing the Dock launcher (`macos/launcher/`) |
 
 ## Learn more
 
