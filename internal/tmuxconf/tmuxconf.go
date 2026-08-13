@@ -344,8 +344,7 @@ const FocusKey = "M-g"
 // Moving about comes first, then the two chords nothing else advertises — the
 // SELECTED box offers a row's own keys as you land on it, but no row is ever
 // standing on the key that moves focus or opens the Popup shell. The rest is
-// §7.3's action set: what a repo header answers to, then a Session, then the
-// ticket, then the picker.
+// what a repo header answers to, then the ticket, then the picker.
 //
 // The chords are built from the constants the keys are actually bound to, so
 // that a rebinding cannot leave the legend lying, and are written the way a Mac
@@ -360,13 +359,11 @@ const FocusKey = "M-g"
 //
 // Where a key's label changes with the row it is over, the legend says every
 // label rather than the first of them: c is claim, release and Takeover as the
-// root's state moves, and p queues rather than prompts on a Session that is
-// already Working. A legend saying only one of them would be the box's own
+// root's state moves. A legend saying only one of them would be the box's own
 // words used to mean something they do not.
 //
 // What it must never say is what the prototype's shared bar said — "!" for the
-// Popup shell, "x takeover" when x is interrupt, or "q quit" when q ends a
-// Session and the Dashboard answers to no quit key at all.
+// Popup shell, or "q quit" when the Dashboard answers to no quit key at all.
 var legendKeys = []string{
 	"↑↓ select",
 	"⏎ jump",
@@ -382,11 +379,6 @@ var legendKeys = []string{
 	macChord(PopupToggleKey) + " popup shell",
 	"w spawn",
 	"c claim/release/takeover",
-	"p prompt/queue",
-	"y approve",
-	"n deny",
-	"x interrupt",
-	"q end",
 	"t ticket",
 	"o open ticket",
 	"g repo picker",
