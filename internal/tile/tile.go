@@ -10,6 +10,8 @@
 package tile
 
 import (
+	"fmt"
+	"io"
 	"strconv"
 
 	"github.com/BrechtBonte/ganymede/internal/session"
@@ -27,4 +29,73 @@ func Label(waiting session.Attention) string {
 		return ""
 	}
 	return strconv.Itoa(waiting.Blocked)
+}
+
+// Tile is Ganymede's own Dock tile and menu-bar item, driven down a pipe to
+// the app bundle's process.
+//
+// It is the second sink for the same Attention the strip carries, and the only
+// one that survives you leaving the window: the strip is inside Ghostty, this
+// is beside every other application's icon.
+type Tile struct {
+	// Start launches the tile process and hands back the pipe its labels are
+	// written to. Nil is a harness whose launcher was never installed, which
+	// is not a failure — it simply has no Tile.
+	Start func() (io.WriteCloser, error)
+
+	pipe    io.WriteCloser
+	label   string
+	started bool
+	retired bool
+}
+
+// Badge shows what is waiting on you.
+//
+// The first call is what puts the tile on screen, with whatever the count is
+// at the time — the harness being up is worth showing on its own, and an icon
+// that appeared only once something blocked would leave nothing to click for
+// the rest of the day. After that, only a label that has actually moved is
+// worth a write: the working set is rebuilt whenever anything at all changes,
+// and almost none of it is about the Blocked count.
+//
+// Any failure retires the Tile for good. A pipe to a child process does not
+// fail transiently — it fails because the process is gone, which is what
+// quitting the tile from its own Dock menu does, and answering that gesture
+// with a fresh tile on the next Session that blocks would be the harness
+// arguing with you.
+func (t *Tile) Badge(waiting session.Attention) error {
+	if t.Start == nil || t.retired {
+		return nil
+	}
+	label := Label(waiting)
+	if t.started && label == t.label {
+		return nil
+	}
+	if !t.started {
+		pipe, err := t.Start()
+		if err != nil {
+			t.retired = true
+			return fmt.Errorf("start Ganymede's Dock tile: %w", err)
+		}
+		t.pipe, t.started = pipe, true
+	}
+	if _, err := fmt.Fprintln(t.pipe, label); err != nil {
+		t.retired = true
+		return fmt.Errorf("tell Ganymede's Dock tile about %q: %w", label, err)
+	}
+	t.label = label
+	return nil
+}
+
+// Close takes the tile down with the Dashboard. The process would read EOF on
+// its own once this one ends — and has to, since a Dashboard killed outright
+// runs no cleanup at all — but closing the pipe deliberately is what makes the
+// icon go at the moment you quit rather than a beat afterwards.
+func (t *Tile) Close() error {
+	if t.pipe == nil {
+		return nil
+	}
+	pipe := t.pipe
+	t.pipe = nil
+	return pipe.Close()
 }
