@@ -179,6 +179,9 @@ the working set that is already there, the same way `session.AttentionIn(m.set)`
 already is. `Badge`'s own dedupe is what makes a repeat call cheap, so `Model`
 does not need a second copy of "what was last sent" alongside `m.written`.
 
+`dashboard.go` gains an import of `internal/tile`, which it does not have
+today.
+
 ### A behaviour this flips
 
 `TestNeitherSinkHearsCountsThatHaveNotChanged` (dashboard_test.go) and the
@@ -210,12 +213,18 @@ private var blockedItem, readyItem, workingItem: NSMenuItem!
 
 private func buildMenu() -> NSMenu {
     let menu = NSMenu()
+    // NSMenu auto-disables (and dims) any item whose action nothing in the
+    // responder chain implements — which a nil action always qualifies for.
+    // The three count rows have no action by design, so autoenabling has to
+    // go, or the coloured counts this feature is for would render greyed out.
+    menu.autoenablesItems = false
     let open = menu.addItem(withTitle: "Open Ganymede", action: #selector(clicked), keyEquivalent: "")
     open.target = self
     menu.addItem(.separator())
     blockedItem = menu.addItem(withTitle: "", action: nil, keyEquivalent: "")
     readyItem = menu.addItem(withTitle: "", action: nil, keyEquivalent: "")
     workingItem = menu.addItem(withTitle: "", action: nil, keyEquivalent: "")
+    for item in [blockedItem, readyItem, workingItem] { item?.isEnabled = true }
     return menu
 }
 ```
@@ -223,6 +232,11 @@ private func buildMenu() -> NSMenu {
 `item.menu = buildMenu()` replaces `item.button?.target`/`.action`: an
 `NSStatusItem` with a `menu` assigned shows it on any click by itself, so
 `clicked()` moves from being the button's own action to "Open Ganymede"'s.
+
+`applicationDidFinishLaunching` calls `show("0 0 0")` synchronously — the same
+job today's synchronous `show("")` call does — so the icon and the dropdown's
+three rows paint immediately, before the stdin reader (and its first real
+line) ever runs.
 
 `show(_ line:)` parses three integers instead of one label, leaves the Dock
 badge and menu-bar title exactly as they read today, and restyles the three
