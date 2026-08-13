@@ -111,7 +111,7 @@ stateDiagram-v2
 ## Dashboard internals
 
 - **Repo tree** (~40 columns, always visible, left): repo header rows with root-state chip, each carrying its git caution markers on an indented line of its own beneath the header (never a row of its own — `↑↓` steps over it and it is never selectable); indented session rows with state glyph, the marks for a Frozen pane (`❄`) and a busy popup (`⏵`), the checkout the session is working in (`main`, or `wt·<worktree>`), abbreviated ticket ID, and wait age. Attention tier sorts first, then recency. The tree's own viewport is therefore budgeted in lines while the cursor counts rows.
-- **SELECTED detail box** at the foot: full detail for the highlighted row — the repo, blocked reason or last-message snippet, full ticket ID, cwd — plus the inline input for prompt and confirm actions.
+- **SELECTED detail box** at the foot: full detail for the highlighted row — the repo, blocked reason or last-message snippet, full ticket ID, cwd — plus the inline input for claim, spawn, and ticket entry, and the Takeover confirmation.
 - **Main panel** (right): the live session in focus. `⏎` on a row jumps there.
 
 ### Working set
@@ -122,17 +122,16 @@ A checkout is a repo when its `.git` is a directory. A worktree checkout, a subm
 
 ## Acting on sessions
 
-Sessions are interactive in panes. Inline actions cover exactly the safe-to-script subset; everything richer is one `⏎` away, because "focus the pane" is always the honest fallback.
+Sessions are interactive in panes. Ending an Idle occupant to take over its root is the one action still scripted from the sidepanel; everything else is one `⏎` away, because "focus the pane" is always the honest fallback.
 
 The `PermissionRequest` hook is a **reporter only** — it forwards `tool_name`, `tool_input`, and `session_id` to the receiver and exits immediately, so the pane's dialog never lags and the sidepanel still gets instant blocked context.
 
-**Guarded send-keys** is the single action transport, in strict order:
+**Guarded send-keys** is the one action transport left, backing Takeover's End:
 
-1. Gate on the registry — state must match the action's precondition and `statusUpdatedAt` must be fresh.
-2. Ask `#{pane_in_mode}` — a **Frozen** pane hands the keystroke to the mode's own key table, and `capture-pane` cannot reveal this, since it returns the live screen the mode is holding a view over. Asked before the capture: it is the cheaper question, and it decides whether the other is worth asking.
-3. `tmux capture-pane` and verify the expected content (the permission-dialog tool line, an empty input box for prompt-send).
-4. Send only `Y` / `N` / `Esc` / `Enter` / bracketed-paste text (`set-buffer` + `paste-buffer -p`).
-5. Re-verify with capture-pane.
+1. Gate on the registry — state must be Idle and `statusUpdatedAt` must be fresh.
+2. `tmux capture-pane` and verify the pane shows an empty input box.
+3. Paste `/exit` and press Enter (`set-buffer` + `paste-buffer -p`).
+4. Re-verify: the pane no longer shows Claude Code's own input marker at all.
 
 Any mismatch at any step means **do nothing and focus the pane instead**. Channels is the designated future replacement once it leaves research preview with a non-dangerous custom-channel opt-in.
 
@@ -144,7 +143,7 @@ Any mismatch at any step means **do nothing and focus the pane instead**. Channe
 
 Spawned worktree sessions **always start in auto permission mode** — the worktree's isolation justifies it, and whatever auto still gates simply surfaces as Blocked.
 
-Ending a session goes through the dashboard's `q` action → graceful exit → Claude Code's own cleanup prompt. The `worktree-prune` skill covers stragglers.
+Ending a session happens the same way starting one does — from inside the pane. Takeover is the one path that still scripts it: ending an Idle occupant automatically, before claiming its root. The `worktree-prune` skill covers stragglers.
 
 ## Popup shell
 
@@ -185,7 +184,7 @@ Non-binding; the plan owns the real slicing. This ordering just respects the dep
 1. **Read-only dashboard** — registry watch, hook install, reconciler → live states, ordering, status strip, jump (`⏎`), picker (`g`).
 2. **Roots & claims** — root-state derivation, Claim/release/Takeover, git caution markers.
 3. **Spawn & popup** — the `w` flow over `claude --worktree`, popup shell.
-4. **Inline actions** — the guarded send-keys engine, then `y`/`n`, `p`, `x`, `q`.
+4. **Guarded send-keys** — the engine now backing Takeover's End.
 5. **Alerting** — notifier, focus check, sticky Blocked alerts, Ready escalation, settings absorption.
 6. **Install & migration** — Ghostty and tmux config fragments, hook/settings installer, `Cmd+F` keybind.
 
