@@ -159,6 +159,7 @@ beside the strip — `Strip: harness, Tile: tile.Default()`.
 // where you can read it from another application entirely.
 type Tile interface {
     Badge(waiting session.Attention) error
+    Close() error
 }
 ```
 
@@ -168,29 +169,43 @@ with a Tile and no strip would never reach the Tile at all:
 
 ```go
 func (m Model) counted() Model {
+    if m.shown && m.waiting == m.written {
+        return m
+    }
     if m.harness.Tile != nil {
         // Errors are the Tile's own business: it retires itself, and a count
         // the Dock could not be told is not worth a word on a Dashboard that
         // is already showing it.
         _ = m.harness.Tile.Badge(m.waiting)
     }
-    if m.harness.Strip == nil || (m.shown && m.waiting == m.written) {
-        return m
+    if m.harness.Strip != nil {
+        if err := m.harness.Strip.Show(m.waiting); err != nil {
+            return m
+        }
     }
-    …
+    m.written, m.shown = m.waiting, true
+    return m
 }
 ```
 
-The strip's memory stays where it is, in `m.written`/`m.shown`. The Tile's
-lives inside the `*tile.Tile` the interface holds, not in the `Model` — the
-Model is copied on every update, and a sink that has to remember whether it
-spawned a process cannot have its memory copied out from under it. That also
-makes the Tile's dedupe its own: it compares labels rather than whole
-`Attention` values, which is what makes Ready's movement free.
+The gate on "have the counts moved" comes first and now covers both sinks,
+where today it is fused to `Strip == nil`. `m.written`/`m.shown` therefore
+advance on a Strip-less harness too, which is what keeps the Tile from being
+told the same thing on every registry event.
 
-Nothing is added at `dashboard.go:1051`, where the strip is blanked on
-shutdown. The Tile needs no such courtesy: the Dashboard exiting closes the
-pipe, and the tile clears itself.
+The strip's memory stays in `m.written`/`m.shown`. The Tile's lives inside the
+`*tile.Tile` the interface holds, not in the `Model` — the Model is copied on
+every update, and a sink that has to remember whether it spawned a process
+cannot have its memory copied out from under it. That also makes the Tile's
+dedupe its own: it compares labels rather than whole `Attention` values, which
+is what makes Ready's movement free, and it means a strip write that failed
+costs the Tile nothing when the next tick tries again.
+
+At `dashboard.go:1051`, where Ctrl+C blanks the strip, the Tile is closed in
+the same breath — so the interface is `Badge` and `Close`. EOF would take the
+tile down anyway when the process ends, and has to, since `respawn-pane -k`
+runs no cleanup at all; closing explicitly is what makes a Dashboard you quit
+by hand drop its Dock icon at the moment you quit it rather than a beat later.
 
 ### Lifecycle is the pipe
 
@@ -281,16 +296,21 @@ AppKit calls — so the acceptance list below stands in for it.
   start a second process.
 - Closing the `Tile` closes the pipe.
 
-`internal/dashboard`, alongside the existing fakes:
+`internal/dashboard`, alongside the existing `strips` fake:
 
-- Two Blocked Sessions push `"2"` to a fake Tile in the same update that
-  writes the strip.
-- A Session going from Ready to Idle moves the strip and leaves the Tile
-  alone.
+- Two Blocked Sessions reach a fake Tile as the same `Attention` the strip is
+  given, in the same update.
+- Counts that have not moved reach neither sink — the existing strip case,
+  extended to cover the Tile now that the gate is shared.
 - A nil `Tile` changes nothing about the strip or the tree — the case of a
   harness whose launcher was never installed.
-- A Tile whose write fails does not stop the strip being written, and is not
-  written to again.
+- A Tile whose `Badge` fails does not stop the strip being written, and does
+  not reach the tree as an error.
+- Ctrl+C closes the Tile, the way it already blanks the strip.
+
+Ready-only movement is deliberately *not* a Dashboard test: the Dashboard hands
+both sinks every `Attention` that moved, and swallowing the ones where the
+Blocked count did not change is the Tile's own job, tested in `internal/tile`.
 
 Manual acceptance, once it is wired up:
 
