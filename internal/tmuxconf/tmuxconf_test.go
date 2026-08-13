@@ -597,7 +597,7 @@ func dockLegend(t *testing.T) string {
 func TestTheDockStatusLineCarriesTheKeyLegend(t *testing.T) {
 	line := dockLegend(t)
 
-	for _, want := range []string{"↑↓ select", "⏎ jump", "w spawn", "y approve", "n deny", "x interrupt", "q end", "t ticket", "o open ticket", "g repo picker"} {
+	for _, want := range []string{"↑↓ select", "⏎ jump", "w spawn", "t ticket", "o open ticket", "g repo picker"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the Dock's legend reads %q, want %q offered in it", line, want)
 		}
@@ -606,14 +606,13 @@ func TestTheDockStatusLineCarriesTheKeyLegend(t *testing.T) {
 
 // A key the Dashboard labels differently as the row under it changes is a key
 // the legend has to spell out in full: c gives a Claimed root back rather than
-// claiming it, and p on a Working Session queues rather than prompts. Half the
-// meanings would be the SELECTED box's own words used to mean something else.
+// claiming it. Half the meanings would be the SELECTED box's own words used to
+// mean something else.
 func TestTheDockLegendSpellsOutTheKeysThatChangeWithTheRow(t *testing.T) {
 	line := dockLegend(t)
 
 	for _, key := range []struct{ key, meaning string }{
 		{"c", "claim"}, {"c", "release"}, {"c", "takeover"},
-		{"p", "prompt"}, {"p", "queue"},
 	} {
 		if !strings.Contains(line, key.meaning) {
 			t.Errorf("the legend reads %q, want %q said of %q", line, key.meaning, key.key)
@@ -699,10 +698,10 @@ func TestTheDockLegendNamesOneChordForThePopupShell(t *testing.T) {
 	}
 }
 
-// A legend is only worth having if it is true (§7.3). The prototype's bar is
-// shared boilerplate across its four variants and is partly fiction: "!" is not
-// the Popup shell's key, "x" is interrupt rather than Takeover, and "q" ends a
-// Session — the Dashboard answers to no quit key at all.
+// A legend is only worth having if it is true. The prototype's bar is shared
+// boilerplate across its four variants and is partly fiction: "!" is not the
+// Popup shell's key, "x" was never Takeover's key, and "q" never meant quit —
+// the Dashboard answers to no quit key at all.
 func TestTheDockLegendIsHonestAboutWhatTheKeysDo(t *testing.T) {
 	line := dockLegend(t)
 

@@ -72,7 +72,7 @@ func TestASessionRowsOfferingStandsItsKeysOutFromTheirLabels(t *testing.T) {
 	}
 	// A key further along the line reads the same way: the one before it
 	// finishing quietly is not what makes the next one findable.
-	if !strings.Contains(line, "p "+styleCodeOf(quiet)+"prompt") {
+	if !strings.Contains(line, "t "+styleCodeOf(quiet)+"ticket") {
 		t.Errorf("offering = %q, want every key character standing out, not only the first", line)
 	}
 }

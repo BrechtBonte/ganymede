@@ -106,27 +106,6 @@ func TestSelectedBoxShowsTheTicketAndOffersToOpenIt(t *testing.T) {
 	}
 }
 
-// A row with more offered keys than the SELECTED box has columns for drops
-// them whole off the tail rather than cutting the line off mid-word: a
-// Working row with a ticket already spends its width on jump, queue and
-// interrupt, so the ticket's own keys — the last two, and the least urgent —
-// are the ones left off entirely, never a "t ticke" left hanging.
-func TestSelectedBoxDropsTicketHintsWholeRatherThanMidWordWhenThereIsNoRoom(t *testing.T) {
-	model := knowing(
-		&known{of: map[string]ticket.Key{"/repos/service-billing": "FIRE-2841"}},
-		live("max-paging-numbers", "/repos/service-billing", session.Working),
-	)
-	model = press(model, tea.KeyDown)
-
-	box := detail(model)
-	lines := strings.Split(box, "\n")
-	hints := lines[len(lines)-1]
-
-	if want := "⏎ jump · p queue · x interrupt"; hints != want {
-		t.Errorf("hints = %q, want %q (ticket hints dropped whole, not cut mid-word)", hints, want)
-	}
-}
-
 // The other half of what the harness knows about a ticket: o hands it to the
 // browser, which is where everything the harness deliberately does not know
 // about that ticket lives.
@@ -377,7 +356,9 @@ func TestTheKeysBelongToTheInputWhileItIsOpen(t *testing.T) {
 	model = press(model, tea.KeyDown)
 
 	model = types(model, "t")
-	// o opens a ticket, q ends a Session, and here they are two letters of one.
+	// o opens a ticket, and it is one of the letters typed here — proof that
+	// what you are typing does not leak through to the key it would
+	// otherwise be.
 	model = types(model, "CORE-119")
 
 	if len(about.opened) != 0 {

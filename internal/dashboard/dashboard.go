@@ -234,16 +234,8 @@ type Harness struct {
 	Popups Popups
 	// Panes is what tmux says about the panes the Sessions run in.
 	Panes Panes
-	// Approver answers a Blocked Session's dialog: the guard's default row,
-	// or the decline (§7.3).
-	Approver Approver
-	// Prompter delivers a prompt into a Session's own input box, on an Idle,
-	// Ready or Working row (§7.3).
-	Prompter Prompter
-	// Stopper interrupts a Working Session's turn with a bare guarded Esc,
-	// and ends an Idle or Ready one gracefully once its own confirmation has
-	// been answered (§7.3). A Takeover reuses it to end the occupant before
-	// claiming the root.
+	// Stopper ends an Idle Session gracefully, which is what a Takeover
+	// fires against the occupant before claiming the root.
 	Stopper Stopper
 	// Claimer is where a Main root Claim is kept: claim it, release it, and
 	// read which roots are claimed now (§4.2, §7.3's free key).
@@ -324,10 +316,6 @@ type Model struct {
 	setting *setting
 	// spawning is the worktree-spawn dialog, and nil when none is open.
 	spawning *spawning
-	// prompting is the prompt-from-dashboard input, and nil when none is open.
-	prompting *prompting
-	// ending is the end-session confirmation, and nil when none is open.
-	ending *ending
 	// claiming is the Claim dialog open over a Free repo header, and nil
 	// when none is open.
 	claiming *claiming
@@ -335,9 +323,9 @@ type Model struct {
 	// whose only occupant is Idle, and nil when none is open.
 	takingOver *takingOver
 	// pending is which Sessions, by pid, have a guarded answer in flight —
-	// sent off the main loop and not yet back — so a second y or n on the
-	// same row before the first lands cannot fire a second send at the pane
-	// the first is still verifying.
+	// sent off the main loop and not yet back — so confirming a Takeover
+	// twice on the same row before the first lands cannot fire a second End
+	// at a pane the first is still verifying.
 	pending map[int]bool
 	// forgotten is which pids Jump has confirmed are Gone — the process
 	// itself has ended, not merely unplaceable in a pane. Sessions is
@@ -550,47 +538,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case Discovered:
 		m.picker = m.picker.found(msg)
 		return m, nil
-	case answered:
-		delete(m.pending, msg.session.PID)
-		if msg.err != nil {
-			// The guard's own mismatch: the gate passed but tmux could not verify
-			// the send. Said before the fallback jump, which is silent on success
-			// and would otherwise overwrite it with nothing — a y or n that did
-			// not go through has to say why, not just leave you looking at the
-			// pane wondering.
-			m.notice = msg.err.Error()
-			return m.jumpTo(msg.session, false), nil
-		}
-		return m, nil
-	case sent:
-		delete(m.pending, msg.pid)
-		if msg.err != nil {
-			// The guard's own mismatch: focus the pane and say why. Unlike a
-			// mismatched approve or deny, this must not count as seen —
-			// sending is what earns a Ready Session its clear ("Sending
-			// counts as a prompt, so it clears Ready"), and a send the guard
-			// never verified has not earned it, even once the pane it could
-			// not confirm is the one now in front of you.
-			m.notice = msg.err.Error()
-			return m.focusPane(msg.pid), nil
-		}
-		// Sending counts as a prompt, so it clears Ready the same way seeing
-		// the Session does (CONTEXT.md: "Ready -> Idle: seen ... or new
-		// prompt") — the registry catches up to Working on its own.
-		if m.harness.Seen != nil {
-			m.harness.Seen(msg.id)
-		}
-		return m, nil
 	case spawned:
 		// The spawn already closed its dialog and reported nothing, on the
 		// strength of tmux having taken the window. This is the window answering
 		// for the session in it, which is the only answer worth having.
 		m.notice = msg.said()
 		return m, nil
-	case interrupted:
-		return m.stopped(msg.pid, msg.err)
-	case ended:
-		return m.stopped(msg.pid, msg.err)
 	case tookOver:
 		return m.stoppedTakeover(msg)
 	case tea.KeyMsg:
@@ -1055,10 +1008,6 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case msg.Type == tea.KeyCtrlC:
 	case m.spawning != nil:
 		return m.spawningKey(msg)
-	case m.prompting != nil:
-		return m.promptKey(msg)
-	case m.ending != nil:
-		return m.endingKey(msg)
 	case m.claiming != nil:
 		return m.claimingKey(msg), nil
 	case m.takingOver != nil:
@@ -1107,16 +1056,6 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.opening()
 		case "w":
 			m = m.spawn()
-		case "p":
-			m = m.startPrompt()
-		case "y":
-			return m.approve()
-		case "n":
-			return m.deny()
-		case "x":
-			return m.interrupt()
-		case "q":
-			m = m.startEnd()
 		case "c":
 			return m.claim()
 		}
@@ -1244,19 +1183,15 @@ func (m Model) jump() Model {
 	if selected.session == nil {
 		return m.goTo(selected.root)
 	}
-	return m.jumpTo(*selected.session, true)
+	return m.jumpTo(*selected.session)
 }
 
 // jumpTo puts s in front of you: the pane it is running in, and the moment
 // it counts as seen. It is jump's own work over the selected row, factored
-// out so the guard's asynchronous fallback (§7.2) can focus the exact
-// Session it tried to answer, by the Session itself rather than whichever
-// row the cursor has since moved to.
-//
-// moveFocus is true only for the direct Enter gesture in jump(): the async
-// fallback shares this same call but must never steal keyboard focus from
-// whatever you're doing on the Dashboard when it fires.
-func (m Model) jumpTo(s session.Session, moveFocus bool) Model {
+// out by the Session itself rather than whichever row the cursor is on, so
+// that a caller acting on a Session that has since moved on the tree can
+// still point at the exact one it meant.
+func (m Model) jumpTo(s session.Session) Model {
 	if m.harness.Jumper == nil {
 		return m
 	}
@@ -1273,14 +1208,12 @@ func (m Model) jumpTo(s session.Session, moveFocus bool) Model {
 		m.notice = err.Error()
 		return m
 	}
-	// The pane really changed, whether or not keyboard focus followed it:
-	// the async guard fallback (moveFocus == false) repoints the working
-	// client exactly as much as the direct Enter gesture does.
+	// The pane really changed, whether or not keyboard focus followed it.
 	m.active = s.PID
 	if m.harness.Seen != nil {
 		m.harness.Seen(s.ID)
 	}
-	if moveFocus && m.harness.Focuser != nil {
+	if m.harness.Focuser != nil {
 		_ = m.harness.Focuser.Focus()
 	}
 	return m
@@ -1343,12 +1276,11 @@ func pruneForgotten(forgotten map[int]struct{}, sessions []session.Session) map[
 }
 
 // focusPane puts pid's own pane in front of you without counting it as seen
-// — the honest fallback for a prompt-send the guard could not verify
-// (§7.2). Sending is what earns a Ready Session its Ready clear, not merely
-// being shown the pane after a delivery nobody could confirm, so unlike
-// jumpTo this never touches Seen; and the notice already on show is the
-// guard's own explanation of what went wrong, so a jump that also fails is
-// left unsaid rather than overwriting it.
+// — the honest fallback for a Takeover's End the guard could not verify
+// (§7.2's endFailed, claim.go's stoppedTakeover). The occupant may not have
+// actually left, so unlike jumpTo this never touches Seen; and the notice
+// already on show is the guard's own explanation of what went wrong, so a
+// jump that also fails is left unsaid rather than overwriting it.
 func (m Model) focusPane(pid int) Model {
 	if m.harness.Jumper != nil && m.harness.Jumper.Jump(pid) == nil {
 		m.active = pid
@@ -1918,12 +1850,6 @@ func (m Model) selected() []string {
 	if m.spawning != nil {
 		return m.spawningView()
 	}
-	if m.prompting != nil {
-		return m.promptingView()
-	}
-	if m.ending != nil {
-		return m.endingView()
-	}
 	if m.claiming != nil {
 		return m.claimingView()
 	}
@@ -2042,30 +1968,21 @@ func (m Model) carrying(c repo.Caution) []string {
 	return lines
 }
 
-// offering is what the selected row can be asked to do, in the order it
-// matters most: the jump every row offers, then the row's own guarded
-// actions, then the ticket's — greedily filling width with whole keys and no
-// more. A Session about no ticket is not offered a link to open, since there
-// is none — but it is always offered the key that gives it one. Approve and
-// deny only ever apply to a Session that cannot continue without you (§7.3)
-// — anything else has nothing on this row to say yes or no to.
+// offering is what the selected row can be asked to do: the jump every row
+// offers, then the ticket's own — greedily filling width with whole keys and
+// no more. A Session about no ticket is not offered a link to open, since
+// there is none — but it is always offered the key that gives it one. A
+// Blocked or Ready Session offers nothing beyond this: acting on one now
+// means jumping in (⏎) and answering Claude Code directly in its own pane,
+// not scripting a response from here.
 //
 // A row with more keys than width has room for drops them whole off the
 // tail rather than cutting the line off mid-word: "t ticke" left hanging
 // reads as a Dashboard that has glitched, not one that ran out of room on
-// purpose — and the keys that matter most (jump, the row's own action) are
-// the ones offered first, so they are the last to give way.
+// purpose — and jump, the key that matters most, is offered first, so it is
+// the last to give way.
 func offering(r row, width int) string {
-	keys := []string{"⏎ jump"}
-	switch r.session.State {
-	case session.Blocked:
-		keys = append(keys, "y approve", "n deny")
-	case session.Idle, session.Ready:
-		keys = append(keys, "p prompt", "q end")
-	case session.Working:
-		keys = append(keys, "p queue", "x interrupt")
-	}
-	keys = append(keys, "t ticket")
+	keys := []string{"⏎ jump", "t ticket"}
 	if r.ticket != "" {
 		keys = append(keys, "o open")
 	}

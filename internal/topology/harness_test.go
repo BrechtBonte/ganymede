@@ -1,6 +1,7 @@
 package topology_test
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -126,6 +127,38 @@ func settles(cond func() bool) bool {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return false
+}
+
+// guardable is a Harness on a throwaway server, with no dock and no working
+// client — the guard only ever touches the one pane it is pointed at, not
+// the topology Jump needs to steer anything.
+func guardable(t *testing.T) topology.Harness {
+	t.Helper()
+	repo := initRepo(t, filepath.Join(t.TempDir(), "service-billing"))
+	return testHarness(t, repo)
+}
+
+// shellQuoted quotes arg for embedding in a shell script body: a path under
+// t.TempDir() never carries a quote, but the script it is written into is
+// still a shell command line.
+func shellQuoted(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+}
+
+// readKeylog is the content a pane script logged to path, once there is
+// one — settling rather than reading at once, since the pane's own
+// read-and-log takes a moment to land after tmux delivers the keystroke.
+func readKeylog(t *testing.T, path string) string {
+	t.Helper()
+	var body []byte
+	if !settles(func() bool {
+		var err error
+		body, err = os.ReadFile(path)
+		return err == nil && len(body) > 0
+	}) {
+		t.Fatalf("no key was ever logged to %s", path)
+	}
+	return strings.TrimSpace(string(body))
 }
 
 // The topology of the harness: one window, the Dashboard docked at the left in

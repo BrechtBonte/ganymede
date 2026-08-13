@@ -1,6 +1,6 @@
 # Ganymede
 
-> **Status:** actively evolving — claim/takeover, worktree spawn, inline actions, and notifications all work day-to-day; rough edges are still being sanded down.
+> **Status:** actively evolving — claim/takeover, worktree spawn, and notifications all work day-to-day; rough edges are still being sanded down.
 
 ## Table of contents
 
@@ -8,7 +8,6 @@
 - [How to use it](#how-to-use-it)
   - [See what needs you](#see-what-needs-you)
   - [Spawn a worktree session for a ticket](#spawn-a-worktree-session-for-a-ticket)
-  - [Respond to a permission prompt inline](#respond-to-a-permission-prompt-inline)
   - [Claim a root for PR review](#claim-a-root-for-pr-review)
   - [Get notified when you're away](#get-notified-when-youre-away)
   - [Keys](#keys)
@@ -37,19 +36,13 @@ Once it's running (see [How to install](#how-to-install)), Ganymede docks a side
 
 The sidepanel lists your repos, each with its sessions nested underneath. Sessions needing you sort to the top — **Blocked** above **Ready**, longest-waiting first — so the row at the top of the list is always the most urgent thing waiting on you. Use `↑`/`↓` to move the selection; the box at the foot of the panel shows full detail for whatever's highlighted — the blocked reason, the last message, the ticket, the working directory.
 
-Press `⏎` on a session row to jump the working client straight to it, clearing that session's Ready badge as you go. Press `⏎` on a repo's own header row to go to that repo instead, starting a session at its main root if nothing is running there yet.
+Press `⏎` on a session row to jump the working client straight to it, clearing that session's Ready badge as you go. Press `⏎` on a repo's own header row to go to that repo instead, starting a session at its main root if nothing is running there yet. A **Blocked** or **Ready** session is acted on the same way — jumping in is how you answer its dialog or read its output.
 
 Don't see the repo you want? Press `g` to open a fuzzy picker over every repo Ganymede can find under `~/Projects`. Typing narrows it — `gnm` reaches `ganymede` — and `⏎` takes you there and adds it to the sidepanel.
 
 ### Spawn a worktree session for a ticket
 
 Press `w` on a repo to open a background session in its own git worktree, leaving the main root untouched. The dialog takes two optional fields: a JIRA ticket ID (the worktree gets named after it, e.g. `FIRE-2841-paging`) and a first prompt — fill that in and the session starts working immediately, fire-and-forget. Worktree sessions always start in Claude Code's auto permission mode, since the isolation of a worktree justifies it.
-
-### Respond to a permission prompt inline
-
-When a session goes **Blocked** on a permission prompt, you don't have to jump into its pane for a plain yes/no: press `y` to approve or `n` (or `Esc`) to deny, right from the sidepanel. Anything richer than a straight approve/deny still needs `⏎` to jump in — the sidepanel only ever scripts what it can verify first.
-
-Press `p` on an Idle, Ready, or Working session to send it a prompt from the detail box without switching panes. On a Working session, `Enter` queues the prompt for after the current turn; `Ctrl+Enter` interrupts it and sends immediately. Press `x` to interrupt a Working session outright, and `q` to end an Idle or Ready one (with a confirmation first).
 
 ### Claim a root for PR review
 
@@ -71,10 +64,6 @@ A banner you've dismissed is gone, so the count doesn't live there alone: for as
 |---|---|---|
 | `⏎` | session row | Jump — switch the working client to the session (clears Ready) |
 | `⏎` | repo row | Go to the repo — switch the working client to its session, started at the main root if nothing is running there |
-| `y` / `n` | Blocked | Approve (`y`) / deny (`n` or `Esc`). Richer choices always jump in |
-| `p` | Idle, Ready, Working | Prompt from the detail box. On Working, `Enter` queues; `Ctrl+Enter` interrupts-then-sends |
-| `x` | Working | Interrupt |
-| `q` | Idle, Ready | End session (confirm first). Refused on Working/Blocked |
 | `w` | repo | Spawn a worktree session |
 | `c` | repo header | Claim (Free) / release (Claimed) / Takeover (In-use, sole Idle occupant) |
 | `g` | anywhere | Fuzzy repo picker over the full inventory |
@@ -84,8 +73,6 @@ A banner you've dismissed is gone, so the count doesn't live there alone: for as
 | `↑` / `↓` | anywhere | Move the selection |
 | `Alt+g` | anywhere | Move focus between the sidepanel and the working client |
 | `Shift+⏎` | typing to Claude | Newline instead of sending — it sends what `Alt+⏎` sends |
-
-Digit keys are never scripted, because permission-dialog rows are dynamic.
 
 The bottom row of the dock is this table, so the whole vocabulary is on screen while you're learning it. It lists every key, including the ones that do nothing on the row you happen to be standing on — the SELECTED box is the one that only ever offers what will actually fire. A window too narrow for the whole list drops keys off the right-hand end, worth-least first.
 
