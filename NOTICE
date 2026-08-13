@@ -1,0 +1,14 @@
+Third-party assets
+===================
+
+macos/launcher/Ganymede.icns
+-----------------------------
+This icon was downloaded from macosicons.com (https://macosicons.com/), a
+community gallery of icons submitted by individual designers. macosicons.com
+does not publish a blanket license covering redistribution of submitted
+icons, so this file is NOT covered by this repository's LICENSE (MIT).
+
+If you fork or redistribute this repository and need to ship the app bundle
+built by `make launcher`, verify redistribution rights for this icon
+directly with its original designer, or replace it with an icon you have
+clear rights to use.
