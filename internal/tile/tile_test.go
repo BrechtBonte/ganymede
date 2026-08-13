@@ -3,8 +3,12 @@ package tile_test
 import (
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/tile"
@@ -196,4 +200,101 @@ func TestClosingATileThatNeverStartedIsFine(t *testing.T) {
 	if err := tl.Close(); err != nil {
 		t.Errorf("Close on an unstarted Tile: %v", err)
 	}
+}
+
+// bundled is an app bundle whose executable is the tile process minus AppKit:
+// a script recording the arguments it was given and every label it was sent,
+// so a test can read back exactly what a real tile would have been told.
+func bundled(t *testing.T) (bundle, record string) {
+	t.Helper()
+	bundle = filepath.Join(t.TempDir(), "Ganymede.app")
+	binary := filepath.Join(bundle, "Contents", "MacOS")
+	if err := os.MkdirAll(binary, 0o755); err != nil {
+		t.Fatalf("build a bundle: %v", err)
+	}
+	record = filepath.Join(bundle, "record")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + record + "\nwhile IFS= read -r line; do printf 'label=%s\\n' \"$line\" >> " + record + "\ndone\n"
+	if err := os.WriteFile(filepath.Join(binary, "Ganymede"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write the bundle's executable: %v", err)
+	}
+	return bundle, record
+}
+
+// recorded is what the bundle's executable has written down by now. The
+// process runs alongside the test, so this waits for what it is looking for
+// rather than reading once and racing it.
+func recorded(t *testing.T, record, want string) string {
+	t.Helper()
+	var body []byte
+	settled(func() bool {
+		body, _ = os.ReadFile(record)
+		return strings.Contains(string(body), want)
+	})
+	return string(body)
+}
+
+// The Tile the launcher installed: the bundle's own executable, told it is
+// the tile rather than the launcher, reading labels off its stdin.
+func TestTheTileRunsTheBundlesExecutableAsATile(t *testing.T) {
+	bundle, record := bundled(t)
+	tl := tile.New(bundle)
+
+	if err := tl.Badge(session.Attention{Blocked: 2}); err != nil {
+		t.Fatalf("Badge: %v", err)
+	}
+
+	body := recorded(t, record, "label=2")
+	if !strings.Contains(body, "label=2") || !strings.Contains(body, "--tile") {
+		t.Errorf("the bundle's executable was run with %q, want --tile and the label", body)
+	}
+}
+
+// A harness whose launcher was never installed has no Tile at all, rather
+// than one that fails on the first Session to block.
+func TestNoAppBundleMeansNoTile(t *testing.T) {
+	tl := tile.New(filepath.Join(t.TempDir(), "Ganymede.app"))
+
+	if tl.Start != nil {
+		t.Error("a Tile was built for a bundle that is not installed")
+	}
+	if err := tl.Badge(session.Attention{Blocked: 1}); err != nil {
+		t.Errorf("a Tile with no bundle reported %v", err)
+	}
+}
+
+// Closing is EOF to the process, which is how it knows to clear the badge and
+// go: a count nobody is left to keep up to date must not stay on screen.
+func TestClosingTheTileEndsItsProcess(t *testing.T) {
+	bundle, record := bundled(t)
+	tl := tile.New(bundle)
+	if err := tl.Badge(session.Attention{Blocked: 1}); err != nil {
+		t.Fatalf("Badge: %v", err)
+	}
+	recorded(t, record, "label=1")
+
+	if err := tl.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if !settled(func() bool { return running(bundle) == 0 }) {
+		t.Error("the tile process outlived the Dashboard that was telling it the count")
+	}
+}
+
+// running is how many of this bundle's processes are still alive.
+func running(bundle string) int {
+	out, _ := exec.Command("pgrep", "-f", filepath.Join(bundle, "Contents", "MacOS", "Ganymede")).Output()
+	return len(strings.Fields(string(out)))
+}
+
+// settled waits for what a process does in its own time.
+func settled(done func() bool) bool {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if done() {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }

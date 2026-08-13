@@ -12,6 +12,9 @@ package tile
 import (
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 
 	"github.com/BrechtBonte/ganymede/internal/session"
@@ -85,6 +88,55 @@ func (t *Tile) Badge(waiting session.Attention) error {
 	}
 	t.label = label
 	return nil
+}
+
+// appName is the bundle the launcher installs, executable is the binary inside
+// it — the same one Spotlight runs, told by tileArg that this time it is the
+// tile rather than the launcher.
+const (
+	appName    = "Ganymede.app"
+	executable = "Contents/MacOS/Ganymede"
+	tileArg    = "--tile"
+)
+
+// Default is the Tile in the bundle `make launcher` installs.
+func Default() *Tile {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// Nothing to badge and nothing worth saying: the Dashboard has no way
+		// to tell you about this that would not corrupt the rail it draws.
+		return &Tile{}
+	}
+	return New(filepath.Join(home, "Applications", appName))
+}
+
+// New is the Tile in bundle.
+//
+// A bundle that is not there leaves Start nil rather than failing later: the
+// launcher is optional (`make launcher`), and a harness installed without it
+// should be a harness with no Tile, not one reporting a missing app on the
+// first Session that blocks.
+func New(bundle string) *Tile {
+	binary := filepath.Join(bundle, executable)
+	if _, err := os.Stat(binary); err != nil {
+		return &Tile{}
+	}
+	return &Tile{Start: func() (io.WriteCloser, error) {
+		command := exec.Command(binary, tileArg)
+		pipe, err := command.StdinPipe()
+		if err != nil {
+			return nil, err
+		}
+		if err := command.Start(); err != nil {
+			return nil, err
+		}
+		// The tile outlives this call and ends on its own once the pipe
+		// closes, so nothing here waits for it — but something has to, or it
+		// stays a zombie on the Dashboard's own process for as long as the
+		// harness is up.
+		go func() { _ = command.Wait() }()
+		return pipe, nil
+	}}
 }
 
 // Close takes the tile down with the Dashboard. The process would read EOF on
