@@ -21,11 +21,6 @@
 ## What it is
 
 ![Ganymede dashboard](docs/assets/dashboard.png)
-<!-- TODO: replace with a real capture. Best shot: a Ghostty window with the
-     sidepanel showing 2+ repos, at least one session Blocked and one Ready,
-     and the working client focused on a session on the right.
-     `./bin/ganymede up`, get a couple of sessions into those states, then
-     `screencapture -i docs/assets/dashboard.png`. -->
 
 Ganymede is a terminal harness for day-to-day multi-repo Claude Code work on macOS: an always-visible dashboard that shows which repos have agent sessions open, which of those need you, and which main checkouts are free — so you can jump straight to whatever needs attention instead of hunting across terminal windows.
 
