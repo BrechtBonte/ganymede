@@ -10,6 +10,8 @@
 	<string>com.brechtbonte.ganymede</string>
 	<key>CFBundleExecutable</key>
 	<string>Ganymede</string>
+	<key>GanymedeRepo</key>
+	<string>@@REPO_DIR@@</string>
 	<key>CFBundleIconFile</key>
 	<string>Ganymede</string>
 	<key>CFBundlePackageType</key>
