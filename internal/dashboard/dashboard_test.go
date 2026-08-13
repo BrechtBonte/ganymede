@@ -930,3 +930,125 @@ func TestAJumpThatCouldNotBeMadeLeavesTheBadgeAlone(t *testing.T) {
 		t.Errorf("the Dashboard reported %v seen after a jump it could not make", seen.ids)
 	}
 }
+
+// tiles records what the Dashboard put on Ganymede's own Dock tile, standing
+// in for the app bundle's process.
+type tiles struct {
+	badged []session.Attention
+	closed bool
+	err    error
+}
+
+func (t *tiles) Badge(waiting session.Attention) error {
+	t.badged = append(t.badged, waiting)
+	return t.err
+}
+
+func (t *tiles) Close() error {
+	t.closed = true
+	return nil
+}
+
+// badging runs one working set after another past a Dashboard wired to both
+// sinks, the way a live one is.
+func badging(strip dashboard.Strip, tile dashboard.Tile, sets ...[]session.Session) tea.Model {
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: &jumps{}, Strip: strip, Tile: tile})
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	for _, set := range sets {
+		model, _ = model.Update(dashboard.Sessions(set))
+	}
+	return model
+}
+
+// One working set, counted once: the Tile is told the same Attention the strip
+// is, in the same update, so the two surfaces cannot disagree about how many
+// Sessions are waiting on a decision.
+func TestTheTileIsToldTheSameCountsAsTheStrip(t *testing.T) {
+	strip, tile := &strips{}, &tiles{}
+
+	badging(strip, tile, []session.Session{
+		live("aaa-blocked", "/repos/service-billing", session.Blocked),
+		live("bbb-blocked", "/repos/ganymede", session.Blocked),
+		live("ccc-ready", "/repos/ganymede", session.Ready),
+	})
+
+	if len(tile.badged) == 0 {
+		t.Fatal("the Dashboard never told the Tile anything")
+	}
+	if last, want := tile.badged[len(tile.badged)-1], (session.Attention{Blocked: 2, Ready: 1}); last != want {
+		t.Errorf("the Tile was told %+v, want %+v", last, want)
+	}
+	if last := strip.shown[len(strip.shown)-1]; last != tile.badged[len(tile.badged)-1] {
+		t.Errorf("the strip reads %+v and the Tile %+v, want one count", last, tile.badged[len(tile.badged)-1])
+	}
+}
+
+// Counts that have not moved reach neither sink. The working set is rebuilt
+// whenever anything at all changes, and neither surface is worth a write for
+// news it already has.
+func TestNeitherSinkHearsCountsThatHaveNotChanged(t *testing.T) {
+	strip, tile := &strips{}, &tiles{}
+	blocked := live("FIRE-2841-paging", "/repos/service-billing", session.Blocked)
+	elsewhere := live("ganymede-78", "/repos/ganymede", session.Idle)
+	working := elsewhere
+	working.State = session.Working
+
+	badging(strip, tile,
+		[]session.Session{blocked, elsewhere},
+		[]session.Session{blocked, working},
+		[]session.Session{blocked, elsewhere},
+	)
+
+	if len(tile.badged) != 1 {
+		t.Errorf("the Dashboard told the Tile %d times for one set of counts: %+v", len(tile.badged), tile.badged)
+	}
+	if len(strip.shown) != 1 {
+		t.Errorf("the Dashboard wrote the strip %d times for one set of counts: %+v", len(strip.shown), strip.shown)
+	}
+}
+
+// A harness whose launcher was never installed has no Tile at all, and the
+// Dashboard is exactly the Dashboard it was without one.
+func TestADashboardWithNoTileIsUnchanged(t *testing.T) {
+	strip := &strips{}
+
+	model := badging(strip, nil, []session.Session{live("ganymede-78", "/repos/ganymede", session.Blocked)})
+
+	if last, want := strip.shown[len(strip.shown)-1], (session.Attention{Blocked: 1}); last != want {
+		t.Errorf("the strip reads %+v, want %+v", last, want)
+	}
+	if view := drawn(model); len(sessionRows(view)) != 1 {
+		t.Errorf("a harness with no Tile lost the rail its tree:\n%s", view)
+	}
+}
+
+// The Tile is the third place the same count is shown, so a Tile that cannot
+// be reached is not worth a word: the rail and the strip still say all of it,
+// and the Tile retires itself.
+func TestATileThatCannotBeReachedLeavesTheRestAlone(t *testing.T) {
+	strip := &strips{}
+	tile := &tiles{err: errors.New("write |1: broken pipe")}
+
+	model := badging(strip, tile, []session.Session{live("ganymede-78", "/repos/ganymede", session.Blocked)})
+
+	if last, want := strip.shown[len(strip.shown)-1], (session.Attention{Blocked: 1}); last != want {
+		t.Errorf("a Tile that could not be reached cost the strip its count: %+v", last)
+	}
+	if view := drawn(model); len(sessionRows(view)) != 1 || strings.Contains(view, "broken pipe") {
+		t.Errorf("a Tile that could not be reached reached the rail:\n%s", view)
+	}
+}
+
+// A Dashboard that has gone takes its Tile with it, the same way it takes the
+// strip: a badge nobody is left to keep up to date is a badge that will be
+// wrong by morning.
+func TestAClosedDashboardTakesItsTileWithIt(t *testing.T) {
+	tile := &tiles{}
+	model := badging(&strips{}, tile, []session.Session{live("ganymede-78", "/repos/ganymede", session.Blocked)})
+
+	press(model, tea.KeyCtrlC)
+
+	if !tile.closed {
+		t.Error("a closed Dashboard left its Tile running")
+	}
+}

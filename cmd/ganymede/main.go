@@ -24,6 +24,7 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/state"
 	"github.com/BrechtBonte/ganymede/internal/ticket"
+	"github.com/BrechtBonte/ganymede/internal/tile"
 	"github.com/BrechtBonte/ganymede/internal/tmuxconf"
 	"github.com/BrechtBonte/ganymede/internal/topology"
 	"github.com/BrechtBonte/ganymede/internal/workingset"
@@ -219,9 +220,11 @@ func runDashboard() error {
 
 	// The harness is every hand the Dashboard has on tmux: it steers the
 	// working client to a Session or to a repo, and it carries the counts to
-	// that client's status line.
+	// that client's status line. The Tile is the one hand that reaches outside
+	// the emulator window altogether — Ganymede's own Dock tile, which is
+	// nothing at all on a machine where `make launcher` was never run.
 	hands := dashboard.Harness{
-		Jumper: harness, Opener: harness, Focuser: harness, Strip: harness, Spawner: harness, Popups: harness, Approver: harness,
+		Jumper: harness, Opener: harness, Focuser: harness, Strip: harness, Tile: tile.Default(), Spawner: harness, Popups: harness, Approver: harness,
 		Prompter: harness, Stopper: harness, Seen: model.Seen, Tickets: tickets, Panes: harness,
 	}
 	// Root Claims, like the tickets set by hand: a state file that cannot be
