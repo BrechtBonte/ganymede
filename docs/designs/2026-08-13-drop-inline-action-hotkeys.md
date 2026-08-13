@@ -53,6 +53,7 @@ Drop `Approver: harness` and `Prompter: harness` from the wiring struct literal.
 
 - Delete the "Respond to a permission prompt inline" section and its table-of-contents entry.
 - Remove the `y`/`n`, `p`, `x`, `q` rows from the Keys table.
+- Remove the "Digit keys are never scripted, because permission-dialog rows are dynamic" line — it's rationale for the permission-prompt content being deleted and has nothing to attach to afterward.
 - Add a one-line note under "See what needs you" that a Blocked or Ready Session is acted on by jumping in (`⏎`), since the sidepanel no longer scripts a response itself.
 - Reword the top status line: "claim/takeover, worktree spawn, **inline actions**, and notifications all work day-to-day" — "inline actions" named this exact feature, so it comes out.
 
@@ -60,13 +61,25 @@ Drop `Approver: harness` and `Prompter: harness` from the wiring struct literal.
 
 No changes. The glossary never named approve/deny/prompt/interrupt/end as terms of their own, so nothing there goes stale.
 
+### `internal/session/session.go`
+
+`ToolOf` becomes dead code once `guard.go`'s `dialogText` — its only caller anywhere in the repo — is deleted. Delete `ToolOf` too. `PermissionPrefix` stays; `internal/hooks/hooks.go` still uses it.
+
 ### Tests
 
-- Delete `internal/dashboard/approve_test.go`, `internal/dashboard/prompt_test.go`, `internal/dashboard/stop_test.go`, and `internal/topology/guard_test.go` outright.
-- Trim `internal/topology/prompt_test.go`: drop the `Send`/`InterruptAndSend` tests. Rewrite `TestConcurrentSendsNeverCrossPanes` to exercise `pasted`/`End` instead of `Send`, since that's what's left to race-check for buffer-naming collisions.
-- Trim `internal/topology/stop_test.go`: drop the `Interrupt` tests, keep the `End` tests.
+Several of the files above own shared fakes and helpers that other, surviving test files depend on. These have to be relocated *before* the owning file is deleted, or `go test ./...` won't compile:
+
+- `internal/dashboard/stop_test.go` defines the `stops`/`stopCall` fake, which `claim_test.go`'s Takeover tests also use to drive `Stopper.End` (7+ call sites). Move `stops`/`stopCall` into `claim_test.go` — the same file the `Stopper` interface itself is moving into — before deleting the rest of `stop_test.go`.
+- `internal/dashboard/active_test.go` has two tests that exercise exactly the removed `y`/`p` guard-mismatch behavior via `approve_test.go`'s `approvals`/`withApprover` and `prompt_test.go`'s `prompts`/`withPrompter`: `TestTheGuardsApproveMismatchMarksItsRowEvenAfterTheCursorMovedOn` and `TestTheGuardsSendMismatchMarksItsRowEvenAfterTheCursorMovedOn`. Delete both from `active_test.go` in the same commit that deletes `approve_test.go`/`prompt_test.go`. The file's other tests (jump/focus-marking) are unrelated and stay.
+- `internal/topology/guard_test.go` defines `guardable`, `shellQuoted`, `readKeylog`, and `dialogPane`, which `jump_test.go` and the surviving parts of `prompt_test.go`/`stop_test.go` also call. Relocate these four helpers (e.g. into `harness_test.go`) before deleting the rest of `guard_test.go`.
+
+With that done:
+
+- Delete `internal/dashboard/approve_test.go`, `internal/dashboard/prompt_test.go`, `internal/dashboard/stop_test.go`, and `internal/topology/guard_test.go`.
+- Trim `internal/topology/prompt_test.go`: drop the `Send`/`InterruptAndSend` tests. Rewrite `TestConcurrentSendsNeverCrossPanes` to drive the race through `End` instead of `Send` — reusing `stop_test.go`'s existing `exitPane` helper — since `pasted` is unexported and the test lives in the external `topology_test` package.
+- Trim `internal/topology/stop_test.go`: drop the `Interrupt` tests, keep the `End` tests (after relocating `exitPane` usage as above, this file's own `End` tests are otherwise untouched).
 - Trim `internal/tmuxconf/tmuxconf_test.go` as described above.
 
 ## Verification
 
-After the removal, `go build ./...` and `go test ./...` across the repo. The `Stopper` interface shrink is the one place a stray reference would fail to compile (`cmd/ganymede/main.go`, `claim.go`); everything else is inert deletion. No manual/UI check is needed beyond that, since this is pure removal with no new behavior to exercise.
+After the removal, `go build ./...` and `go test ./...` across the repo. Two places a stray reference would fail to compile: the `Stopper` interface shrink (`cmd/ganymede/main.go`, `claim.go`), and the shared test fakes/helpers called out in the Tests section above — do those relocations before deleting the files that currently own them, or the test build breaks. Everything else is inert deletion. No manual/UI check is needed beyond that, since this is pure removal with no new behavior to exercise.
