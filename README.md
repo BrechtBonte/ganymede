@@ -16,6 +16,7 @@
   - [Install](#install)
   - [Run](#run)
 - [Learn more](#learn-more)
+- [License](#license)
 
 ## What it is
 
@@ -124,3 +125,7 @@ Rebuilding the binary is not enough to pick up a change: `up` only ever reuses a
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — internals: layer choices, data flow, the full state model, the guarded action protocol, and the design decisions behind them
 - [CONTEXT.md](CONTEXT.md) — the normative vocabulary this dashboard uses
+
+## License
+
+MIT — see [LICENSE](LICENSE). The Dock icon (`macos/launcher/Ganymede.icns`), sourced from [macosicons.com](https://macosicons.com/), is excluded — see [NOTICE](NOTICE).
