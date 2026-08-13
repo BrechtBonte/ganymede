@@ -1,12 +1,12 @@
-// Package tile carries the Blocked count to Ganymede's own Dock tile — the
-// harness's presence outside the emulator window, where a standing count can
-// be read from whatever application you are actually in.
+// Package tile carries the Blocked/Ready/Working counts to Ganymede's own
+// Dock tile — the harness's presence outside the emulator window, where a
+// standing count can be read from whatever application you are actually in.
 //
 // Ghostty's own tile cannot be badged: macOS keeps a Dock tile private to the
 // process that owns it, and Ghostty offers no badge of its own. So the count
 // goes on Ganymede.app, whose process this package spawns and then talks to
-// down a pipe. Everything the tile shows is decided here; the app bundle's own
-// process renders and decides nothing.
+// down a pipe, one line of three counts per change. Everything the tile shows
+// is decided here; the app bundle's own process renders and decides nothing.
 package tile
 
 import (
@@ -15,63 +15,75 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 
 	"github.com/BrechtBonte/ganymede/internal/session"
 )
 
-// Label is what the Tile shows: how many Sessions cannot continue without your
-// decision, and nothing at all when none of them can.
-//
-// Ready is deliberately absent. It already has the rail and its own delayed,
-// silent notification, and a single number outside the Dashboard cannot say
-// which tier it is about — so this one is always about the tier you have to
-// act on.
-func Label(waiting session.Attention) string {
-	if waiting.Blocked == 0 {
-		return ""
+// Counts is what the Tile shows, in full: every tier the working set is in,
+// not only the one the Dock badge counts. The dropdown reads all three; the
+// Dock badge and the menu-bar title still read Blocked alone.
+type Counts struct {
+	Blocked int
+	Ready   int
+	Working int
+}
+
+// CountsIn counts a working set by tier, the way session.AttentionIn counts
+// Blocked and Ready — with Working alongside them, because the dropdown is
+// the one surface that has to say what is not waiting on you as well as what
+// is.
+func CountsIn(sessions []session.Session) Counts {
+	var counted Counts
+	for _, s := range sessions {
+		switch s.State {
+		case session.Blocked:
+			counted.Blocked++
+		case session.Ready:
+			counted.Ready++
+		case session.Working:
+			counted.Working++
+		}
 	}
-	return strconv.Itoa(waiting.Blocked)
+	return counted
 }
 
 // Tile is Ganymede's own Dock tile and menu-bar item, driven down a pipe to
 // the app bundle's process.
 //
-// It is the second sink for the same Attention the strip carries, and the only
-// one that survives you leaving the window: the strip is inside Ghostty, this
-// is beside every other application's icon.
+// It is the second sink for the same working set the strip counts, and the
+// only one that survives you leaving the window: the strip is inside
+// Ghostty, this is beside every other application's icon.
 type Tile struct {
-	// Start launches the tile process and hands back the pipe its labels are
+	// Start launches the tile process and hands back the pipe its counts are
 	// written to. Nil is a harness whose launcher was never installed, which
 	// is not a failure — it simply has no Tile.
 	Start func() (io.WriteCloser, error)
 
 	pipe    io.WriteCloser
-	label   string
+	counts  Counts
 	started bool
 	retired bool
 }
 
-// Badge shows what is waiting on you.
+// Badge shows the working set's Blocked, Ready and Working counts.
 //
-// The first call is what puts the tile on screen, with whatever the count is
-// at the time — the harness being up is worth showing on its own, and an icon
-// that appeared only once something blocked would leave nothing to click for
-// the rest of the day. After that, only a label that has actually moved is
-// worth a write: the working set is rebuilt whenever anything at all changes,
-// and almost none of it is about the Blocked count.
+// The first call is what puts the tile on screen, with whatever the counts
+// are at the time — the harness being up is worth showing on its own, and an
+// icon that appeared only once something blocked would leave nothing to
+// click for the rest of the day. After that, only counts that have actually
+// moved are worth a write: the working set is rebuilt whenever anything at
+// all changes.
 //
 // Any failure retires the Tile for good. A pipe to a child process does not
 // fail transiently — it fails because the process is gone, which is what
 // quitting the tile from its own Dock menu does, and answering that gesture
 // with a fresh tile on the next Session that blocks would be the harness
 // arguing with you.
-func (t *Tile) Badge(waiting session.Attention) error {
+func (t *Tile) Badge(counts Counts) error {
 	if t.Start == nil || t.retired {
 		return nil
 	}
-	label := Label(waiting)
-	if t.started && label == t.label {
+	if t.started && counts == t.counts {
 		return nil
 	}
 	if !t.started {
@@ -82,11 +94,11 @@ func (t *Tile) Badge(waiting session.Attention) error {
 		}
 		t.pipe, t.started = pipe, true
 	}
-	if _, err := fmt.Fprintln(t.pipe, label); err != nil {
+	if _, err := fmt.Fprintf(t.pipe, "%d %d %d\n", counts.Blocked, counts.Ready, counts.Working); err != nil {
 		t.retired = true
-		return fmt.Errorf("tell Ganymede's Dock tile about %q: %w", label, err)
+		return fmt.Errorf("tell Ganymede's Dock tile about %+v: %w", counts, err)
 	}
-	t.label = label
+	t.counts = counts
 	return nil
 }
 

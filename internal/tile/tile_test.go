@@ -14,29 +14,28 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/tile"
 )
 
-// Nothing Blocked is no badge at all. A tile reading 0 is a tile you stop
-// looking at, and the count would lose the only thing it is for — the same
-// call the strip makes when nothing is waiting on you.
-func TestNothingBlockedIsNoLabel(t *testing.T) {
-	if got := tile.Label(session.Attention{Ready: 3}); got != "" {
-		t.Errorf("the Tile reads %q with nothing Blocked, want nothing", got)
-	}
-}
-
-// The label is the Blocked count and nothing else: Ready has the rail and its
-// own notification, and a number that moved for unread turns would stop
-// meaning "something needs a decision".
-func TestTheLabelIsTheBlockedCountAlone(t *testing.T) {
+// CountsIn counts a working set by tier — Blocked, Ready and Working each
+// tallied on their own, and Idle/Shell contributing to none of the three:
+// they are states nothing on the dropdown is about.
+func TestCountsInCountsEachTierAndIgnoresTheRest(t *testing.T) {
 	for _, c := range []struct {
-		waiting session.Attention
-		want    string
+		name     string
+		sessions []session.Session
+		want     tile.Counts
 	}{
-		{session.Attention{Blocked: 1}, "1"},
-		{session.Attention{Blocked: 2, Ready: 7}, "2"},
-		{session.Attention{Blocked: 12}, "12"},
+		{"empty", nil, tile.Counts{}},
+		{"one of each", []session.Session{
+			{State: session.Blocked}, {State: session.Ready}, {State: session.Working},
+		}, tile.Counts{Blocked: 1, Ready: 1, Working: 1}},
+		{"several of one tier", []session.Session{
+			{State: session.Working}, {State: session.Working}, {State: session.Working},
+		}, tile.Counts{Working: 3}},
+		{"idle and shell count toward nothing", []session.Session{
+			{State: session.Idle}, {State: session.Shell}, {State: session.Blocked},
+		}, tile.Counts{Blocked: 1}},
 	} {
-		if got := tile.Label(c.waiting); got != c.want {
-			t.Errorf("%+v reads %q, want %q", c.waiting, got, c.want)
+		if got := tile.CountsIn(c.sessions); got != c.want {
+			t.Errorf("%s: CountsIn(%+v) = %+v, want %+v", c.name, c.sessions, got, c.want)
 		}
 	}
 }
@@ -70,58 +69,64 @@ func spawning(p *pipe, err error) (*tile.Tile, *int) {
 	}}, &starts
 }
 
-// The first Badge is what puts the Tile on screen, even with nothing Blocked:
-// the harness being up is itself worth showing, and the icon appearing only
-// once something blocked would leave nothing to click the rest of the time.
-func TestTheFirstBadgeStartsTheTileWithNothingBlocked(t *testing.T) {
+// The first Badge is what puts the Tile on screen, even with every count at
+// zero: the harness being up is itself worth showing, and the icon appearing
+// only once something blocked would leave nothing to click the rest of the
+// time.
+func TestTheFirstBadgeStartsTheTileWithAllCountsAtZero(t *testing.T) {
 	p := &pipe{}
 	tl, starts := spawning(p, nil)
 
-	if err := tl.Badge(session.Attention{}); err != nil {
+	if err := tl.Badge(tile.Counts{}); err != nil {
 		t.Fatalf("Badge: %v", err)
 	}
 
 	if *starts != 1 {
 		t.Errorf("the Tile was started %d times, want once", *starts)
 	}
-	if p.written.String() != "\n" {
-		t.Errorf("the Tile was sent %q, want an empty label", p.written.String())
+	if p.written.String() != "0 0 0\n" {
+		t.Errorf("the Tile was sent %q, want all three counts at zero", p.written.String())
 	}
 }
 
-// One line per change, so the tile process can read a whole label or nothing.
-func TestBadgeSendsTheLabelAsALine(t *testing.T) {
+// One line per change, all three counts on it, so the tile process can read a
+// whole set of counts at once.
+func TestBadgeSendsAllThreeCountsAsALine(t *testing.T) {
 	p := &pipe{}
 	tl, _ := spawning(p, nil)
 
-	if err := tl.Badge(session.Attention{Blocked: 2}); err != nil {
+	if err := tl.Badge(tile.Counts{Blocked: 2}); err != nil {
 		t.Fatalf("Badge: %v", err)
 	}
 
-	if p.written.String() != "2\n" {
-		t.Errorf("the Tile was sent %q, want %q", p.written.String(), "2\n")
+	if p.written.String() != "2 0 0\n" {
+		t.Errorf("the Tile was sent %q, want %q", p.written.String(), "2 0 0\n")
 	}
 }
 
-// The working set is rebuilt whenever anything at all moves, and almost none
-// of it is about the Blocked count. A label that has not changed is not worth
-// a write, and Ready moving is not the Tile's business at all.
-func TestALabelThatHasNotMovedIsNotSentAgain(t *testing.T) {
+// The working set is rebuilt whenever anything at all moves. Counts that have
+// not moved are not worth a second write, but unlike the Dock badge and the
+// menu-bar title — which only ever read Blocked — the dropdown reads all
+// three, so Ready or Working moving on their own is a real change here too.
+func TestARepeatOfTheExactSameCountsIsNotSentAgainButAnyFieldMovingIs(t *testing.T) {
 	p := &pipe{}
 	tl, starts := spawning(p, nil)
 
-	for _, waiting := range []session.Attention{
+	for _, counts := range []tile.Counts{
 		{Blocked: 1},
 		{Blocked: 1},
 		{Blocked: 1, Ready: 4},
+		{Blocked: 1, Ready: 4},
+		{Blocked: 1, Ready: 4, Working: 2},
 	} {
-		if err := tl.Badge(waiting); err != nil {
+		if err := tl.Badge(counts); err != nil {
 			t.Fatalf("Badge: %v", err)
 		}
 	}
 
-	if p.written.String() != "1\n" {
-		t.Errorf("the Tile was sent %q, want the label once", p.written.String())
+	want := "1 0 0\n1 4 0\n1 4 2\n"
+	if p.written.String() != want {
+		t.Errorf("the Tile was sent %q, want %q", p.written.String(), want)
 	}
 	if *starts != 1 {
 		t.Errorf("the Tile was started %d times, want once", *starts)
@@ -136,10 +141,10 @@ func TestAWriteThatFailedRetiresTheTile(t *testing.T) {
 	p := &pipe{err: errors.New("write |1: broken pipe")}
 	tl, starts := spawning(p, nil)
 
-	if err := tl.Badge(session.Attention{Blocked: 1}); err == nil {
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err == nil {
 		t.Fatal("Badge said nothing about a pipe that is gone")
 	}
-	if err := tl.Badge(session.Attention{Blocked: 2}); err != nil {
+	if err := tl.Badge(tile.Counts{Blocked: 2}); err != nil {
 		t.Errorf("a retired Tile complained again: %v", err)
 	}
 
@@ -154,10 +159,10 @@ func TestAWriteThatFailedRetiresTheTile(t *testing.T) {
 func TestATileThatCouldNotBeStartedIsNotStartedAgain(t *testing.T) {
 	tl, starts := spawning(&pipe{}, errors.New("fork/exec: no such file or directory"))
 
-	if err := tl.Badge(session.Attention{Blocked: 1}); err == nil {
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err == nil {
 		t.Fatal("Badge said nothing about a tile that could not be started")
 	}
-	_ = tl.Badge(session.Attention{Blocked: 2})
+	_ = tl.Badge(tile.Counts{Blocked: 2})
 
 	if *starts != 1 {
 		t.Errorf("the Tile was started %d times, want once", *starts)
@@ -170,7 +175,7 @@ func TestATileThatCouldNotBeStartedIsNotStartedAgain(t *testing.T) {
 func TestATileWithNoAppIsSilent(t *testing.T) {
 	tl := &tile.Tile{}
 
-	if err := tl.Badge(session.Attention{Blocked: 1}); err != nil {
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
 		t.Errorf("a harness with no launcher installed reported %v", err)
 	}
 }
@@ -181,7 +186,7 @@ func TestATileWithNoAppIsSilent(t *testing.T) {
 func TestCloseClosesThePipe(t *testing.T) {
 	p := &pipe{}
 	tl, _ := spawning(p, nil)
-	_ = tl.Badge(session.Attention{Blocked: 1})
+	_ = tl.Badge(tile.Counts{Blocked: 1})
 
 	if err := tl.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -203,7 +208,7 @@ func TestClosingATileThatNeverStartedIsFine(t *testing.T) {
 }
 
 // bundled is an app bundle whose executable is the tile process minus AppKit:
-// a script recording the arguments it was given and every label it was sent,
+// a script recording the arguments it was given and every line it was sent,
 // so a test can read back exactly what a real tile would have been told.
 func bundled(t *testing.T) (bundle, record string) {
 	t.Helper()
@@ -234,18 +239,18 @@ func recorded(t *testing.T, record, want string) string {
 }
 
 // The Tile the launcher installed: the bundle's own executable, told it is
-// the tile rather than the launcher, reading labels off its stdin.
+// the tile rather than the launcher, reading counts off its stdin.
 func TestTheTileRunsTheBundlesExecutableAsATile(t *testing.T) {
 	bundle, record := bundled(t)
 	tl := tile.New(bundle)
 
-	if err := tl.Badge(session.Attention{Blocked: 2}); err != nil {
+	if err := tl.Badge(tile.Counts{Blocked: 2}); err != nil {
 		t.Fatalf("Badge: %v", err)
 	}
 
-	body := recorded(t, record, "label=2")
-	if !strings.Contains(body, "label=2") || !strings.Contains(body, "--tile") {
-		t.Errorf("the bundle's executable was run with %q, want --tile and the label", body)
+	body := recorded(t, record, "label=2 0 0")
+	if !strings.Contains(body, "label=2 0 0") || !strings.Contains(body, "--tile") {
+		t.Errorf("the bundle's executable was run with %q, want --tile and the counts", body)
 	}
 }
 
@@ -257,7 +262,7 @@ func TestNoAppBundleMeansNoTile(t *testing.T) {
 	if tl.Start != nil {
 		t.Error("a Tile was built for a bundle that is not installed")
 	}
-	if err := tl.Badge(session.Attention{Blocked: 1}); err != nil {
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
 		t.Errorf("a Tile with no bundle reported %v", err)
 	}
 }
@@ -267,10 +272,10 @@ func TestNoAppBundleMeansNoTile(t *testing.T) {
 func TestClosingTheTileEndsItsProcess(t *testing.T) {
 	bundle, record := bundled(t)
 	tl := tile.New(bundle)
-	if err := tl.Badge(session.Attention{Blocked: 1}); err != nil {
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
 		t.Fatalf("Badge: %v", err)
 	}
-	recorded(t, record, "label=1")
+	recorded(t, record, "label=1 0 0")
 
 	if err := tl.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

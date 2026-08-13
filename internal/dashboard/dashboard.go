@@ -19,6 +19,7 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/ticket"
+	"github.com/BrechtBonte/ganymede/internal/tile"
 	"github.com/BrechtBonte/ganymede/internal/topology"
 	"github.com/BrechtBonte/ganymede/internal/workingset"
 	tea "github.com/charmbracelet/bubbletea"
@@ -136,13 +137,15 @@ type Strip interface {
 	Show(waiting session.Attention) error
 }
 
-// Tile is Ganymede's own Dock tile and menu-bar item — the same counts again,
-// in the one place they can be read from another application entirely. The
-// strip is inside the window you are working in; this outlives you leaving it.
+// Tile is Ganymede's own Dock tile and menu-bar item, in the one place its
+// Blocked/Ready/Working breakdown can be read from another application
+// entirely. The strip is inside the window you are working in; this outlives
+// you leaving it.
 type Tile interface {
-	// Badge shows what is waiting on you. Errors are the Tile's own to keep:
-	// it retires itself, and the Dashboard has nowhere to put a complaint.
-	Badge(waiting session.Attention) error
+	// Badge shows the working set's Blocked, Ready and Working counts. Errors
+	// are the Tile's own to keep: it retires itself, and the Dashboard has
+	// nowhere to put a complaint.
+	Badge(counts tile.Counts) error
 	// Close takes the Tile down with the Dashboard.
 	Close() error
 }
@@ -876,12 +879,17 @@ func (m Model) laidOver(read Cautions) Cautions {
 	return known
 }
 
-// counted carries the working set's Attention out to the strip and the Tile.
+// counted carries the working set's counts out to the strip and the Tile.
 //
-// Counts that have not moved are not written again: writing the strip redraws
-// every client on the Sessions server, the working set is rebuilt whenever
-// anything at all moves, and flickering the Session you are typing in to tell
-// you what it already said is worse than no strip.
+// The two sinks no longer share one gate. The strip only ever reads Attention
+// (Blocked and Ready), so a working set rebuilt with the same Attention in it
+// is not written out again — writing the strip redraws every client on the
+// Sessions server, and flickering the Session you are typing in to tell you
+// what it already said is worse than no strip. The Tile's dropdown reads
+// Working too, which Attention does not carry, so it is asked on every pass
+// and answers for itself: Badge already no-ops when none of its three counts
+// have moved, so a Tile told the same thing costs nothing beyond a struct
+// comparison.
 //
 // It is written here rather than handed to the runtime, which would run it in
 // a goroutine of its own: two counts written out of order would leave the
@@ -890,17 +898,13 @@ func (m Model) laidOver(read Cautions) Cautions {
 // One tmux call, on a count that has actually changed, is the cheaper end of
 // that trade — and it is what the jump does too.
 func (m Model) counted() Model {
-	// Whether the counts have moved is the question both sinks share, and it
-	// comes first: the strip's own nil check used to stand in for it, which
-	// would have left a Tile told the same thing on every registry event.
+	if m.harness.Tile != nil {
+		// Errors are the Tile's own to keep: it retires itself, and there is
+		// nowhere here that could report this without corrupting the rail.
+		_ = m.harness.Tile.Badge(tile.CountsIn(m.set))
+	}
 	if m.shown && m.waiting == m.written {
 		return m
-	}
-	if m.harness.Tile != nil {
-		// A third copy of the same count, and the only one whose failure costs
-		// you nothing: the Tile retires itself, and there is nowhere here that
-		// could report this without corrupting the rail.
-		_ = m.harness.Tile.Badge(m.waiting)
 	}
 	// The strip is deliberate redundancy: everything it says is on the rail
 	// already, so one that could not be written is not worth a word about. It
