@@ -39,6 +39,7 @@ flowchart LR
         SM["State model"]
         UI["Sidepanel TUI"]
         NOT["Notifier"]
+        TILE["Tile<br/>Dock badge + menu bar"]
         ACT["Action engine<br/>guarded send-keys"]
     end
     REG -- "fsnotify watch" --> SM
@@ -46,6 +47,7 @@ flowchart LR
     REC -- "slow-timer reconcile" --> SM
     SM --> UI
     SM --> NOT
+    UI -- "one label per change,<br/>down a pipe" --> TILE
     UI --> ACT -- "tmux send-keys / paste-buffer / display-popup / switch-client" --> tmux[(tmux)]
 ```
 
@@ -161,6 +163,8 @@ Ending a session goes through the dashboard's `q` action → graceful exit → C
 - **Focus-aware.** No banners while Ghostty is frontmost.
 - **Anatomy.** Title is repo + ticket (`service-ai-assistant · FIRE-1234`); body is the reason — `waitingFor` for Blocked, a `last_assistant_message` snippet for Ready. Clicking focuses Ghostty and jumps the dashboard to that session. Sound on Blocked only.
 - **Missed pings.** Blocked notifications use macOS **Alerts style** — sticky until dismissed or resolved, with no re-nagging. Setting the notifier app to Alerts is a one-time System Settings step.
+- **The Tile.** Ganymede.app's Dock tile and menu-bar item carry the standing Blocked count — `█ 2` in the menu bar, a `2` badge on the icon — which is the one thing a notification cannot be: dismissing a banner leaves nothing outside Ghostty saying two sessions still need a decision. It is deliberately *not* focus-gated, unlike every banner: a badge interrupts nothing, and one that blanked itself whenever you were looking could never be trusted as a summary of where things stand. Ready is absent from it, since one number outside the dashboard cannot say which tier it is about. Clicking either surface brings Ghostty forward, and neither tries to jump to a particular session — the dashboard is a keystroke away once you are in the window.
+- **Whose tile.** Not Ghostty's: macOS keeps a Dock tile private to the process that owns it, and Ghostty offers no badge of its own (its bell's `attention` feature bounces the icon once and counts nothing). The dashboard spawns `Ganymede.app`'s executable with `--tile` as a child holding a pipe and writes one label per change, `internal/tile` deciding what the label says so that nothing is decided in Swift. A child process takes its identity, icon and name from the bundle its executable sits in, which is what allows a plain pipe here instead of a socket: the fd is the liveness signal, so the dashboard's exit or death is EOF, at which point the tile clears both surfaces and quits and a badge cannot outlive the dashboard that vouched for it. Quitting the tile from its own Dock menu retires the sink until the dashboard is next started, rather than being answered with a fresh tile by the next session that blocks.
 
 ## JIRA tickets
 
@@ -169,6 +173,8 @@ Precedence is manual override → branch name → worktree directory name → no
 ## What the harness writes
 
 A config fragment at `~/.config/ganymede/tmux.conf` — `allow-passthrough on`, `focus-events on`, the status line's styling and its strip segment, and the root-table popup binding — sourced from a marked block in your `tmux.conf`; a Ghostty config fragment at `~/.config/ganymede/ghostty.conf` — fresh defaults (JetBrains Mono, a built-in dark theme), the Cmd+F keybind and the Shift+Enter newline keybind — loaded from a marked block in `~/.config/ghostty/config.ghostty`; the dock's own config at `~/.config/ganymede/dock.conf`; its event socket at `~/.config/ganymede/events.sock`, owned by one dashboard at a time — a second `ganymede dashboard` refuses to start rather than take it; its own state at `~/.config/ganymede/state.json`, currently the tickets you set by hand and the per-repo activity the working set is built from, written a section at a time so that nothing else in it is disturbed; and its own hook entries in `~/.claude/settings.json`, which are replaced rather than repeated on every install and leave the rest of that file, permissions included, untouched.
+
+`make launcher` writes one thing more, outside all of that: the app bundle at `~/Applications/Ganymede.app`, holding the Tile's compiled binary, the icon, and an `Info.plist` naming the checkout it was built from. It is the only part of the harness that is a macOS application, and re-running the target is what moves it to a checkout that has moved.
 
 Three things in that fragment are the harness's to own: tmux's global `pane-focus-in` hook, which is how seeing a session clears its Ready badge; its global `pane-mode-changed` hook, which is how a pane holding a mode over its live view earns the Frozen mark and loses it again; and the `@ganymede-seen` option both of them read. A `pane-focus-in` or `pane-mode-changed` hook of your own in `tmux.conf` would be replaced by them. The status line goes the same way, and always has: it is turned back on if you had turned it off, its right-hand segment is the strip's, and its colours are now the harness's too.
 

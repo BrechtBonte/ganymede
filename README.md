@@ -63,6 +63,8 @@ Checking out a PR means using a repo's main root — but if an agent session alr
 
 Whenever Ghostty isn't the frontmost app, Ganymede's notifier is the one place alerts come from. A **Blocked** session pings you immediately and stays sticky until you resolve it. A **Ready** session — done, but you haven't looked yet — stays a silent dashboard badge at first, and only escalates to a notification if it's still unseen about a minute later. Clicking a notification focuses Ghostty and jumps you straight to that session.
 
+A banner you've dismissed is gone, so the count doesn't live there alone: for as long as the dashboard is up, the number of Blocked sessions also sits in your menu bar as `█ 2` and as a badge on Ganymede's own Dock icon — visible from whatever app you're actually in, and gone the moment nothing is blocked. Click either one to bring Ghostty forward. Both need `make launcher` to have been run; without it the harness simply has no icon of its own.
+
 ### Keys
 
 | Key | On | Action |
@@ -98,6 +100,7 @@ The bottom row of the dock is this table, so the whole vocabulary is on screen w
 | [Ghostty](https://ghostty.org) | The terminal emulator Ganymede docks its dashboard into | https://ghostty.org |
 | tmux (3.3+) | The multiplexer Ganymede's dashboard and sessions run on | `brew install tmux` |
 | Go toolchain | To build the `ganymede` binary | https://go.dev/dl/ |
+| Xcode Command Line Tools | `make launcher` compiles the Dock tile app with `swiftc` | `xcode-select --install` |
 | [terminal-notifier](https://github.com/julienXX/terminal-notifier) | Ganymede's own OS notification channel — without it, Blocked/Ready alerts don't fire beyond the dashboard | `brew install terminal-notifier` |
 
 ### Install

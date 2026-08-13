@@ -136,6 +136,17 @@ type Strip interface {
 	Show(waiting session.Attention) error
 }
 
+// Tile is Ganymede's own Dock tile and menu-bar item — the same counts again,
+// in the one place they can be read from another application entirely. The
+// strip is inside the window you are working in; this outlives you leaving it.
+type Tile interface {
+	// Badge shows what is waiting on you. Errors are the Tile's own to keep:
+	// it retires itself, and the Dashboard has nowhere to put a complaint.
+	Badge(waiting session.Attention) error
+	// Close takes the Tile down with the Dashboard.
+	Close() error
+}
+
 // Panes is what the harness can say about the tmux panes the Sessions are
 // running in.
 type Panes interface {
@@ -202,6 +213,9 @@ type Harness struct {
 	Focuser Focuser
 	// Strip carries the Attention counts to the working client's status line.
 	Strip Strip
+	// Tile carries the Blocked count to Ganymede's own Dock tile. Nil is a
+	// harness whose launcher was never installed, which has no Tile.
+	Tile Tile
 	// Seen reports a Session as looked at, which is what clears Ready.
 	Seen Seen
 	// Tickets is what each Session's work is about.
@@ -862,7 +876,7 @@ func (m Model) laidOver(read Cautions) Cautions {
 	return known
 }
 
-// counted carries the working set's Attention out to the strip.
+// counted carries the working set's Attention out to the strip and the Tile.
 //
 // Counts that have not moved are not written again: writing the strip redraws
 // every client on the Sessions server, the working set is rebuilt whenever
@@ -876,15 +890,26 @@ func (m Model) laidOver(read Cautions) Cautions {
 // One tmux call, on a count that has actually changed, is the cheaper end of
 // that trade — and it is what the jump does too.
 func (m Model) counted() Model {
-	if m.harness.Strip == nil || (m.shown && m.waiting == m.written) {
+	// Whether the counts have moved is the question both sinks share, and it
+	// comes first: the strip's own nil check used to stand in for it, which
+	// would have left a Tile told the same thing on every registry event.
+	if m.shown && m.waiting == m.written {
 		return m
+	}
+	if m.harness.Tile != nil {
+		// A third copy of the same count, and the only one whose failure costs
+		// you nothing: the Tile retires itself, and there is nowhere here that
+		// could report this without corrupting the rail.
+		_ = m.harness.Tile.Badge(m.waiting)
 	}
 	// The strip is deliberate redundancy: everything it says is on the rail
 	// already, so one that could not be written is not worth a word about. It
 	// is worth trying again, though, which is why only a write that landed
 	// counts as having been said.
-	if err := m.harness.Strip.Show(m.waiting); err != nil {
-		return m
+	if m.harness.Strip != nil {
+		if err := m.harness.Strip.Show(m.waiting); err != nil {
+			return m
+		}
 	}
 	m.written, m.shown = m.waiting, true
 	return m
@@ -1044,12 +1069,18 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC:
 		// The Dashboard is meant to stay up for as long as the harness does,
 		// so it answers to no quit key. Ctrl+C is left alone for the times you
-		// are running it by hand — and on the way out it takes the strip with
-		// it, since a count nobody is left to keep up to date is one that will
-		// be wrong by morning. It goes out the same way every other count
-		// does, so nothing can be left in flight behind it.
+		// are running it by hand — and on the way out it takes both counts
+		// with it, the strip blanked and the Tile closed, since a count nobody
+		// is left to keep up to date is one that will be wrong by morning. The
+		// strip goes out the same way every other count does, so nothing can
+		// be left in flight behind it.
 		if m.harness.Strip != nil && m.shown {
 			_ = m.harness.Strip.Show(session.Attention{})
+		}
+		if m.harness.Tile != nil {
+			// Closing is EOF to the tile process, which is what makes the icon
+			// go now rather than a beat later when this process ends.
+			_ = m.harness.Tile.Close()
 		}
 		return m, tea.Quit
 	case tea.KeyUp:
