@@ -6,27 +6,25 @@ import (
 	"time"
 )
 
-// Interrupt stops the Session running as pid's current turn with a bare
-// guarded Esc — no text follows it, unlike InterruptAndSend. It is the "x"
-// row (§7.3), with no confirmation dialog of its own: located's own
-// precondition, an empty input box, is already "no dialog is visible in
-// capture-pane" — a dialog draws over that box rather than leaving it empty,
-// the same reading InterruptAndSend's own interrupt half (escaped) relies
-// on.
-func (h Harness) Interrupt(pid int) error {
-	_, err := h.escaped(pid)
-	return err
-}
+// redrawBudget is how long the guard gives a pane to redraw after a key is
+// sent before it gives up and reports a mismatch, polling rather than
+// pausing once: tmux delivers the keystroke to the pty at once, but the
+// shell or TUI underneath still has to read it, act on it and redraw, and a
+// machine under load can take longer than any single fixed pause would
+// assume. redrawPoll is how often it looks again while it waits.
+const (
+	redrawBudget = 500 * time.Millisecond
+	redrawPoll   = 20 * time.Millisecond
+)
 
 // End exits the Session running as pid gracefully: /exit pasted and
-// submitted into its own input box — the "q" row (§7.3), reached only once
-// the Dashboard's own confirmation has been answered.
+// submitted into its own input box. Takeover (internal/dashboard's
+// claim.go) is its only caller, ending an Idle session's occupant before
+// claiming its root.
 //
-// It does not reuse Send: Send's own postcondition is the box going back to
-// empty, which is what a prompt Claude Code keeps running looks like once
-// submitted — but /exit's whole point is that Claude Code stops running, so
-// the box it hands back is never that one. exited is End's own reading of
-// "it worked".
+// exited, not the box going back to empty, is End's own reading of "it
+// worked": /exit's whole point is that Claude Code stops running, so the
+// box it hands back is never one a submit that kept running would leave.
 func (h Harness) End(pid int) error {
 	target, err := h.located(pid, "end")
 	if err != nil {
@@ -52,8 +50,7 @@ func (h Harness) End(pid int) error {
 // command (WorktreeCommand), takes the pane down with it the moment that
 // process quits, since nothing else is left running in it — which is why a
 // capture-pane error counts as "gone" here rather than as an inconclusive
-// read to keep polling through, unlike every other guarded check in this
-// package.
+// read to keep polling through.
 func (h Harness) exited(target string) bool {
 	deadline := time.Now().Add(redrawBudget)
 	for {

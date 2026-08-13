@@ -11,7 +11,6 @@
 package session
 
 import (
-	"strings"
 	"time"
 )
 
@@ -154,13 +153,6 @@ func (s Session) Attention() bool {
 // in step with (hooks.permissionReason, registry.reasonOf), so a row reads
 // the same whichever of the two got there first.
 const PermissionPrefix = "permission: "
-
-// ToolOf reads the tool name back out of a Reason phrased with
-// PermissionPrefix, and says whether there was one to read.
-func ToolOf(reason string) (string, bool) {
-	tool, ok := strings.CutPrefix(reason, PermissionPrefix)
-	return tool, ok && tool != ""
-}
 
 // Attention is how much of a working set is waiting on you, counted by tier.
 // It is what the ambient surfaces show — the ones with room for a number and
