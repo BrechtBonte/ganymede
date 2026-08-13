@@ -35,7 +35,7 @@ The toggleable overlay shell belonging to the session in focus, opening in that 
 _Avoid_: scratch terminal, quick terminal, drawer
 
 **Tile**:
-Ganymede's own macOS Dock tile and the menu-bar item beside it, carrying the number of Blocked sessions — the harness's presence outside the emulator window. Lives exactly as long as the dashboard.
+Ganymede's own macOS Dock tile and the menu-bar item beside it, carrying the number of Blocked sessions — the harness's presence outside the emulator window. Clicking the menu-bar item opens a dropdown with the full Blocked/Ready/Working breakdown, each in its tier's colour, and an Open Ganymede action. Lives exactly as long as the dashboard.
 _Avoid_: dock icon, dock badge, app badge — the Dock is the tmux frame, not macOS's
 
 ### Session states
