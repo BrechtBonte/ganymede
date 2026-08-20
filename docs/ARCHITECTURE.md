@@ -33,7 +33,9 @@ flowchart LR
         REG["~/.claude/sessions/*.json registry"]
         HK["Hooks: SessionStart/End, Stop,<br/>UserPromptSubmit, PermissionRequest, Notification"]
         REC["claude agents --json"]
+        VER["claude --version<br/>claude doctor"]
     end
+    BKT[("downloads.claude.ai<br/>claude-code-releases/&lt;channel&gt;")]
     subgraph ganymede ["ganymede binary"]
         RX["Event receiver<br/>local unix socket"]
         SM["State model"]
@@ -41,10 +43,13 @@ flowchart LR
         NOT["Notifier"]
         TILE["Tile<br/>Dock badge + menu bar"]
         ACT["Action engine<br/>guarded send-keys"]
+        UPD["Update check<br/>remembered in state.json"]
     end
     REG -- "fsnotify watch" --> SM
     HK -- "thin async hook commands<br/>POST stdin JSON" --> RX --> SM
     REC -- "slow-timer reconcile" --> SM
+    VER --> UPD
+    BKT -- "ten-hourly read" --> UPD --> UI
     SM --> UI
     SM --> NOT
     UI -- "one label per change,<br/>down a pipe" --> TILE
@@ -55,6 +60,7 @@ flowchart LR
 - **Hooks** provide sub-second edges and rich payloads. Installed user-level in `~/.claude/settings.json` so every repo is covered. Hook commands are thin — forward stdin JSON to the receiver socket, async where no response is needed, never blocking a session.
 - **The reconciler** runs `claude agents --json` on a slow timer (30s) as the documented, schema-stable cross-check. The registry files are undocumented, so their shape must be re-verified on Claude Code upgrades (verified against **2.1.226** as of this writing, unchanged from the 2.1.220 record in the spec's §11). Sessions the registry watch missed are added; where the two describe the same session differently, the reconciler wins. Three things it does not do: overrule a registry record the registry has moved on *since* the cross-check was asked (that is the registry running ahead, not disagreeing); overrule anything at all when it cannot read the session's status, since a defaulted state must never outrank a read one; or remove a row, because it is always the older picture of the two. A row it added is dropped by the next cross-check once the session ends, so the reconciler is accurate to one tick — and a session only it can see may show as Blocked with no reason, since the reason lives in the registry file the watch could not read.
 - **Harness state** (its own sidecar, e.g. `~/.config/ganymede/state.json`) holds root claims and notes, manual ticket overrides, per-repo last-activity timestamps, popup-shell ownership, and Ready/seen tracking.
+- **The update check** is the harness's only outbound network call. It compares `claude --version` against the version file the channel in `claude doctor` names, in the bucket Claude Code's own installer reads (`downloads.claude.ai/claude-code-releases/<channel>`). Following the channel matters: a `stable` install measured against `latest` would carry a notice it can never clear. `claude doctor` is text written for a person rather than a documented interface — the same footing as the registry — so an output that has been reworded falls back to `latest` rather than abandoning the check. Only the published half is remembered in the sidecar; the install is read fresh, because Claude Code updates itself whenever a Session starts.
 
 ### CLI entry points other tools invoke
 
@@ -165,13 +171,21 @@ Ending a session happens the same way starting one does — from inside the pane
 - **The Tile.** Ganymede.app's Dock tile and menu-bar item carry the standing Blocked count — `█ 2` in the menu bar, a `2` badge on the icon — which is the one thing a notification cannot be: dismissing a banner leaves nothing outside Ghostty saying two sessions still need a decision. It is deliberately *not* focus-gated, unlike every banner: a badge interrupts nothing, and one that blanked itself whenever you were looking could never be trusted as a summary of where things stand. Ready is absent from it, since one number outside the dashboard cannot say which tier it is about. Clicking either surface brings Ghostty forward, and neither tries to jump to a particular session — the dashboard is a keystroke away once you are in the window.
 - **Whose tile.** Not Ghostty's: macOS keeps a Dock tile private to the process that owns it, and Ghostty offers no badge of its own (its bell's `attention` feature bounces the icon once and counts nothing). The dashboard spawns `Ganymede.app`'s executable with `--tile` as a child holding a pipe and writes one label per change, `internal/tile` deciding what the label says so that nothing is decided in Swift. A child process takes its identity, icon and name from the bundle its executable sits in, which is what allows a plain pipe here instead of a socket: the fd is the liveness signal, so the dashboard's exit or death is EOF, at which point the tile clears both surfaces and quits and a badge cannot outlive the dashboard that vouched for it. Quitting the tile from its own Dock menu retires the sink until the dashboard is next started, rather than being answered with a fresh tile by the next session that blocks.
 
+## Claude Code updates
+
+The Dashboard says when the Claude Code installed here is behind the build its channel is publishing, and stops there — `claude update` is what goes and gets it, and a harness that ran that on your behalf would be restarting the interpreter its own Sessions are running in.
+
+- **Cadence.** Once every ten hours, remembered across restarts in the sidecar's `release` section, so a Dashboard restarted four times in an afternoon is still one check. A check that cannot be made says nothing at all and is tried again in thirty minutes, so a laptop opened with no network is not left for the rest of the window.
+- **Self-clearing.** While a notice is standing — and only then — the installed version alone is re-read on the half-minute tick, one process and no network. Auto-updates land whenever a Session starts, which is exactly while the Dashboard is up, so a notice held for ten hours would routinely be wrong; a notice that is wrong is worse than one that is late.
+- **Where it stops.** The sidepanel, and nowhere else. The Tile and the working client's attention strip carry the Blocked count and deliberately nothing else — one number outside the Dashboard cannot say which of two things it is about. It also says nothing about **Sessions** running an older binary than the one now installed, which is a different "behind" and a feature of its own.
+
 ## JIRA tickets
 
 Precedence is manual override → branch name → worktree directory name → no ticket. Derivation takes the first match of `[A-Z][A-Z0-9]*-\d+` in the session's git branch name, else in the worktree dir name; dashboard-spawned sessions need nothing extra. A manual override (`t`) is stored keyed by **repo + branch/worktree path** — not session id, so it survives restarts — and evicted when that branch or worktree disappears. A session with no ticket leaves its row's ticket column empty and renders a dim "no ticket" in the SELECTED box, where `t` is offered — never a placeholder key. The row abbreviates the key it does have to the project's initial and the number (`FIRE-2923` → `F-2923`); the box keeps the whole of it. Links go to `https://teamleader.atlassian.net/browse/<KEY>` and open with `o`. Ticket ID and link only — **no JIRA API dependency, ever**.
 
 ## What the harness writes
 
-A config fragment at `~/.config/ganymede/tmux.conf` — `allow-passthrough on`, `focus-events on`, the status line's styling and its strip segment, and the root-table popup binding — sourced from a marked block in your `tmux.conf`; a Ghostty config fragment at `~/.config/ganymede/ghostty.conf` — fresh defaults (JetBrains Mono, a built-in dark theme), the Cmd+F keybind and the Shift+Enter newline keybind — loaded from a marked block in `~/.config/ghostty/config.ghostty`; the dock's own config at `~/.config/ganymede/dock.conf`; its event socket at `~/.config/ganymede/events.sock`, owned by one dashboard at a time — a second `ganymede dashboard` refuses to start rather than take it; its own state at `~/.config/ganymede/state.json`, currently the tickets you set by hand and the per-repo activity the working set is built from, written a section at a time so that nothing else in it is disturbed; and its own hook entries in `~/.claude/settings.json`, which are replaced rather than repeated on every install and leave the rest of that file, permissions included, untouched.
+A config fragment at `~/.config/ganymede/tmux.conf` — `allow-passthrough on`, `focus-events on`, the status line's styling and its strip segment, and the root-table popup binding — sourced from a marked block in your `tmux.conf`; a Ghostty config fragment at `~/.config/ganymede/ghostty.conf` — fresh defaults (JetBrains Mono, a built-in dark theme), the Cmd+F keybind and the Shift+Enter newline keybind — loaded from a marked block in `~/.config/ghostty/config.ghostty`; the dock's own config at `~/.config/ganymede/dock.conf`; its event socket at `~/.config/ganymede/events.sock`, owned by one dashboard at a time — a second `ganymede dashboard` refuses to start rather than take it; its own state at `~/.config/ganymede/state.json`, currently the tickets you set by hand, the per-repo activity the working set is built from, and when Claude Code's published version was last looked up, written a section at a time so that nothing else in it is disturbed; and its own hook entries in `~/.claude/settings.json`, which are replaced rather than repeated on every install and leave the rest of that file, permissions included, untouched.
 
 `make launcher` writes one thing more, outside all of that: the app bundle at `~/Applications/Ganymede.app`, holding the Tile's compiled binary, the icon, and an `Info.plist` naming the checkout it was built from. It is the only part of the harness that is a macOS application, and re-running the target is what moves it to a checkout that has moved.
 
