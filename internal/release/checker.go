@@ -32,6 +32,17 @@ type Checker struct {
 	Releases string
 	// Timeout is how long one check may take. Zero means the default.
 	Timeout time.Duration
+	// Every is how long between checks of the bucket. Zero means the default.
+	Every time.Duration
+	// Retry is how long before a check that could not be made is tried again.
+	// Zero means the default.
+	Retry time.Duration
+	// Confirm is how often the install is re-read while a notice is standing.
+	// Zero means the default.
+	Confirm time.Duration
+	// Memory is where the last check is kept across restarts. Nil is a
+	// Checker that remembers nothing, and so checks every time it is started.
+	Memory *Memory
 }
 
 // version is the release Claude Code names itself by, at the front of what it
