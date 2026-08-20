@@ -21,6 +21,7 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/popup"
 	"github.com/BrechtBonte/ganymede/internal/reconciler"
 	"github.com/BrechtBonte/ganymede/internal/registry"
+	"github.com/BrechtBonte/ganymede/internal/release"
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/state"
 	"github.com/BrechtBonte/ganymede/internal/ticket"
@@ -260,6 +261,16 @@ func runDashboard() error {
 	// around, and a second parameter would be threaded through every caller
 	// for something two lines can send. The goroutine ends with the channel,
 	// which ends with the watch, which ends with the Dashboard.
+	// What Claude Code is publishing, against what is installed here. It
+	// reaches the Dashboard the same way the mode edges do, and for the same
+	// reason: New takes the one stream it is built around, and this is two
+	// lines rather than a parameter threaded through every caller. The watch
+	// ends with the Dashboard, as every other one here does.
+	go func() {
+		for update := range lastChecked().Watch(ctx) {
+			program.Send(dashboard.Release(update))
+		}
+	}()
 	go func() {
 		for event := range paneEvents {
 			switch event.Kind {
@@ -364,6 +375,26 @@ func whatIsClaimed() (*claim.Claims, error) {
 		return claimed, fmt.Errorf("the roots you had claimed cannot be read: %w", err)
 	}
 	return claimed, nil
+}
+
+// lastChecked is the update check, with the harness's memory of when it last
+// asked wired into it.
+//
+// Like the tickets, the Claims and the working set's own activity, a state
+// file that cannot be read costs what is in it and nothing else: the check is
+// still made, and the only cost of having forgotten the last one is that this
+// start asks sooner than it had to.
+func lastChecked() release.Checker {
+	sidecar, err := config.DefaultSidecar()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: the update check cannot be spaced out: %v\n", err)
+		return release.Checker{}
+	}
+	memory, err := release.Load(sidecar)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: the last update check cannot be read: %v\n", err)
+	}
+	return release.Checker{Memory: memory}
 }
 
 // known is which ticket each Session is about: what the branches and worktree
