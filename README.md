@@ -10,6 +10,7 @@
   - [Spawn a worktree session for a ticket](#spawn-a-worktree-session-for-a-ticket)
   - [Claim a root for PR review](#claim-a-root-for-pr-review)
   - [Get notified when you're away](#get-notified-when-youre-away)
+  - [Know when Claude Code is behind](#know-when-claude-code-is-behind)
   - [Keys](#keys)
 - [How to install](#how-to-install)
   - [Prerequisites](#prerequisites)
@@ -54,6 +55,12 @@ Checking out a PR means using a repo's main root — but if an agent session alr
 Whenever Ghostty isn't the frontmost app, Ganymede's notifier is the one place alerts come from. A **Blocked** session pings you immediately and stays sticky until you resolve it. A **Ready** session — done, but you haven't looked yet — stays a silent dashboard badge at first, and only escalates to a notification if it's still unseen about a minute later. Clicking a notification focuses Ghostty and jumps you straight to that session.
 
 A banner you've dismissed is gone, so the count doesn't live there alone: for as long as the dashboard is up, the number of Blocked sessions also sits in your menu bar as `█ 2` and as a badge on Ganymede's own Dock icon — visible from whatever app you're actually in, and gone the moment nothing is blocked. Click either one to bring Ghostty forward. Both need `make launcher` to have been run; without it the harness simply has no icon of its own.
+
+### Know when Claude Code is behind
+
+When the Claude Code installed on this machine is older than the build its auto-update channel is publishing, one line appears under the sidepanel's header — `⇡ Claude Code 2.1.240 · on 2.1.237` — and it is gone again the moment you catch up. Ganymede never installs anything: `claude update` is still what goes and gets it.
+
+The check costs a network call, so it is made once every ten hours and remembered between restarts. It follows whichever channel `claude doctor` says you are on, so a `stable` install is never nagged about a `latest` build it will not be given.
 
 ### Keys
 

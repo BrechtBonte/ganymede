@@ -38,6 +38,10 @@ _Avoid_: scratch terminal, quick terminal, drawer
 Ganymede's own macOS Dock tile and the menu-bar item beside it, carrying the number of Blocked sessions — the harness's presence outside the emulator window. Clicking the menu-bar item opens a dropdown with the full Blocked/Ready/Working breakdown, each in its tier's colour, and an Open Ganymede action. Lives exactly as long as the dashboard.
 _Avoid_: dock icon, dock badge, app badge — the Dock is the tmux frame, not macOS's
 
+**Update notice**:
+The single line under the Dashboard's header saying the Claude Code installed on this machine is behind the build its auto-update channel is publishing. Carries both versions, and is absent altogether whenever the install is current.
+_Avoid_: update banner, upgrade prompt, version warning, new version available
+
 ### Session states
 
 **Working**:
