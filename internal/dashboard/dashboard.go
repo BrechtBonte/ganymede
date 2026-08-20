@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/popup"
+	"github.com/BrechtBonte/ganymede/internal/release"
 	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/BrechtBonte/ganymede/internal/ticket"
@@ -36,6 +37,10 @@ const caution = "⚠"
 // type into it are going to the mode rather than to Claude.
 const frozen = "❄"
 
+// available is the mark the update notice is read by: the Claude Code
+// installed here is older than the one being published.
+const available = "⇡"
+
 // popupBusy is the mark a row carries while its own hidden Popup shell is
 // running something (§8) — never while it is only open and sitting at its
 // prompt, which is not worth a word.
@@ -44,6 +49,10 @@ const popupBusy = "⏵"
 // Sessions is a fresh account of the working set, as the state model reports
 // it.
 type Sessions []session.Session
+
+// Release is what the last check found about the Claude Code installed here:
+// the version on the machine and the version its channel is publishing.
+type Release release.Update
 
 // Cautions is what the Main roots on the rail are carrying, by root, as git
 // last answered.
@@ -312,6 +321,9 @@ type Model struct {
 	shown   bool
 	// notice is the last thing the Dashboard was asked to do and could not.
 	notice string
+	// release is the last check of the Claude Code installed here, which the
+	// update notice is drawn from — and nothing at all until one is reported.
+	release release.Update
 	// setting is the ticket being typed, and nil when none is.
 	setting *setting
 	// spawning is the worktree-spawn dialog, and nil when none is open.
@@ -520,6 +532,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FrozenPanes:
 		m.frozen = msg
 		m = m.rebuilt()
+		return m, nil
+	case Release:
+		m.release = release.Update(msg)
 		return m, nil
 	case Froze:
 		return m.freezing(string(msg), true), nil
@@ -1389,12 +1404,21 @@ func (m Model) View() string {
 
 	rule := ruleStyle.Render(strings.Repeat("─", m.width))
 	detail := m.detail()
+	update := m.updateLine()
 
 	// The frame the tree lives in: the title and its rule above, the detail
 	// box's rule and heading below. The tree is given the whole of what is
 	// left and fills it, so the box lands on the sidepanel's last lines
 	// whatever the working set is doing — one place your eye can learn.
-	space := m.height - 4 - len(detail)
+	//
+	// The update notice is part of that frame on the days it is drawn at all,
+	// and the line it costs comes out of the tree rather than off the foot:
+	// the box is the one thing on the panel that is always in the same place.
+	chrome := 4
+	if update != "" {
+		chrome++
+	}
+	space := m.height - chrome - len(detail)
 	if space < 0 {
 		// A sidepanel with no room for both gives up detail before it gives up
 		// the tree.
@@ -1403,6 +1427,9 @@ func (m Model) View() string {
 	}
 
 	lines := []string{m.header(), rule}
+	if update != "" {
+		lines = append(lines, update)
+	}
 	lines = append(lines, m.tree(space)...)
 	// The label is drawn in the panel's quiet: it says what the lines under it
 	// are about, and a section label weighted like its own content is one more
@@ -1427,6 +1454,26 @@ func (m Model) View() string {
 // asking nothing of you spends no column on the counts it does not draw.
 func (m Model) header() string {
 	return spread(brandStyle.Render("GANYMEDE"), joined(m.counts(), m.clock()), m.width)
+}
+
+// updateLine says the Claude Code on this machine is behind the one its
+// channel is publishing, and is nothing at all the rest of the time — the same
+// reading as the Attention counts, which a quiet working set spends no line
+// on. It carries both versions because the number worth knowing is not that
+// there is an update but which one, and because a notice you cannot check
+// against `claude --version` is one you have to take on trust.
+//
+// It says nothing about installing: `claude update` is still what goes and
+// gets it, and the harness has no business running that on your behalf.
+func (m Model) updateLine() string {
+	update := release.Update(m.release)
+	if !update.Behind() {
+		return ""
+	}
+	return truncate(
+		cautionStyle.Render(available+" Claude Code "+update.Latest)+
+			quietStyle.Render(" · on "+update.Installed),
+		m.width)
 }
 
 // clock is the time, quiet, as the mock draws it: 24-hour, to the minute. The
