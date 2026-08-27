@@ -227,6 +227,9 @@ func runDashboard() error {
 	hands := dashboard.Harness{
 		Jumper: harness, Opener: harness, Focuser: harness, Strip: harness, Tile: tile.Default(), Spawner: harness, Popups: harness,
 		Stopper: harness, Seen: model.Seen, Tickets: tickets, Panes: harness,
+		// Asked once here rather than on every key: where this process is
+		// running cannot change under it.
+		Docked: harness.Docked(),
 	}
 	// Root Claims, like the tickets set by hand: a state file that cannot be
 	// read costs the Claims in it and nothing else, and the Dashboard is not

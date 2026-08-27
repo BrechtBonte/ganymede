@@ -453,3 +453,32 @@ func TestUpRestoresTheSidepanelAfterTheDashboardQuits(t *testing.T) {
 		t.Errorf("pane widths after the restart = %q, want %q", widths, "40 119")
 	}
 }
+
+// Ctrl+C is a slip in the sidepanel and the way out of a Dashboard being run
+// by hand, so the Dashboard has to be able to tell which one it is.
+func TestDockedTellsTheHarnesssDashboardFromOneRunByHand(t *testing.T) {
+	repo := initRepo(t, filepath.Join(t.TempDir(), "service-ai-assistant"))
+	h := testHarness(t, repo)
+	if err := h.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	dashboardPane := tmuxOn(t, h.Socket, "display-message", "-p",
+		"-t", "="+topology.DashboardSession+":0.0", "#{pane_id}")
+	repoPane := tmuxOn(t, h.Socket, "display-message", "-p",
+		"-t", "=service-ai-assistant:0.0", "#{pane_id}")
+
+	t.Setenv("TMUX_PANE", dashboardPane)
+	if !h.Docked() {
+		t.Error("the Dashboard's own pane is not reported as docked")
+	}
+
+	t.Setenv("TMUX_PANE", repoPane)
+	if h.Docked() {
+		t.Error("a pane in a repo's Session is reported as the docked Dashboard")
+	}
+
+	t.Setenv("TMUX_PANE", "")
+	if h.Docked() {
+		t.Error("a Dashboard outside tmux altogether is reported as docked")
+	}
+}

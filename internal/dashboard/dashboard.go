@@ -249,6 +249,11 @@ type Harness struct {
 	// Claimer is where a Main root Claim is kept: claim it, release it, and
 	// read which roots are claimed now (§4.2, §7.3's free key).
 	Claimer Claimer
+	// Docked is whether this Dashboard is the harness's own — the one the
+	// dock's sidepanel is attached to — rather than one being run by hand in
+	// a terminal of your own. It is the whole difference ctrl+c makes: the
+	// key is a slip in the sidepanel and the way out everywhere else.
+	Docked bool
 }
 
 // Model is the Dashboard's bubbletea model.
@@ -1037,11 +1042,20 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC:
 		// The Dashboard is meant to stay up for as long as the harness does,
 		// so it answers to no quit key. Ctrl+C is left alone for the times you
-		// are running it by hand — and on the way out it takes both counts
-		// with it, the strip blanked and the Tile closed, since a count nobody
-		// is left to keep up to date is one that will be wrong by morning. The
-		// strip goes out the same way every other count does, so nothing can
-		// be left in flight behind it.
+		// are running it by hand — and in the sidepanel it is not one of those
+		// times. Quitting there ends the Dashboard's Session, which closes the
+		// dock pane whose client was attached to it: the window comes back
+		// showing another repo's terminal where the Dashboard belongs, from a
+		// key pressed by accident one row from where it means something.
+		// Ignored rather than rebound, because there is nothing here it should
+		// do instead.
+		if m.harness.Docked {
+			return m, nil
+		}
+		// On the way out it takes both counts with it, the strip blanked and
+		// the Tile closed, since a count nobody is left to keep up to date is
+		// one that will be wrong by morning. The strip goes out the same way
+		// every other count does, so nothing can be left in flight behind it.
 		if m.harness.Strip != nil && m.shown {
 			_ = m.harness.Strip.Show(session.Attention{})
 		}

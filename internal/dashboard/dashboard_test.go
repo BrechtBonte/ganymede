@@ -1059,3 +1059,57 @@ func TestAClosedDashboardTakesItsTileWithIt(t *testing.T) {
 		t.Error("a closed Dashboard left its Tile running")
 	}
 }
+
+// docked builds the Dashboard as the harness itself runs it: in the dock's
+// sidepanel, where the Dashboard is meant to stay up for as long as the
+// harness does.
+func docked(strip dashboard.Strip, tile dashboard.Tile, sessions []session.Session) tea.Model {
+	var model tea.Model = dashboard.New(nil, dashboard.Harness{
+		Jumper: &jumps{}, Strip: strip, Tile: tile, Docked: true,
+	})
+	model, _ = model.Update(tea.WindowSizeMsg{Width: topology.SidepanelWidth, Height: 45})
+	model, _ = model.Update(dashboard.Sessions(sessions))
+	return model
+}
+
+// quits reports whether a key left the Dashboard on its way out.
+func quits(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	_, ok := cmd().(tea.QuitMsg)
+	return ok
+}
+
+// In the sidepanel ctrl+c is a slip, not a way out. Quitting there ends the
+// Dashboard's Session, which closes the dock pane attached to it and leaves
+// the window showing another repo's terminal where the Dashboard belongs —
+// the whole of it from one key nobody meant to press.
+func TestTheDockedDashboardIgnoresCtrlC(t *testing.T) {
+	strip, tile := &strips{}, &tiles{}
+	model := docked(strip, tile, []session.Session{live("ganymede-78", "/repos/ganymede", session.Blocked)})
+
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if quits(cmd) {
+		t.Error("ctrl+c in the sidepanel quit the Dashboard, want the key ignored")
+	}
+	if last := strip.shown[len(strip.shown)-1]; !last.Any() {
+		t.Errorf("ctrl+c blanked the strip of a Dashboard that is still running: %+v", last)
+	}
+	if tile.closed {
+		t.Error("ctrl+c closed the Tile of a Dashboard that is still running")
+	}
+}
+
+// Run by hand in a terminal of your own, ctrl+c is still the way out — and
+// still takes both counts with it.
+func TestTheDashboardRunByHandStillQuitsOnCtrlC(t *testing.T) {
+	model := badging(&strips{}, &tiles{}, []session.Session{live("ganymede-78", "/repos/ganymede", session.Blocked)})
+
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if !quits(cmd) {
+		t.Error("ctrl+c did not quit a Dashboard being run by hand")
+	}
+}

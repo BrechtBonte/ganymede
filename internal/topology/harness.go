@@ -324,3 +324,26 @@ func Default(workingDir string) (Harness, error) {
 		Worktree:    WorktreeCommand,
 	}, nil
 }
+
+// Docked reports whether this process is the harness's own Dashboard — the
+// one running in the Dashboard Session, which the dock's sidepanel attaches a
+// client to — rather than one you started by hand in a terminal of your own.
+//
+// It asks where the process actually is rather than being told by a flag,
+// because the Dashboard is started from more than one place: Ensure creates
+// the Session, and refresh.sh respawns its pane. A flag would have to be
+// repeated at each of them, and whichever one forgot it would be a Dashboard
+// that quits on the key it is meant to ignore.
+func (h Harness) Docked() bool {
+	// tmux sets TMUX_PANE for every process it starts, so its absence is a
+	// Dashboard running outside tmux altogether.
+	pane := os.Getenv("TMUX_PANE")
+	if pane == "" {
+		return false
+	}
+	out, err := h.sessions().output("display-message", "-p", "-t", pane, "#{session_name}")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(out) == DashboardSession
+}
