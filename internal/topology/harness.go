@@ -126,7 +126,7 @@ func (h Harness) ensureDock(working string) error {
 		// A running dock has never read the config just written, and its
 		// working client still shows whichever repo it was last pointed at.
 		_ = h.dock().run("source-file", "-q", h.DockConf)
-		return h.pointWorkingClient(working)
+		return h.reattachClients(working)
 	}
 
 	// Sized generously so the sidepanel is a sensible fraction of the window
@@ -148,25 +148,70 @@ func (h Harness) ensureDock(working string) error {
 	return h.Focus()
 }
 
-// pointWorkingClient aims the existing dock's right-hand pane at session.
-// Restarting the pane's client is cheap — the Session and everything running
-// in it live on the other server, untouched — and it repairs a working pane
-// that has died as readily as it re-points a live one.
-func (h Harness) pointWorkingClient(session string) error {
-	respawn := append([]string{"respawn-pane", "-k", "-t", "=" + DockSession + ":0.1"},
-		h.clientCommand(session)...)
-	if h.dock().run(respawn...) == nil {
-		return nil
+// reattachClients puts the existing dock back to its two panes: the sidepanel
+// on the Dashboard, the working client on session.
+//
+// Both panes are respawned every time rather than inspected first, because a
+// dock pane is only a client — the Dashboard and every repo Session live on
+// the other server, untouched by this. That makes one call the repair for all
+// of it: a pane pointed at the repo you last came from, a pane whose client
+// died, and a pane that was already right cost the same.
+//
+// Which matters most for the sidepanel, because ctrl+c quits the Dashboard by
+// design: its Session ends, the pane's client exits with it, and tmux closes
+// the pane and renumbers the working client down into index 0. Aiming a
+// client at :0.1 by position alone is how a restart used to make that worse —
+// the respawn found no pane there, and the fallback split a second working
+// client into the slot the Dashboard had left.
+func (h Harness) reattachClients(working string) error {
+	panes, err := h.dockPanes()
+	if err != nil {
+		return err
 	}
 
-	// There is no right-hand pane to respawn — put one back.
-	split := append([]string{"split-window", "-h", "-t", "=" + DockSession + ":0.0"},
-		h.clientCommand(session)...)
-	if err := h.dock().run(split...); err != nil {
-		return fmt.Errorf("restore the working client: %w", err)
+	// A pane past the two the dock is — one an earlier repair left behind, or
+	// one split by hand — cannot be told from the sidepanel by position, so
+	// it goes before anything is aimed at a pane by position.
+	for _, extra := range panes[min(len(panes), 2):] {
+		if err := h.dock().run("kill-pane", "-t", extra); err != nil {
+			return fmt.Errorf("clear an extra dock pane: %w", err)
+		}
+	}
+	if len(panes) < 2 {
+		// One pane left, so a client has died and taken its pane with it.
+		// Split the survivor to get the pair back; which of the two it
+		// becomes does not matter, since both are respawned below.
+		if err := h.dock().run("split-window", "-h", "-t", panes[0]); err != nil {
+			return fmt.Errorf("restore the dock's second pane: %w", err)
+		}
+	}
+
+	for _, aim := range []struct{ pane, session string }{
+		{"0.0", DashboardSession},
+		{"0.1", working},
+	} {
+		respawn := append([]string{"respawn-pane", "-k", "-t", "=" + DockSession + ":" + aim.pane},
+			h.clientCommand(aim.session)...)
+		if err := h.dock().run(respawn...); err != nil {
+			return fmt.Errorf("point the dock's %s pane at %s: %w", aim.pane, aim.session, err)
+		}
 	}
 	return h.dock().run("resize-pane", "-t", "="+DockSession+":0.0",
 		"-x", strconv.Itoa(SidepanelWidth))
+}
+
+// dockPanes is the dock window's panes, by id, in the order they sit across
+// the window — the sidepanel's first.
+func (h Harness) dockPanes() ([]string, error) {
+	out, err := h.dock().output("list-panes", "-t", "="+DockSession+":0", "-F", "#{pane_id}")
+	if err != nil {
+		return nil, fmt.Errorf("list the dock's panes: %w", err)
+	}
+	panes := strings.Fields(out)
+	if len(panes) == 0 {
+		return nil, fmt.Errorf("the dock has no panes to point at %s", DashboardSession)
+	}
+	return panes, nil
 }
 
 // clientCommand is what a dock pane runs to become a tmux client of session.
