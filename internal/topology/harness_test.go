@@ -389,3 +389,96 @@ func TestSidepanelKeepsItsWidthWhenTheWindowGrows(t *testing.T) {
 		t.Errorf("after the window grew to 200 columns, panes = %q, want %q", sidepanel(), "40 159")
 	}
 }
+
+// Ctrl+C quits the Dashboard by design (§ dashboard.go), which ends its
+// Session and so closes the dock pane whose client was attached to it. tmux
+// renumbers the survivor down into the index that pane had, which is how a
+// restart used to cement the fault rather than repair it: `up` respawned the
+// working client into :0.1, found nothing there, and split a *second* working
+// client into the slot the Dashboard had left — then pinned it to 40 columns.
+// The window came back showing another repo's terminal where the Dashboard
+// belongs, and every further restart did it again.
+func TestUpRestoresTheSidepanelAfterTheDashboardQuits(t *testing.T) {
+	repo := initRepo(t, filepath.Join(t.TempDir(), "service-ai-assistant"))
+	h := testHarness(t, repo)
+	if err := h.Ensure(); err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	_ = attachEmulator(t, h, 160, 45)
+	if !settles(func() bool {
+		out, _ := exec.Command("tmux", "-L", h.Socket, "list-clients", "-F", "#{client_session}").Output()
+		return len(strings.Fields(string(out))) == 2
+	}) {
+		t.Fatal("clients never attached")
+	}
+
+	// What ctrl+c leaves behind: the Dashboard gone, its Session with it, and
+	// the dock down to the working client alone.
+	tmuxOn(t, h.Socket, "kill-session", "-t", "="+topology.DashboardSession)
+	if !settles(func() bool {
+		out, err := exec.Command("tmux", "-L", h.DockSocket, "list-panes", "-t", "=dock", "-F", "#{pane_id}").Output()
+		return err == nil && len(strings.Fields(string(out))) == 1
+	}) {
+		t.Fatal("the sidepanel pane never closed after the Dashboard quit")
+	}
+
+	if err := h.Ensure(); err != nil {
+		t.Fatalf("Ensure after the Dashboard quit: %v", err)
+	}
+
+	// One client per Session again — the Dashboard back in the sidepanel, and
+	// not a second client on the working Session standing in for it.
+	var attached string
+	if !settles(func() bool {
+		out, err := exec.Command("tmux", "-L", h.Socket, "list-clients", "-F", "#{client_session}").Output()
+		if err != nil {
+			return false
+		}
+		attached = strings.Join(strings.Fields(string(out)), " ")
+		return attached == topology.DashboardSession+" service-ai-assistant" ||
+			attached == "service-ai-assistant "+topology.DashboardSession
+	}) {
+		t.Errorf("clients after the restart = %q, want one on the Dashboard and one on the repo", attached)
+	}
+
+	var widths string
+	if !settles(func() bool {
+		out, err := exec.Command("tmux", "-L", h.DockSocket, "list-panes", "-t", "=dock", "-F", "#{pane_width}").Output()
+		if err != nil {
+			return false
+		}
+		widths = strings.Join(strings.Fields(string(out)), " ")
+		return widths == "40 119"
+	}) {
+		t.Errorf("pane widths after the restart = %q, want %q", widths, "40 119")
+	}
+}
+
+// Ctrl+C is a slip in the sidepanel and the way out of a Dashboard being run
+// by hand, so the Dashboard has to be able to tell which one it is.
+func TestDockedTellsTheHarnesssDashboardFromOneRunByHand(t *testing.T) {
+	repo := initRepo(t, filepath.Join(t.TempDir(), "service-ai-assistant"))
+	h := testHarness(t, repo)
+	if err := h.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	dashboardPane := tmuxOn(t, h.Socket, "display-message", "-p",
+		"-t", "="+topology.DashboardSession+":0.0", "#{pane_id}")
+	repoPane := tmuxOn(t, h.Socket, "display-message", "-p",
+		"-t", "=service-ai-assistant:0.0", "#{pane_id}")
+
+	t.Setenv("TMUX_PANE", dashboardPane)
+	if !h.Docked() {
+		t.Error("the Dashboard's own pane is not reported as docked")
+	}
+
+	t.Setenv("TMUX_PANE", repoPane)
+	if h.Docked() {
+		t.Error("a pane in a repo's Session is reported as the docked Dashboard")
+	}
+
+	t.Setenv("TMUX_PANE", "")
+	if h.Docked() {
+		t.Error("a Dashboard outside tmux altogether is reported as docked")
+	}
+}
