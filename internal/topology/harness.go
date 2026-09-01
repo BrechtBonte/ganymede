@@ -100,7 +100,7 @@ func (h Harness) Ensure() error {
 
 // AttachCommand is what the emulator runs: the whole harness is behind it.
 func (h Harness) AttachCommand() []string {
-	return append([]string{"tmux"}, h.dock().args("attach", "-t", "="+DockSession)...)
+	return append([]string{"tmux"}, h.dock().client("attach", "-t", "="+DockSession)...)
 }
 
 // Attached reports whether a window is already showing the harness. Opening a
@@ -220,7 +220,7 @@ func (h Harness) dockPanes() ([]string, error) {
 // explicit shell: tmux execs a pane's argv directly, so a bare `env ...` would
 // never see its arguments split.
 func (h Harness) clientCommand(session string) []string {
-	attach := append([]string{"env", "-u", "TMUX", "tmux"}, h.sessions().args("attach", "-t", "="+session)...)
+	attach := append([]string{"env", "-u", "TMUX", "tmux"}, h.sessions().client("attach", "-t", "="+session)...)
 	quoted := make([]string, len(attach))
 	for i, arg := range attach {
 		quoted[i] = shellQuote(arg)
@@ -273,6 +273,17 @@ func (s server) args(args ...string) []string {
 		return args
 	}
 	return append([]string{"-L", s.socket}, args...)
+}
+
+// client is args for the command a tmux client attaches with. The -u is what
+// keeps the drawing independent of the environment ganymede was launched from:
+// tmux reads LC_ALL, LC_CTYPE and LANG to decide whether the terminal a client
+// draws to takes UTF-8, and writes "_" in place of every UTF-8 character on a
+// client it decides against — while LaunchServices, which is what starts
+// Ganymede.app from the Dock, names none of the three. Every terminal these
+// clients ever draw to is Ghostty.
+func (s server) client(args ...string) []string {
+	return s.args(append([]string{"-u"}, args...)...)
 }
 
 func (s server) run(args ...string) error {

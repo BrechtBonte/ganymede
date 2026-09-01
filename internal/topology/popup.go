@@ -57,7 +57,7 @@ func (h Harness) ensurePopups() {
 func (h Harness) OpenPopup(dir, pane string) error {
 	owner := popup.OwnerName(dir)
 	attach := append([]string{"env", "-u", "TMUX", "tmux"},
-		h.popups().args("new-session", "-A", "-s", owner, "-c", dir)...)
+		h.popups().client("new-session", "-A", "-s", owner, "-c", dir)...)
 	quoted := make([]string, len(attach))
 	for i, arg := range attach {
 		quoted[i] = shellQuote(arg)
