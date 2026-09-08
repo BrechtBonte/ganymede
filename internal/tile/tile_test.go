@@ -60,12 +60,42 @@ func (p *pipe) Close() error {
 }
 
 // spawning is a Tile whose process is the pipe handed back here, counting how
-// many times it was asked for one.
+// many times it was asked for one. The run it hands back never reports an end
+// of its own: it is a tile that is still up.
 func spawning(p *pipe, err error) (*tile.Tile, *int) {
 	starts := 0
-	return &tile.Tile{Start: func() (io.WriteCloser, error) {
+	return &tile.Tile{Start: func() (io.WriteCloser, tile.Ended, error) {
 		starts++
-		return p, err
+		return p, make(chan error), err
+	}}, &starts
+}
+
+// ending is a run that has already finished: nil for a tile that quit itself,
+// an error for one that was lost.
+func ending(err error) tile.Ended {
+	report := make(chan error, 1)
+	report <- err
+	return report
+}
+
+// run is one run of the tile process a test sets up: the pipe its counts go
+// down, and how that run ends.
+type run struct {
+	pipe  *pipe
+	ended tile.Ended
+}
+
+// spawningRuns is a Tile handing back the given runs in order, one per start,
+// so a test can say what the tile it is replacing did with its last breath.
+func spawningRuns(t *testing.T, runs ...run) (*tile.Tile, *int) {
+	t.Helper()
+	starts := 0
+	return &tile.Tile{Start: func() (io.WriteCloser, tile.Ended, error) {
+		if starts == len(runs) {
+			t.Fatalf("the Tile was started %d times, one more than the test set up", starts+1)
+		}
+		starts++
+		return runs[starts-1].pipe, runs[starts-1].ended, nil
 	}}, &starts
 }
 
@@ -133,13 +163,13 @@ func TestARepeatOfTheExactSameCountsIsNotSentAgainButAnyFieldMovingIs(t *testing
 	}
 }
 
-// A pipe to a child process does not fail transiently: it fails because the
-// process is gone, which is what quitting the tile from its own Dock menu
-// does. That gesture is respected until the Dashboard is next started, rather
-// than answered with a fresh tile by the next Session that blocks.
-func TestAWriteThatFailedRetiresTheTile(t *testing.T) {
-	p := &pipe{err: errors.New("write |1: broken pipe")}
-	tl, starts := spawning(p, nil)
+// Quitting the tile from its own Dock menu is a gesture, not a fault: the
+// process goes on its own terms and says so by exiting cleanly. Answering that
+// with a fresh tile on the next Session to block would be the harness arguing
+// with you, so the Tile stays gone until the Dashboard is next started.
+func TestATileQuitFromItsDockMenuStaysGone(t *testing.T) {
+	quit := &pipe{err: errors.New("write |1: file already closed")}
+	tl, starts := spawningRuns(t, run{quit, ending(nil)})
 
 	if err := tl.Badge(tile.Counts{Blocked: 1}); err == nil {
 		t.Fatal("Badge said nothing about a pipe that is gone")
@@ -149,7 +179,107 @@ func TestAWriteThatFailedRetiresTheTile(t *testing.T) {
 	}
 
 	if *starts != 1 {
-		t.Errorf("the Tile was started %d times, want the retired one left alone", *starts)
+		t.Errorf("the Tile was started %d times, want the quit one left alone", *starts)
+	}
+}
+
+// A tile that was killed, crashed, or went down with something larger than
+// itself never chose to go. The Dashboard it belongs to stays up for weeks, so
+// treating that the way a Quit is treated costs the harness its whole presence
+// outside the emulator window for the rest of them. The count that noticed
+// brings the tile back and lands on the one it comes back as.
+func TestATileLostWithoutBeingQuitComesBack(t *testing.T) {
+	lost := &pipe{err: errors.New("write |1: broken pipe")}
+	replacement := &pipe{}
+	tl, starts := spawningRuns(t,
+		run{lost, ending(errors.New("signal: killed"))},
+		run{replacement, ending(nil)},
+	)
+
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Fatalf("Badge on a tile that was lost: %v", err)
+	}
+
+	if *starts != 2 {
+		t.Errorf("the Tile was started %d times, want the lost one replaced", *starts)
+	}
+	if replacement.written.String() != "1 0 0\n" {
+		t.Errorf("the replacement tile was sent %q, want the count the lost one could not take", replacement.written.String())
+	}
+}
+
+// Counts stand still for hours at a time, and a tile lost during one of them
+// must not wait on the working set to move before it comes back: nothing
+// would be written, so nothing would notice it had gone. The next working set
+// brings it back whether or not it counts differently to the last.
+func TestATileLostWhileTheCountsStoodStillComesBackAnyway(t *testing.T) {
+	first := &pipe{}
+	replacement := &pipe{}
+	lost := make(chan error, 1)
+	tl, starts := spawningRuns(t,
+		run{first, lost},
+		run{replacement, ending(nil)},
+	)
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Fatalf("Badge: %v", err)
+	}
+
+	lost <- errors.New("signal: killed")
+
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Fatalf("Badge on a count that had not moved: %v", err)
+	}
+
+	if *starts != 2 {
+		t.Errorf("the Tile was started %d times, want the lost one replaced", *starts)
+	}
+	if replacement.written.String() != "1 0 0\n" {
+		t.Errorf("the replacement tile was sent %q, want the count that stood still", replacement.written.String())
+	}
+}
+
+// A tile quit while the counts stood still is still a gesture: the Tile
+// retires on the next working set rather than replacing it.
+func TestATileQuitWhileTheCountsStoodStillStaysGone(t *testing.T) {
+	first := &pipe{}
+	quit := make(chan error, 1)
+	tl, starts := spawningRuns(t, run{first, quit})
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Fatalf("Badge: %v", err)
+	}
+
+	quit <- nil
+
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Errorf("a retired Tile complained: %v", err)
+	}
+
+	if *starts != 1 {
+		t.Errorf("the Tile was started %d times, want the quit one left alone", *starts)
+	}
+}
+
+// A replacement that will not take the count either is the end of it: the
+// bundle is gone, or something about this machine will not run it, and a
+// Dashboard retrying on every Session that blocks would be a Dashboard
+// spawning processes all day for an icon that never appears.
+func TestATileWhoseReplacementAlsoFailsIsRetired(t *testing.T) {
+	lost := &pipe{err: errors.New("write |1: broken pipe")}
+	alsoLost := &pipe{err: errors.New("write |1: broken pipe")}
+	tl, starts := spawningRuns(t,
+		run{lost, ending(errors.New("signal: killed"))},
+		run{alsoLost, ending(errors.New("signal: killed"))},
+	)
+
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err == nil {
+		t.Fatal("Badge said nothing about a tile that would not take the count twice")
+	}
+	if err := tl.Badge(tile.Counts{Blocked: 2}); err != nil {
+		t.Errorf("a retired Tile complained again: %v", err)
+	}
+
+	if *starts != 2 {
+		t.Errorf("the Tile was started %d times, want two tries and no more", *starts)
 	}
 }
 
@@ -194,6 +324,27 @@ func TestCloseClosesThePipe(t *testing.T) {
 
 	if !p.closed {
 		t.Error("Close left the pipe open")
+	}
+}
+
+// A Dashboard on its way out closes the Tile, and nothing brings one back
+// behind it: a tile spawned after the process telling it the count has gone
+// would stand for a count nobody is left to correct.
+func TestAClosedTileIsNotBroughtBack(t *testing.T) {
+	p := &pipe{}
+	tl, starts := spawningRuns(t, run{p, ending(nil)})
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Fatalf("Badge: %v", err)
+	}
+	if err := tl.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := tl.Badge(tile.Counts{Blocked: 2}); err != nil {
+		t.Errorf("a closed Tile complained: %v", err)
+	}
+	if *starts != 1 {
+		t.Errorf("the Tile was started %d times, want none spawned behind a closed one", *starts)
 	}
 }
 
@@ -283,6 +434,51 @@ func TestClosingTheTileEndsItsProcess(t *testing.T) {
 
 	if !settled(func() bool { return running(bundle) == 0 }) {
 		t.Error("the tile process outlived the Dashboard that was telling it the count")
+	}
+}
+
+// A real tile process killed outright, and a real replacement in its place:
+// the bundle's executable is running again by the next count, and that count
+// is on it.
+func TestATileKilledOutrightComesBackOnTheNextCount(t *testing.T) {
+	bundle, record := bundled(t)
+	tl := tile.New(bundle)
+	t.Cleanup(func() { _ = tl.Close() })
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Fatalf("Badge: %v", err)
+	}
+	recorded(t, record, "label=1 0 0")
+
+	killed(t, bundle)
+	if !settled(func() bool { return running(bundle) == 0 }) {
+		t.Fatal("the tile process outlived being killed")
+	}
+
+	if err := tl.Badge(tile.Counts{Blocked: 2}); err != nil {
+		t.Fatalf("Badge after the tile was killed: %v", err)
+	}
+
+	body := recorded(t, record, "label=2 0 0")
+	if !strings.Contains(body, "label=2 0 0") {
+		t.Errorf("the replacement tile was sent %q, want the count the killed one could not take", body)
+	}
+	if running(bundle) != 1 {
+		t.Errorf("%d of the bundle's processes are up, want the one that replaced the killed tile", running(bundle))
+	}
+}
+
+// killed ends this bundle's tile process the way anything but a deliberate
+// Quit does: outright, with no chance to say it is going.
+func killed(t *testing.T, bundle string) {
+	t.Helper()
+	out, err := exec.Command("pgrep", "-f", filepath.Join(bundle, "Contents", "MacOS", "Ganymede")).Output()
+	if err != nil {
+		t.Fatalf("find the tile process to kill: %v", err)
+	}
+	for _, pid := range strings.Fields(string(out)) {
+		if err := exec.Command("kill", "-9", pid).Run(); err != nil {
+			t.Fatalf("kill the tile process %s: %v", pid, err)
+		}
 	}
 }
 
