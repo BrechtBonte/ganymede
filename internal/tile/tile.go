@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/session"
 )
@@ -55,15 +56,23 @@ func CountsIn(sessions []session.Session) Counts {
 // Ghostty, this is beside every other application's icon.
 type Tile struct {
 	// Start launches the tile process and hands back the pipe its counts are
-	// written to. Nil is a harness whose launcher was never installed, which
-	// is not a failure — it simply has no Tile.
-	Start func() (io.WriteCloser, error)
+	// written to, alongside the report of how that run of it ends. Nil is a
+	// harness whose launcher was never installed, which is not a failure — it
+	// simply has no Tile.
+	Start func() (io.WriteCloser, Ended, error)
 
 	pipe    io.WriteCloser
+	ended   Ended
 	counts  Counts
 	started bool
 	retired bool
 }
+
+// Ended is how one run of the tile process finished, once it has: nil for a
+// tile that quit itself — what Quit on its Dock menu does — and an error for
+// one that was killed, crashed, or went down with something larger than
+// itself. Exactly one report is ever sent.
+type Ended <-chan error
 
 // Badge shows the working set's Blocked, Ready and Working counts.
 //
@@ -74,11 +83,18 @@ type Tile struct {
 // moved are worth a write: the working set is rebuilt whenever anything at
 // all changes.
 //
-// Any failure retires the Tile for good. A pipe to a child process does not
-// fail transiently — it fails because the process is gone, which is what
-// quitting the tile from its own Dock menu does, and answering that gesture
-// with a fresh tile on the next Session that blocks would be the harness
-// arguing with you.
+// A write fails because the process behind it is gone, and how it went is
+// what decides whether it comes back. Quit on its own Dock menu is a gesture
+// to respect: the Tile retires, rather than arguing with you by reappearing
+// on the next Session that blocks. Anything else — killed, crashed, or taken
+// down with something larger than itself — was never asked for, and a
+// Dashboard that stays up for weeks cannot spend the rest of them with no
+// presence outside the emulator window, so the count that noticed brings the
+// tile back and lands on the replacement.
+//
+// A tile that cannot be started, or a replacement that will not take the
+// count either, retires the Tile for good: whatever is wrong is not something
+// spawning another process every time a Session blocks will fix.
 func (t *Tile) Badge(counts Counts) error {
 	if t.Start == nil || t.retired {
 		return nil
@@ -86,20 +102,53 @@ func (t *Tile) Badge(counts Counts) error {
 	if t.started && counts == t.counts {
 		return nil
 	}
-	if !t.started {
-		pipe, err := t.Start()
-		if err != nil {
-			t.retired = true
-			return fmt.Errorf("start Ganymede's Dock tile: %w", err)
+	// Two passes at most: the first can fail on a tile that has gone since the
+	// last count landed, and the second is the one it is brought back as.
+	var failed error
+	for attempt := 0; attempt < 2; attempt++ {
+		if !t.started {
+			pipe, ended, err := t.Start()
+			if err != nil {
+				t.retired = true
+				return fmt.Errorf("start Ganymede's Dock tile: %w", err)
+			}
+			t.pipe, t.ended, t.started = pipe, ended, true
 		}
-		t.pipe, t.started = pipe, true
+		if _, failed = fmt.Fprintf(t.pipe, "%d %d %d\n", counts.Blocked, counts.Ready, counts.Working); failed == nil {
+			t.counts = counts
+			return nil
+		}
+		if t.quit() {
+			t.retired = true
+			return fmt.Errorf("Ganymede's Dock tile was quit, so %+v went unsaid: %w", counts, failed)
+		}
+		t.started = false
 	}
-	if _, err := fmt.Fprintf(t.pipe, "%d %d %d\n", counts.Blocked, counts.Ready, counts.Working); err != nil {
-		t.retired = true
-		return fmt.Errorf("tell Ganymede's Dock tile about %+v: %w", counts, err)
+	t.retired = true
+	return fmt.Errorf("tell Ganymede's Dock tile about %+v: %w", counts, failed)
+}
+
+// lostGrace is how long a failed write waits to hear how the process behind it
+// went. exec.Cmd.Wait closes the pipe just before it reports, so the report is
+// always a moment behind the write that noticed — a moment worth waiting out,
+// since it is the whole difference between a tile you quit and one you lost.
+const lostGrace = 100 * time.Millisecond
+
+// quit reports whether the process behind a failed write went on its own
+// terms: NSApp.terminate exits cleanly, which is what Quit on the Dock menu
+// does, where a tile that was killed or crashed reports the signal that ended
+// it. A run that says nothing in time is taken as lost, because bringing back
+// a tile you had quit is the smaller wrong of the two.
+func (t *Tile) quit() bool {
+	if t.ended == nil {
+		return false
 	}
-	t.counts = counts
-	return nil
+	select {
+	case err := <-t.ended:
+		return err == nil
+	case <-time.After(lostGrace):
+		return false
+	}
 }
 
 // appName is the bundle the launcher installs, executable is the binary inside
@@ -133,21 +182,23 @@ func New(bundle string) *Tile {
 	if _, err := os.Stat(binary); err != nil {
 		return &Tile{}
 	}
-	return &Tile{Start: func() (io.WriteCloser, error) {
+	return &Tile{Start: func() (io.WriteCloser, Ended, error) {
 		command := exec.Command(binary, tileArg)
 		pipe, err := command.StdinPipe()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := command.Start(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// The tile outlives this call and ends on its own once the pipe
 		// closes, so nothing here waits for it — but something has to, or it
 		// stays a zombie on the Dashboard's own process for as long as the
-		// harness is up.
-		go func() { _ = command.Wait() }()
-		return pipe, nil
+		// harness is up. What that wait answers is also the one thing that
+		// tells a tile you quit from one that was taken from you.
+		ended := make(chan error, 1)
+		go func() { ended <- command.Wait() }()
+		return pipe, ended, nil
 	}}
 }
 
@@ -156,6 +207,9 @@ func New(bundle string) *Tile {
 // runs no cleanup at all — but closing the pipe deliberately is what makes the
 // icon go at the moment you quit rather than a beat afterwards.
 func (t *Tile) Close() error {
+	// Retiring here is what keeps a tile from being spawned behind a Dashboard
+	// that is already leaving: closing is EOF, and every write after it fails.
+	t.retired = true
 	if t.pipe == nil {
 		return nil
 	}
