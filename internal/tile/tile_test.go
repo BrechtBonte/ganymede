@@ -208,6 +208,57 @@ func TestATileLostWithoutBeingQuitComesBack(t *testing.T) {
 	}
 }
 
+// Counts stand still for hours at a time, and a tile lost during one of them
+// must not wait on the working set to move before it comes back: nothing
+// would be written, so nothing would notice it had gone. The next working set
+// brings it back whether or not it counts differently to the last.
+func TestATileLostWhileTheCountsStoodStillComesBackAnyway(t *testing.T) {
+	first := &pipe{}
+	replacement := &pipe{}
+	lost := make(chan error, 1)
+	tl, starts := spawningRuns(t,
+		run{first, lost},
+		run{replacement, ending(nil)},
+	)
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Fatalf("Badge: %v", err)
+	}
+
+	lost <- errors.New("signal: killed")
+
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Fatalf("Badge on a count that had not moved: %v", err)
+	}
+
+	if *starts != 2 {
+		t.Errorf("the Tile was started %d times, want the lost one replaced", *starts)
+	}
+	if replacement.written.String() != "1 0 0\n" {
+		t.Errorf("the replacement tile was sent %q, want the count that stood still", replacement.written.String())
+	}
+}
+
+// A tile quit while the counts stood still is still a gesture: the Tile
+// retires on the next working set rather than replacing it.
+func TestATileQuitWhileTheCountsStoodStillStaysGone(t *testing.T) {
+	first := &pipe{}
+	quit := make(chan error, 1)
+	tl, starts := spawningRuns(t, run{first, quit})
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Fatalf("Badge: %v", err)
+	}
+
+	quit <- nil
+
+	if err := tl.Badge(tile.Counts{Blocked: 1}); err != nil {
+		t.Errorf("a retired Tile complained: %v", err)
+	}
+
+	if *starts != 1 {
+		t.Errorf("the Tile was started %d times, want the quit one left alone", *starts)
+	}
+}
+
 // A replacement that will not take the count either is the end of it: the
 // bundle is gone, or something about this machine will not run it, and a
 // Dashboard retrying on every Session that blocks would be a Dashboard

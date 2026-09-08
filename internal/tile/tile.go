@@ -89,14 +89,20 @@ type Ended <-chan error
 // on the next Session that blocks. Anything else — killed, crashed, or taken
 // down with something larger than itself — was never asked for, and a
 // Dashboard that stays up for weeks cannot spend the rest of them with no
-// presence outside the emulator window, so the count that noticed brings the
-// tile back and lands on the replacement.
+// presence outside the emulator window, so the next working set brings the
+// tile back and lands the standing count on it. The next working set, not the
+// next count that differs: counts stand still for hours, and a tile lost
+// during one of those would stay lost for the whole of it.
 //
 // A tile that cannot be started, or a replacement that will not take the
 // count either, retires the Tile for good: whatever is wrong is not something
 // spawning another process every time a Session blocks will fix.
 func (t *Tile) Badge(counts Counts) error {
-	if t.Start == nil || t.retired {
+	if t.Start == nil {
+		return nil
+	}
+	t.reconcile()
+	if t.retired {
 		return nil
 	}
 	if t.started && counts == t.counts {
@@ -126,6 +132,29 @@ func (t *Tile) Badge(counts Counts) error {
 	}
 	t.retired = true
 	return fmt.Errorf("tell Ganymede's Dock tile about %+v: %w", counts, failed)
+}
+
+// reconcile takes account of a run that ended since the last count, before
+// anything is decided about this one.
+//
+// Counts stand still for hours at a time, and nothing is written while they
+// do — so a tile lost during one of them would go unnoticed for exactly as
+// long, which is the whole of what this is meant to fix. Asking the run
+// itself, rather than waiting for a write to fail, is what makes the next
+// working set enough to bring the tile back.
+func (t *Tile) reconcile() {
+	if !t.started {
+		return
+	}
+	select {
+	case err := <-t.ended:
+		if err == nil {
+			t.retired = true
+			return
+		}
+		t.started = false
+	default:
+	}
 }
 
 // lostGrace is how long a failed write waits to hear how the process behind it
