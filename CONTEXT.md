@@ -8,7 +8,7 @@ The terminal harness replacing Warp for multi-repo Claude Code work: a tmux-base
 
 **Dashboard**:
 The always-visible sidepanel TUI listing the working set of repos and their sessions, from which all harness actions are taken.
-_Avoid_: overview, home screen, monitor, rail
+_Avoid_: overview, home screen, monitor, rail, panel — bare "panel" says Dashboard or Pulls and cannot say which
 
 **Dock**:
 The tmux frame filling the emulator window, holding the dashboard on the left and the working client on the right. It has no prefix key of its own, so every keystroke belongs to the client inside the pane.
@@ -42,6 +42,14 @@ _Avoid_: dock icon, dock badge, app badge — the Dock is the tmux frame, not ma
 The single line under the Dashboard's header saying the Claude Code installed on this machine is behind the build its auto-update channel is publishing. Carries both versions, and is absent altogether whenever the install is current.
 _Avoid_: update banner, upgrade prompt, version warning, new version available
 
+**Pulls**:
+A section at the foot of the Dashboard: your open pull requests from every repo on GitHub, in two lists — AUTHORED, the ones you wrote, and REQUESTED, the ones asking for your review.
+_Avoid_: PR panel, panel, pull request list, inbox, queue
+
+**Stacked**:
+A Pull based on another open PR — its parent — rather than on the default branch.
+_Avoid_: cascading, chained, dependent PR
+
 ### Session states
 
 **Working**:
@@ -69,7 +77,7 @@ The session's process has ended; the row disappears.
 _Avoid_: dead, closed, ended
 
 **Attention**:
-The union of Blocked and Ready — everything waiting on you. Blocked outranks Ready; within a tier, longest-waiting first.
+The union of Blocked and Ready — every Session waiting on you. Blocked outranks Ready; within a tier, longest-waiting first. Sessions only: the Pulls waiting on you are **Your move**.
 _Avoid_: alerts, notifications, needs-input
 
 ### Pane view
@@ -95,3 +103,41 @@ _Avoid_: reserved, checked out
 **Takeover**:
 Claiming a main root whose only occupant is an Idle session by ending that session in the same action. Refused when the occupant is Working or Blocked.
 _Avoid_: force claim, steal
+
+### Pull states
+
+**Draft**:
+Marked unfinished, so nothing is asked of anyone — said of a Pull in either list, whatever else is true of it.
+_Avoid_: wip, unready
+
+**Rework**:
+AUTHORED: a reviewer has asked for changes.
+_Avoid_: changes requested, rejected, blocked
+
+**Conflicted**:
+AUTHORED: it cannot merge mechanically until you resolve it.
+_Avoid_: dirty, merge conflict, broken
+
+**Behind**:
+AUTHORED: the base has moved under it.
+_Avoid_: out of date, stale, needs rebase
+
+**Landable**:
+AUTHORED: you can merge it now — never said of a Stacked Pull, whose parent is unmerged.
+_Avoid_: ready, ready to merge, mergeable, green, clean
+
+**Sent**:
+AUTHORED: you have done your part and it is with the world, whether nobody has looked yet, a reviewer is looking, or it is approved and the checks are still running.
+_Avoid_: in review, waiting, pending, open, theirs
+
+**Approved**:
+REQUESTED: someone has already approved it, so your review is a second opinion.
+_Avoid_: done, signed off, merged
+
+**Yours**:
+REQUESTED: you owe this review.
+_Avoid_: needs you, unreviewed, requested, waiting
+
+**Your move**:
+The Pulls whose state is yours to act on — Rework, Conflicted, Behind or Landable in AUTHORED, and Yours in REQUESTED.
+_Avoid_: attention, actionable, needs-input, mine
