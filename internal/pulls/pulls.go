@@ -177,3 +177,37 @@ func (p Pull) Resolved() bool {
 
 // YourMove says this Pull's state is one yours to act on.
 func (p Pull) YourMove() bool { return p.State().YourMove() }
+
+// Failing says the checks are exceptional — the one thing on a Pull worth a
+// mark of its own.
+//
+// PENDING and SUCCESS are both resting states: drawn literally the three
+// rollup marks land on 13 of 17 rows, and a mark two rows in three carry is a
+// mark the eye stops reading. Drawing only the failure leaves four, and frees
+// the tick to mean exactly one thing.
+func (p Pull) Failing() bool {
+	return p.Checks == "FAILURE" || p.Checks == "ERROR"
+}
+
+// Approved says a person has approved this Pull, in AUTHORED only. In
+// REQUESTED the approval is already the state word, and a mark beside it would
+// be the row saying the same thing twice.
+//
+// It is orthogonal to the state rather than a rival to it: a Pull approved
+// with its checks failing is Sent carrying both marks, which is what resolves
+// the one real collision in the measured data without a priority fight.
+func (p Pull) Approved() bool {
+	return p.List == Authored && p.Review == "APPROVED"
+}
+
+// Stacked says the Pull is based on something other than its repository's
+// default branch — the reason Landable is withheld from it, and the whole of
+// what its row can honestly say. It never dims a row: measured, the only
+// stacked Pulls were the only three rows in the section with a person waiting
+// behind them.
+//
+// A repository whose default branch could not be read is not stacked. Every
+// row in it would otherwise carry the mark, which is a worse answer than none.
+func (p Pull) Stacked() bool {
+	return p.Default != "" && p.Base != "" && p.Base != p.Default
+}
