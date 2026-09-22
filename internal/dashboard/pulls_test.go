@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/pulls"
 	"github.com/BrechtBonte/ganymede/internal/session"
@@ -213,5 +214,137 @@ func TestThePullTheWorkingPaneIsSittingOnIsMarkedToo(t *testing.T) {
 	// And only that one: a Pull on another branch in the same repo is untouched.
 	if m.pullsRow(elsewhere, false) != quietElsewhere {
 		t.Error("a Pull on a branch nothing is standing in was marked")
+	}
+}
+
+func manyPulls(n int) pulls.Set {
+	set := make(pulls.Set, 0, n)
+	for i := range n {
+		set = append(set, pull(pulls.Requested, "teamleadercrm/repo-"+itoa(i), 100+i))
+	}
+	return set
+}
+
+func TestBothHeadingsCarryTheirOwnCount(t *testing.T) {
+	m := Model{width: 40}
+	m.pulls.open = true
+	m.pulls.set = pulls.Set{
+		pull(pulls.Authored, "teamleadercrm/core", 48032),
+		pull(pulls.Requested, "teamleadercrm/api-internal", 1564),
+		pull(pulls.Requested, "teamleadercrm/focus-frontend", 7430),
+	}
+
+	lines, _, _ := m.pullsRows(20)
+	body := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(body, "AUTHORED 1") || !strings.Contains(body, "REQUESTED 2") {
+		t.Errorf("the headings do not carry their counts:\n%s", body)
+	}
+	if strings.Index(body, "AUTHORED") > strings.Index(body, "REQUESTED") {
+		t.Error("REQUESTED came before AUTHORED")
+	}
+}
+
+func TestTheSectionEndsOnItsOwnKeyLine(t *testing.T) {
+	m := Model{width: 40}
+	m.pulls.open = true
+	m.pulls.set = manyPulls(3)
+
+	lines, _, _ := m.pullsRows(20)
+	last := ansi.Strip(lines[len(lines)-1])
+	for _, key := range []string{"⏎ jump", "o open", "r refresh", "esc close"} {
+		if !strings.Contains(last, key) {
+			t.Errorf("the key line is missing %q: %q", key, last)
+		}
+	}
+	if w := ansi.StringWidth(last); w > 40 {
+		t.Errorf("the key line is %d columns", w)
+	}
+}
+
+func TestTheEighteenthPullScrolls(t *testing.T) {
+	// 2 headings + 17 rows = 19, and the key line takes the 20th. On the
+	// measuring day the section is exactly full.
+	m := Model{width: 40}
+	m.pulls.open = true
+	m.pulls.set = manyPulls(17)
+
+	lines, above, below := m.pullsRows(20)
+	if len(lines) != 20 {
+		t.Fatalf("got %d lines, want exactly the 20 it was given", len(lines))
+	}
+	if above != 0 || below != 0 {
+		t.Errorf("a section that fits reported %d above and %d below", above, below)
+	}
+
+	m.pulls.set = manyPulls(18)
+	_, above, below = m.pullsRows(20)
+	if above != 0 || below != 1 {
+		t.Errorf("the 18th Pull: got %d above and %d below, want 0 and 1", above, below)
+	}
+}
+
+func TestTheHeadingTheWindowOpenedInsideSticks(t *testing.T) {
+	// A scrolled section never shows rows whose list is off the top.
+	m := Model{width: 40}
+	m.pulls.open = true
+	m.pulls.set = manyPulls(17)
+	m.pulls.offset = 8
+
+	lines, above, _ := m.pullsRows(20)
+	if first := ansi.Strip(lines[0]); !strings.HasPrefix(first, "REQUESTED") {
+		t.Errorf("the window's own heading did not stick: %q", first)
+	}
+	if above == 0 {
+		t.Error("rows above the window were not counted")
+	}
+}
+
+func TestTheScrollCountsRideOnTheChromeLine(t *testing.T) {
+	// The 20th row is the key line at 39 of 40 columns, so there is nowhere in
+	// the section to put a marker. It rides the chrome line beside the fetch
+	// time, where it costs no row and is never itself scrolled away.
+	m := Model{width: 40}
+	m.pulls.open = true
+	m.pulls.fetched = time.Date(2026, 9, 22, 14, 31, 0, 0, time.Local)
+
+	label := ansi.Strip(m.pullsLabel(2, 9))
+	if !strings.HasPrefix(label, "PULLS") {
+		t.Errorf("the label does not read PULLS: %q", label)
+	}
+	for _, want := range []string{aboveMark + "2", belowMark + "9", "14:31"} {
+		if !strings.Contains(label, want) {
+			t.Errorf("the chrome line is missing %q: %q", want, label)
+		}
+	}
+	if w := ansi.StringWidth(label); w != 40 {
+		t.Errorf("the chrome line is %d columns: %q", w, label)
+	}
+
+	// A section that fits spends no columns saying so.
+	quiet := ansi.Strip(m.pullsLabel(0, 0))
+	if strings.Contains(quiet, aboveMark) || strings.Contains(quiet, belowMark) {
+		t.Errorf("a section that fits drew scroll marks: %q", quiet)
+	}
+}
+
+func TestAFetchThatHasNotLandedHasNoTimeToDraw(t *testing.T) {
+	m := Model{width: 40}
+	m.pulls.open = true
+	label := ansi.Strip(m.pullsLabel(0, 0))
+	if strings.Contains(label, ":") {
+		t.Errorf("a section with nothing fetched drew a time: %q", label)
+	}
+}
+
+func TestTheSectionTakesOnlyWhatItNeeds(t *testing.T) {
+	// Three Pulls do not spend twenty lines. The cap is a ceiling, not a size.
+	m := Model{width: 40}
+	m.pulls.open = true
+	m.pulls.set = manyPulls(3)
+
+	lines, _, _ := m.pullsRows(20)
+	// 2 headings + 3 rows + the key line.
+	if len(lines) != 6 {
+		t.Errorf("got %d lines for three Pulls, want 6", len(lines))
 	}
 }

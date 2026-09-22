@@ -230,3 +230,131 @@ func markStyle(p pulls.Pull) lipgloss.Style {
 	}
 	return quietStyle
 }
+
+// pullsEntry is one drawable thing in the section: a list's heading, or a Pull
+// under it. The two share a list so the window can be measured in entries and
+// the cursor can step through both — a heading is never selectable, but it is
+// scrolled past like anything else.
+type pullsEntry struct {
+	heading string
+	count   int
+	pull    pulls.Pull
+	isPull  bool
+}
+
+// pullsEntries is the section as a flat list: AUTHORED and its rows, then
+// REQUESTED and its rows.
+//
+// Sections by role rather than by repo. Measured, repo group headers cost 7
+// headings against 2 — 24 lines where the section has 20 — and the meaning
+// agrees: one list is a decision you owe someone, the other a decision owed to
+// you, and those are different urgencies that do not belong in one ordering.
+func (m Model) pullsEntries() []pullsEntry {
+	authored, requested := m.pulls.set.Of(pulls.Authored), m.pulls.set.Of(pulls.Requested)
+	list := make([]pullsEntry, 0, len(authored)+len(requested)+2)
+	for _, group := range []struct {
+		name string
+		rows []pulls.Pull
+	}{{"AUTHORED", authored}, {"REQUESTED", requested}} {
+		list = append(list, pullsEntry{heading: group.name, count: len(group.rows)})
+		for _, p := range group.rows {
+			list = append(list, pullsEntry{pull: p, isPull: true})
+		}
+	}
+	return list
+}
+
+// pullsRows draws the section's lists inside space lines, and says how many
+// Pulls are out of sight above and below the window.
+//
+// The last line is always the key line, whatever else fits. The window is
+// measured in entries rather than rows because a heading takes a line too, and
+// the heading of the list the window opened inside is redrawn at the top — so
+// a scrolled section never shows rows whose list is off the screen.
+func (m Model) pullsRows(space int) (lines []string, above, below int) {
+	list := m.pullsEntries()
+	room := max(0, space-1) // the key line has the last
+
+	first := min(max(m.pulls.offset, 0), max(0, len(list)-1))
+	if first > 0 {
+		if name, count, hidden := pullsOpening(list, first); name != "" {
+			lines = append(lines, m.pullsHeading(name, count))
+			above = hidden
+		}
+	}
+
+	last := first
+	for ; last < len(list) && len(lines) < room; last++ {
+		lines = append(lines, m.pullsLine(list[last], last == m.pulls.cursor))
+	}
+	for _, e := range list[last:] {
+		if e.isPull {
+			below++
+		}
+	}
+	return append(lines, pullsLegend(m.width)), above, below
+}
+
+// pullsLine is one entry: a heading, or a row.
+func (m Model) pullsLine(e pullsEntry, cursor bool) string {
+	if !e.isPull {
+		return m.pullsHeading(e.heading, e.count)
+	}
+	return m.pullsRow(e.pull, cursor)
+}
+
+// pullsOpening is the list the window's first entry belongs to, and how many
+// of that list's rows are above the window.
+func pullsOpening(list []pullsEntry, first int) (name string, count, hidden int) {
+	for i := first - 1; i >= 0; i-- {
+		if !list[i].isPull {
+			return list[i].heading, list[i].count, hidden
+		}
+		hidden++
+	}
+	return "", 0, 0
+}
+
+// pullsHeading names a list and carries its count, in the sidepanel's quiet —
+// the same weight the SELECTED label is drawn in, for the same reason.
+//
+// The count is what says how much is out of sight: the window shows what it
+// shows, and REQUESTED 11 above four visible rows is the section saying so
+// without spending a line on it.
+func (m Model) pullsHeading(name string, count int) string {
+	return quietStyle.Render(truncate(name+" "+strconv.Itoa(count), m.width))
+}
+
+// pullsLegend is the section's own keys, on its last line — the way
+// claimingView ends with "⏎ claim · esc cancel".
+//
+// They stay off the Dock's legend because r fires only inside Pulls, and the
+// legend's own rule is that offering a key which would silently do nothing is
+// worse than not offering it. Pulls is on screen exactly when r is live.
+func pullsLegend(width int) string {
+	return fitKeys([]string{"⏎ jump", "o open", "r refresh", "esc close"}, width)
+}
+
+// pullsLabel is the section's chrome line: its name, and at the far end what
+// is out of sight and when the set was fetched.
+//
+// The shape header() already uses for the clock, and it costs no row — chrome
+// covers the label, so the age and the scroll counts are free. Two hours old
+// reads as two hours old against the Dashboard's own clock a few lines above,
+// with no word for it, no threshold to cross and no line spent. "Stale" is not
+// available: CONTEXT.md lists it under Behind's Avoid, and one word with two
+// meanings inside one section is worse than no word.
+func (m Model) pullsLabel(above, below int) string {
+	var scroll string
+	if above > 0 {
+		scroll = aboveMark + strconv.Itoa(above)
+	}
+	if below > 0 {
+		scroll = joined(scroll, belowMark+strconv.Itoa(below))
+	}
+	var fetched string
+	if !m.pulls.fetched.IsZero() {
+		fetched = m.pulls.fetched.Format("15:04")
+	}
+	return spread(quietStyle.Render("PULLS"), rendered(quietStyle, joined(scroll, fetched)), m.width)
+}
