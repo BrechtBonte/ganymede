@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/pulls"
+	"github.com/BrechtBonte/ganymede/internal/release"
+	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -436,5 +438,122 @@ func TestBeforeTheFirstCycleTheSectionSaysItIsFetching(t *testing.T) {
 	lines, _, _ := m.pullsPanel(20)
 	if !strings.Contains(ansi.Strip(strings.Join(lines, "\n")), "Fetching") {
 		t.Error("a Dashboard that has not fetched yet drew something other than Fetching")
+	}
+}
+
+// footHeight is how many lines the foot holds, counted from the label down.
+func footHeight(t *testing.T, m Model) int {
+	t.Helper()
+	lines := strings.Split(m.View(), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(ansi.Strip(line), "PULLS") {
+			return len(lines) - i - 1
+		}
+	}
+	t.Fatal("no PULLS label in the view")
+	return 0
+}
+
+// treeOfSessions is n Session rows under one repo header, which is enough tree
+// to be squeezed by anything the foot does.
+func treeOfSessions(t *testing.T, n int) []row {
+	t.Helper()
+	rows := []row{{root: "/repo", state: repo.Free}}
+	for i := range n {
+		s := session.Session{PID: 1000 + i, ID: "s" + itoa(i), Name: "s" + itoa(i), Dir: "/repo", State: session.Idle}
+		rows = append(rows, row{root: "/repo", session: &s, checkout: "/repo", holdsRoot: true})
+	}
+	return rows
+}
+
+func TestPullsTakesTheFootBelowTheInputsAndAboveTheRowDetail(t *testing.T) {
+	m := Model{width: 40, height: 45, focused: true}
+	m.pulls.open = true
+	m.pulls.set = manyPulls(4)
+	m.pulls.body = pullsRowsBody
+
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "PULLS") {
+		t.Fatalf("the foot does not carry PULLS:\n%s", view)
+	}
+	if strings.Contains(view, "SELECTED") {
+		t.Error("the label kept saying SELECTED while Pulls held the foot")
+	}
+
+	// An input opened over it wins, and the label goes back to lying the way
+	// it already does for all four.
+	m.setting = &setting{dir: "/tmp/x", root: "/tmp/x", name: "x"}
+	withInput := ansi.Strip(m.View())
+	if !strings.Contains(withInput, "ticket ›") {
+		t.Error("the ticket input did not take the foot over Pulls")
+	}
+	if !strings.Contains(withInput, "SELECTED") {
+		t.Error("the label did not go back to SELECTED for an input flow")
+	}
+
+	// And Pulls returns when the input closes.
+	m.setting = nil
+	if !strings.Contains(ansi.Strip(m.View()), "PULLS") {
+		t.Error("Pulls did not return when the input closed")
+	}
+}
+
+func TestTheTreeKeepsTwentyOneRowsWithPullsOpen(t *testing.T) {
+	// At height 45 chrome is 4, leaving 41 usable; the cap is half of that,
+	// which is 20 — so the tree is never given fewer than 21.
+	m := Model{width: 40, height: 45, focused: true}
+	m.pulls.open = true
+	m.pulls.set = manyPulls(40) // far more than the cap can hold
+	m.pulls.body = pullsRowsBody
+	m.rows = treeOfSessions(t, 30)
+
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) > 45 {
+		t.Fatalf("the sidepanel drew %d lines at height 45", len(lines))
+	}
+	// The foot begins at the PULLS label; everything above it but the header,
+	// its rule and the label's own rule is the tree.
+	label := -1
+	for i, line := range lines {
+		if strings.HasPrefix(ansi.Strip(line), "PULLS") {
+			label = i
+			break
+		}
+	}
+	if label < 0 {
+		t.Fatal("no PULLS label in the view")
+	}
+	// header, rule, ...tree..., rule, label
+	if tree := label - 3; tree < 21 {
+		t.Errorf("the tree got %d lines, want at least 21", tree)
+	}
+}
+
+func TestTheUpdateNoticeComesOutOfTheTreeNotTheFoot(t *testing.T) {
+	// The box is the one thing on the sidepanel that is always in the same
+	// place.
+	m := Model{width: 40, height: 45, focused: true}
+	m.pulls.open = true
+	m.pulls.set = manyPulls(17)
+	m.pulls.body = pullsRowsBody
+	m.rows = treeOfSessions(t, 30)
+
+	before := footHeight(t, m)
+	m.release = release.Update{Installed: "2.1.0", Latest: "2.2.0", Channel: "latest"}
+	if after := footHeight(t, m); after != before {
+		t.Errorf("the update notice cost the foot %d lines", before-after)
+	}
+}
+
+func TestASectionSmallerThanTheCapLeavesTheRestToTheTree(t *testing.T) {
+	m := Model{width: 40, height: 45, focused: true}
+	m.pulls.open = true
+	m.pulls.set = manyPulls(3)
+	m.pulls.body = pullsRowsBody
+	m.rows = treeOfSessions(t, 30)
+
+	// 2 headings + 3 rows + the key line.
+	if got := footHeight(t, m); got != 6 {
+		t.Errorf("three Pulls took %d lines of the foot, want 6", got)
 	}
 }

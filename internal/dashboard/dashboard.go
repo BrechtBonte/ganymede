@@ -1445,22 +1445,28 @@ func (m Model) View() string {
 	}
 
 	rule := ruleStyle.Render(strings.Repeat("─", m.width))
-	detail := m.detail()
 	update := m.updateLine()
 
-	// The frame the tree lives in: the title and its rule above, the detail
-	// box's rule and heading below. The tree is given the whole of what is
-	// left and fills it, so the box lands on the sidepanel's last lines
-	// whatever the working set is doing — one place your eye can learn.
+	// The frame the tree lives in: the title and its rule above, the foot's
+	// rule and label below. The tree is given the whole of what is left and
+	// fills it, so the box lands on the sidepanel's last lines whatever the
+	// working set is doing — one place your eye can learn.
 	//
 	// The update notice is part of that frame on the days it is drawn at all,
-	// and the line it costs comes out of the tree rather than off the foot:
-	// the box is the one thing on the panel that is always in the same place.
+	// and the line it costs comes out of the tree rather than off the foot: the
+	// box is the one thing on the sidepanel that is always in the same place.
 	chrome := 4
 	if update != "" {
 		chrome++
 	}
-	space := m.height - chrome - len(detail)
+	usable := max(0, m.height-chrome)
+	// Pulls takes what it needs, capped at half the usable height, and scrolls
+	// inside its budget when the cap bites. Count-agnostic, so it survives
+	// however many Pulls there turn out to be — and the scrolling is not new
+	// machinery, since shown() already solves "keep the cursor visible inside a
+	// line budget" for any budget down to a single line.
+	detail, label := m.detail(usable / 2)
+	space := usable - len(detail)
 	if space < 0 {
 		// A sidepanel with no room for both gives up detail before it gives up
 		// the tree.
@@ -1473,10 +1479,10 @@ func (m Model) View() string {
 		lines = append(lines, update)
 	}
 	lines = append(lines, m.tree(space)...)
-	// The label is drawn in the panel's quiet: it says what the lines under it
-	// are about, and a section label weighted like its own content is one more
-	// bold row for the eye to read past.
-	lines = append(lines, rule, quietStyle.Render(truncate("SELECTED", m.width)))
+	// The label is drawn in the sidepanel's quiet: it says what the lines under
+	// it are about, and a section label weighted like its own content is one
+	// more bold row for the eye to read past.
+	lines = append(lines, rule, label)
 	lines = append(lines, detail...)
 	if len(lines) > m.height {
 		lines = lines[:m.height]
@@ -1919,9 +1925,12 @@ func ticketStyle(key ticket.Key) lipgloss.Style {
 	return ticketColour
 }
 
-// detail is the SELECTED box: what the highlighted row has no room to say.
-func (m Model) detail() []string {
-	lines := m.selected()
+// detail is the box at the sidepanel's foot and the label above it: whatever
+// the foot's dispatch put there, with the notice under it.
+//
+// space is the most lines Pulls may take, and no other case reads it.
+func (m Model) detail(space int) ([]string, string) {
+	lines, label := m.foot(space)
 	if m.notice != "" {
 		// The notice is the one thing in the box that is worth more than one
 		// line. Everything else here repeats what the rail already showed, and
@@ -1932,36 +1941,91 @@ func (m Model) detail() []string {
 			lines = append(lines, styleOf(session.Blocked).Render(line))
 		}
 	}
-	return lines
+	return lines, label
 }
 
-func (m Model) selected() []string {
-	if m.spawning != nil {
-		return m.spawningView()
+// footLabel is what the box at the sidepanel's foot is called for every case
+// but Pulls.
+//
+// Four of the five cases are lying when they draw it — a Claim dialog is not
+// the selected row either — and that is left exactly as it was. The lie
+// predates this work, fixing all four was offered and declined, and making the
+// label dispatch-dependent for one case of five is the odd shape that was
+// chosen over the alternative of touching four flows this section has no
+// business in.
+const footLabel = "SELECTED"
+
+// foot is the box at the sidepanel's foot: the lines it holds and the label
+// above them.
+//
+// The chain is a priority order, and the row detail is only its last case: the
+// foot is not a detail display that happens to host inputs, it is a modal
+// surface whose default state is the detail. Pulls is the fifth case, below the
+// four input flows and above the row detail — so c, w and t take the foot while
+// Pulls is open exactly as they do today, and Pulls returns when they close.
+//
+// space is the most lines Pulls may take, and no other case reads it. The four
+// inputs and the row detail are as long as they are, and the tree absorbs the
+// difference the way it always has.
+func (m Model) foot(space int) (lines []string, label string) {
+	quiet := quietStyle.Render(truncate(footLabel, m.width))
+	switch {
+	case m.spawning != nil:
+		return m.spawningView(), quiet
+	case m.claiming != nil:
+		return m.claimingView(), quiet
+	case m.takingOver != nil:
+		return m.takingOverView(), quiet
+	case m.setting != nil:
+		return m.settingView(), quiet
+	case m.pulls.open:
+		// The cost, accepted: while Pulls is open you cannot see the detail of
+		// the row you are standing on. Pulls displaces precisely what the
+		// cursor is for.
+		rows, above, below := m.pullsPanel(min(m.pullsWanted(), space))
+		return rows, m.pullsLabel(above, below)
+	default:
+		return m.rowDetail(), quiet
 	}
-	if m.claiming != nil {
-		return m.claimingView()
+}
+
+// pullsWanted is how many lines the section would take if nothing capped it:
+// both headings, every row, and the key line.
+//
+// Taking what it needs rather than always taking the cap is what keeps a quiet
+// day's three Pulls from costing the tree seventeen rows.
+func (m Model) pullsWanted() int {
+	switch m.pulls.body {
+	case pullsRowsBody:
+		return len(m.pullsEntries()) + 1
+	case pullsNetwork:
+		return len(m.pullsEntries()) + 2
+	default:
+		// Two lines of prose at most, and the key line.
+		return 3
 	}
-	if m.takingOver != nil {
-		return m.takingOverView()
+}
+
+// settingView is the box while a ticket is being typed into it. It says what is
+// being corrected rather than what is selected, because the two come apart: the
+// working set is rebuilt under the input every time any Session anywhere moves,
+// and the row you opened it over can end and take the selection with it. The
+// correction is about the checkout, which is still there.
+func (m Model) settingView() []string {
+	return []string{
+		elide(m.setting.name, m.width),
+		// The cursor is drawn rather than placed: the Dashboard shares a
+		// terminal with the working client, and the one real cursor belongs
+		// over there.
+		ticketColour.Render(tail("ticket › "+m.setting.typed+"▌", m.width)),
+		quietStyle.Render(shorten(m.setting.dir, m.width)),
+		quietStyle.Render(truncate("⏎ set · esc cancel", m.width)),
 	}
-	if m.setting != nil {
-		// The box is the input for as long as one is open. It says what is
-		// being corrected rather than what is selected, because the two come
-		// apart: the working set is rebuilt under the input every time any
-		// Session anywhere moves, and the row you opened it over can end and
-		// take the selection with it. The correction is about the checkout,
-		// which is still there.
-		return []string{
-			elide(m.setting.name, m.width),
-			// The cursor is drawn rather than placed: the Dashboard shares a
-			// terminal with the working client, and the one real cursor
-			// belongs over there.
-			ticketColour.Render(tail("ticket › "+m.setting.typed+"▌", m.width)),
-			quietStyle.Render(shorten(m.setting.dir, m.width)),
-			quietStyle.Render(truncate("⏎ set · esc cancel", m.width)),
-		}
-	}
+}
+
+// rowDetail is the foot's default case: what the highlighted row has no room to
+// say.
+func (m Model) rowDetail() []string {
 	if m.cursor >= len(m.rows) {
 		return []string{quietStyle.Render("—")}
 	}
