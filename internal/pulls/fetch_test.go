@@ -145,3 +145,99 @@ func TestAnAnswerThatIsNotJSONIsUnreachableRatherThanAPanic(t *testing.T) {
 		t.Errorf("got %v (%v), want Unreachable", got, ok)
 	}
 }
+
+func TestASecondPassAsksOnlyAboutTheRowsItWasGiven(t *testing.T) {
+	const reread = `{"data":{
+	  "rateLimit":{"cost":1,"remaining":4992},
+	  "p0":{"pullRequest":{"number":979,"title":"Bump guzzle","url":"https://github.com/teamleadercrm/focus-service-bookkeeping/pull/979",
+	     "isDraft":false,"baseRefName":"master","headRefName":"dependabot/composer/guzzle-8.2.0","updatedAt":"2026-09-22T06:00:00Z",
+	     "mergeable":"MERGEABLE","mergeStateStatus":"BEHIND","reviewDecision":"REVIEW_REQUIRED",
+	     "author":{"login":"dependabot"},
+	     "repository":{"nameWithOwner":"teamleadercrm/focus-service-bookkeeping","defaultBranchRef":{"name":"master"}},
+	     "statusCheckRollup":{"state":"FAILURE"}}}}}`
+
+	gh, argsFile := fakeGH(t, reread, "", 0)
+	unknown := Pull{
+		List: Authored, Repo: "teamleadercrm/focus-service-bookkeeping", Number: 979,
+		Mergeable: "UNKNOWN", MergeState: "UNKNOWN", Review: "REVIEW_REQUIRED",
+		Base: "master", Default: "master",
+	}
+
+	rows, err := Fetcher{GH: gh}.Reread(context.Background(), []Pull{unknown})
+	if err != nil {
+		t.Fatalf("reread: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	// The resolved fields land, and the row keeps the list it was already in —
+	// the second pass reads a repository, which does not know which search
+	// found the row.
+	if rows[0].MergeState != "BEHIND" || rows[0].Mergeable != "MERGEABLE" {
+		t.Errorf("mergeability did not resolve: %+v", rows[0])
+	}
+	if rows[0].List != Authored {
+		t.Error("the re-read row lost its list")
+	}
+	if got := rows[0].State(); got != Behind {
+		t.Errorf("state after the second pass: got %q, want %q", got, Behind)
+	}
+
+	sent, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := string(sent)
+	for _, want := range []string{"focus-service-bookkeeping", "979", "pullRequest"} {
+		if !strings.Contains(query, want) {
+			t.Errorf("the second pass did not ask about %q\n%s", want, query)
+		}
+	}
+	// It is a re-read of named rows, not the whole census again.
+	if strings.Contains(query, "review-requested:@me") || strings.Contains(query, "author:@me") {
+		t.Error("the second pass ran the search again instead of re-reading the rows")
+	}
+}
+
+func TestASecondPassWithNothingToAskCostsNoRequest(t *testing.T) {
+	// A gh that would fail if it ran at all, so a request proves itself.
+	rows, err := Fetcher{GH: "/nonexistent/gh"}.Reread(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("reread of nothing: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("got %d rows, want none", len(rows))
+	}
+}
+
+func TestARowThatNeverResolvesKeepsEverythingButItsState(t *testing.T) {
+	const stillUnknown = `{"data":{"rateLimit":{"cost":1,"remaining":4991},
+	  "p0":{"pullRequest":{"number":979,"title":"Bump guzzle","url":"https://example.invalid/979",
+	     "isDraft":false,"baseRefName":"master","headRefName":"dependabot/composer/guzzle-8.2.0","updatedAt":"2026-09-22T06:00:00Z",
+	     "mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN","reviewDecision":"REVIEW_REQUIRED",
+	     "author":{"login":"dependabot"},
+	     "repository":{"nameWithOwner":"teamleadercrm/focus-service-bookkeeping","defaultBranchRef":{"name":"master"}},
+	     "statusCheckRollup":{"state":"FAILURE"}}}}}`
+
+	gh, _ := fakeGH(t, stillUnknown, "", 0)
+	unknown := Pull{
+		List: Authored, Repo: "teamleadercrm/focus-service-bookkeeping", Number: 979,
+		Mergeable: "UNKNOWN", MergeState: "UNKNOWN", Base: "master", Default: "master",
+	}
+	rows, err := Fetcher{GH: gh}.Reread(context.Background(), []Pull{unknown})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// It keeps its number, repo and marks — all from fields that never go
+	// UNKNOWN — and draws no state word. There is no third pass: the next
+	// cycle picks it up, and the row is honest meanwhile.
+	if got := rows[0].State(); got != Unresolved {
+		t.Errorf("got %q, want no state", got)
+	}
+	if !rows[0].Failing() || rows[0].Number != 979 {
+		t.Errorf("a stateless row lost its marks or its identity: %+v", rows[0])
+	}
+	if rows[0].YourMove() {
+		t.Error("a stateless row is Your move")
+	}
+}

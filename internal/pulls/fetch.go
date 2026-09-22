@@ -57,6 +57,10 @@ const fields = `
 
 // searchQuery carries both lists as aliased search fields, which is what makes
 // a whole pass one HTTP request for one rate-limit point.
+//
+// rateLimit is asked for here and in the second pass, and nothing decodes it.
+// It is what proves the cost claim — 1 point a pass, 4 an hour against 5,000 —
+// and a query that stops asking is one nobody can check.
 const searchQuery = `query($review: String!, $mine: String!, $first: Int!) {
   rateLimit { cost remaining }
   review: search(query: $review, type: ISSUE, first: $first) {
@@ -284,4 +288,60 @@ func (n node) pull(list List) Pull {
 		p.Checks = n.Rollup.State
 	}
 	return p
+}
+
+// Reread asks about exactly the rows it is given, and nothing else.
+//
+// GitHub computes mergeability on a background test-merge commit and serves
+// UNKNOWN until it lands. The commit is invalidated whenever the base branch
+// moves, so a thirty-minute poll arrives cold every time — measured, one active
+// repository went from 0/30 UNKNOWN to 14/30 in twenty minutes, and a re-read
+// five seconds later resolved 30/30.
+//
+// It is one aliased request over the named rows rather than the search run
+// again: the search would re-read every row to correct a handful, and would
+// also let the set change shape between the two passes of one cycle.
+//
+// The rows come back in the order they were given, carrying the list they
+// arrived in — the second pass reads repositories, which do not know which
+// search found a row.
+func (f Fetcher) Reread(ctx context.Context, rows []Pull) ([]Pull, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	var query strings.Builder
+	query.WriteString("query {\n  rateLimit { cost remaining }\n")
+	for i, p := range rows {
+		owner, name, ok := strings.Cut(p.Repo, "/")
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&query, "  p%d: repository(owner: %q, name: %q) { pullRequest(number: %d) {%s } }\n",
+			i, owner, name, p.Number, fields)
+	}
+	query.WriteString("}")
+
+	var answer struct {
+		Data map[string]struct {
+			PullRequest *node `json:"pullRequest"`
+		} `json:"data"`
+	}
+	if err := f.ask(ctx, &answer, "-f", "query="+query.String()); err != nil {
+		return nil, err
+	}
+
+	read := make([]Pull, len(rows))
+	for i, p := range rows {
+		read[i] = p
+		found, ok := answer.Data["p"+strconv.Itoa(i)]
+		if !ok || found.PullRequest == nil {
+			// A row the re-read could not see keeps what the first pass said
+			// about it, which is an unresolved row — the honest answer, and
+			// the one the next cycle corrects.
+			continue
+		}
+		read[i] = found.PullRequest.pull(p.List)
+	}
+	return read, nil
 }
