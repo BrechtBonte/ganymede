@@ -182,7 +182,26 @@ type Tickets interface {
 	Set(dir, root string, key ticket.Key) error
 	// Open shows the ticket in the browser.
 	Open(key ticket.Key) error
+	// OpenURL shows any address in the browser. A Pull carries its own, where
+	// a ticket's is built from its key — the two reach the same browser.
+	OpenURL(url string) error
 }
+
+// Pulls is the fetch of your open pull requests, which r asks to run now.
+//
+// It is the only thing the harness knows that nothing can push to it: the
+// registry watch is a file watcher, the hooks are sub-second edges, and the
+// reconciler cross-checks something local — each learns of a change because
+// the change announces itself. GitHub does not.
+type Pulls interface {
+	// Refresh asks for a whole cycle, and says whether this ask is the one
+	// that will be answered. A cycle already in flight answers false, which is
+	// what makes holding r a no-op rather than a way to stack cycles.
+	Refresh() bool
+}
+
+// PullsReport is one cycle's answer, arriving the way Release does.
+type PullsReport pulls.Report
 
 // Popups is everything the Dashboard needs from the Popup shell (§8): which
 // owners are busy, for the marker on their row, and where its own cursor is
@@ -254,6 +273,9 @@ type Harness struct {
 	// branch is the whole of the rule matching a Pull to a Session. Nil is a
 	// Dashboard that matches nothing, and draws every row unmarked.
 	Origins *pulls.Origins
+	// Pulls is the census r asks to run now. Nil is a Dashboard whose section
+	// only ever refreshes on its own clock.
+	Pulls Pulls
 	// Docked is whether this Dashboard is the harness's own — the one the
 	// dock's sidepanel is attached to — rather than one being run by hand in
 	// a terminal of your own. It is the whole difference ctrl+c makes: the
@@ -560,6 +582,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case Release:
 		m.release = release.Update(msg)
 		return m, nil
+	case PullsReport:
+		return m.pullsReported(msg), nil
 	case Froze:
 		return m.freezing(string(msg), true), nil
 	case Thawed:
@@ -1066,6 +1090,29 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.picking(msg)
 	}
 
+	// Pulls has the cursor while it is open, so the arrows, enter, o, esc, p
+	// and r are its own. Everything else falls through: c, w and t stay live on
+	// the frozen tree row, because each opens a flow that names its subject
+	// before anything happens.
+	if m.pulls.open {
+		switch {
+		case msg.Type == tea.KeyEsc:
+			return m.closePulls().noting(), nil
+		case msg.Type == tea.KeyUp:
+			return m.pullsUp().noting(), nil
+		case msg.Type == tea.KeyDown:
+			return m.pullsDown().noting(), nil
+		case msg.Type == tea.KeyEnter:
+			return m.jumpToPull().noting(), nil
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "o":
+			return m.openPull().noting(), nil
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "r":
+			return m.refreshPulls().noting(), nil
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "p":
+			return m.closePulls().noting(), nil
+		}
+	}
+
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		// The Dashboard is meant to stay up for as long as the harness does,
@@ -1115,6 +1162,8 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.spawn()
 		case "c":
 			return m.claim()
+		case "p":
+			m = m.togglePulls()
 		}
 	}
 	return m.noting(), nil

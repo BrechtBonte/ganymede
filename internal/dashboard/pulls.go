@@ -450,3 +450,155 @@ func (m Model) pullsSays(space int) []string {
 	room := max(0, space-1)
 	return append(fill(clip(said, room), room), pullsLegend(m.width))
 }
+
+// togglePulls opens the section, or closes it.
+//
+// p is free — the only runes bound on the Dashboard are o, t, g, w and c — and
+// every Dashboard key is already the first letter of what it does. There is no
+// fourth global chord: the three at tmux's root table are taken from every pane
+// of every Session permanently, and a census you glance at, kept right by a
+// thirty-minute clock, buys nothing by arriving one keypress sooner.
+func (m Model) togglePulls() Model {
+	if m.pulls.open {
+		return m.closePulls()
+	}
+	m.pulls.open = true
+	m.pulls.cursor, m.pulls.offset = m.firstPull(), 0
+	return m
+}
+
+// closePulls puts the cursor back exactly where it was.
+//
+// Closed is fully hidden. A one-line spine carrying a count was rejected twice
+// over: it costs one of the 21 rows the tree is guaranteed, paid in the common
+// case for the rare one — and the tree already answers "is there anything in
+// Pulls", because the Session marks are drawn whether the section is open or
+// not.
+func (m Model) closePulls() Model {
+	m.pulls.open = false
+	return m
+}
+
+// firstPull is the first selectable entry: a heading is scrolled past but never
+// landed on, since there is nothing on it to open or jump to.
+func (m Model) firstPull() int {
+	for i, e := range m.pullsEntries() {
+		if e.isPull {
+			return i
+		}
+	}
+	return 0
+}
+
+// pullsUp and pullsDown step the section's cursor over its Pulls, skipping the
+// headings, and carry the window with them.
+func (m Model) pullsUp() Model   { return m.pullsStep(-1) }
+func (m Model) pullsDown() Model { return m.pullsStep(1) }
+
+func (m Model) pullsStep(by int) Model {
+	list := m.pullsEntries()
+	for at := m.pulls.cursor + by; at >= 0 && at < len(list); at += by {
+		if !list[at].isPull {
+			continue
+		}
+		m.pulls.cursor = at
+		return m.scrolledToCursor()
+	}
+	return m
+}
+
+// scrolledToCursor keeps the section's cursor inside its window, which is the
+// same job shown() does for the tree — in one dimension, since every entry here
+// is exactly one line.
+func (m Model) scrolledToCursor() Model {
+	room := max(1, min(m.pullsWanted(), max(0, m.height-4)/2)-1)
+	if m.pulls.cursor < m.pulls.offset {
+		m.pulls.offset = m.pulls.cursor
+	}
+	if m.pulls.cursor >= m.pulls.offset+room {
+		m.pulls.offset = m.pulls.cursor - room + 1
+	}
+	return m
+}
+
+// selectedPull is the Pull the section's cursor is on.
+func (m Model) selectedPull() (pulls.Pull, bool) {
+	list := m.pullsEntries()
+	if m.pulls.cursor < 0 || m.pulls.cursor >= len(list) || !list[m.pulls.cursor].isPull {
+		return pulls.Pull{}, false
+	}
+	return list[m.pulls.cursor].pull, true
+}
+
+// openPull shows the pull request in the browser — o's one meaning over a
+// subject it did not have.
+//
+// internal/browser needs nothing: Browser.Open takes any URL, ticket.Open
+// merely builds the JIRA address before calling it, and a Pull carries its own.
+func (m Model) openPull() Model {
+	p, ok := m.selectedPull()
+	if !ok || m.harness.Tickets == nil {
+		return m
+	}
+	if err := m.harness.Tickets.OpenURL(p.URL); err != nil {
+		m.notice = err.Error()
+	}
+	return m
+}
+
+// jumpToPull puts the Session the Pull belongs to in front of you — enter's one
+// meaning over a subject it did not have, reusing the Session match in the
+// other direction for free.
+//
+// It is the one genuinely useful gesture here: a Pull in Rework is a row you
+// want to be standing in, not reading about. When no Session matches — measured
+// at 3 of 15 — it names the key that would have worked, the way open()'s "no
+// ticket — press t to set one" already does.
+func (m Model) jumpToPull() Model {
+	p, ok := m.selectedPull()
+	if !ok {
+		return m
+	}
+	for i := range m.rows {
+		r := m.rows[i]
+		if r.session == nil {
+			continue
+		}
+		if m.originOf(r.root) == p.Repo && m.branchOf(r.checkout) == p.Head {
+			return m.jumpTo(*r.session)
+		}
+	}
+	m.notice = "no Session on this branch — press o to open it"
+	return m
+}
+
+// refreshPulls runs a whole cycle by hand — both passes — and resets the
+// window, so a refresh at 14:29 does not get a second at 14:31.
+//
+// A refused ask says nothing. r is deliberately quiet while a cycle is in
+// flight, and a notice there would be the harness complaining about a key doing
+// exactly what it promised.
+func (m Model) refreshPulls() Model {
+	if m.harness.Pulls != nil {
+		m.harness.Pulls.Refresh()
+	}
+	return m
+}
+
+// pullsReported takes in one cycle's answer.
+//
+// A cycle that could not reach GitHub keeps the last good rows and the
+// timestamp they were fetched under: the rows are still the best answer there
+// is, and moving the clock on rows nothing refreshed would be the section
+// claiming a freshness it does not have.
+func (m Model) pullsReported(report PullsReport) Model {
+	m.pulls.body = bodyOf(pulls.Report(report))
+	if m.pulls.body == pullsNetwork {
+		return m
+	}
+	m.pulls.set, m.pulls.fetched = report.Set, report.At
+	if m.pulls.cursor >= len(m.pullsEntries()) {
+		m.pulls.cursor, m.pulls.offset = m.firstPull(), 0
+	}
+	return m
+}

@@ -10,6 +10,8 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/release"
 	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
+	"github.com/BrechtBonte/ganymede/internal/ticket"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -555,5 +557,230 @@ func TestASectionSmallerThanTheCapLeavesTheRestToTheTree(t *testing.T) {
 	// 2 headings + 3 rows + the key line.
 	if got := footHeight(t, m); got != 6 {
 		t.Errorf("three Pulls took %d lines of the foot, want 6", got)
+	}
+}
+
+// refuser is a Pulls that allows the first few asks and refuses the rest, the
+// way a Refresher with a cycle in flight does.
+type refuser struct{ asked, allow int }
+
+func (r *refuser) Refresh() bool {
+	r.asked++
+	return r.asked <= r.allow
+}
+
+// opening is a Tickets whose OpenURL records the address it was handed.
+type opening struct {
+	url  string
+	of   map[string]ticket.Key
+	sets map[string]ticket.Key
+}
+
+func (o *opening) Of(dir, root string) ticket.Key { return o.of[dir] }
+
+func (o *opening) Set(dir, root string, about ticket.Key) error {
+	if o.sets == nil {
+		o.sets = map[string]ticket.Key{}
+	}
+	o.sets[dir] = about
+	return nil
+}
+
+func (o *opening) Open(about ticket.Key) error { return o.OpenURL(about.URL()) }
+
+func (o *opening) OpenURL(url string) error {
+	o.url = url
+	return nil
+}
+
+// jumping is a Jumper recording the pid it was steered to.
+type jumping struct{ pid int }
+
+func (j *jumping) Jump(pid int) error {
+	j.pid = pid
+	return nil
+}
+
+func typed(r rune) tea.KeyMsg          { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}} }
+func special(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
+
+func pressing(m Model, msgs ...tea.KeyMsg) Model {
+	for _, msg := range msgs {
+		next, _ := m.Update(msg)
+		m = next.(Model)
+	}
+	return m
+}
+
+func opened(m Model) Model { return pressing(m, typed('p')) }
+
+func TestPOpensPullsAndEscAndPClose(t *testing.T) {
+	m := Model{width: 40, height: 45, focused: true}
+	m.rows = treeOfSessions(t, 5)
+	m.pulls.set, m.pulls.body = manyPulls(4), pullsRowsBody
+
+	open := pressing(m, typed('p'))
+	if !open.pulls.open {
+		t.Fatal("p did not open Pulls")
+	}
+	if closed := pressing(open, special(tea.KeyEsc)); closed.pulls.open {
+		t.Error("esc did not close Pulls")
+	}
+	if toggled := pressing(open, typed('p')); toggled.pulls.open {
+		t.Error("p did not toggle Pulls closed")
+	}
+	// Closed means gone: no spine, no count, nothing on the sidepanel at all.
+	if strings.Contains(ansi.Strip(pressing(open, typed('p')).View()), "PULLS") {
+		t.Error("a closed section left something behind")
+	}
+}
+
+func TestThereIsOneCursorAtATime(t *testing.T) {
+	m := Model{width: 40, height: 45, focused: true}
+	m.rows = treeOfSessions(t, 5)
+	m.cursor = 3
+	m.pulls.set, m.pulls.body = manyPulls(4), pullsRowsBody
+
+	open := pressing(m, typed('p'), special(tea.KeyDown), special(tea.KeyDown))
+	// The tree's highlight freezes rather than moving.
+	if open.cursor != 3 {
+		t.Errorf("the arrows moved the tree cursor to %d while Pulls was open", open.cursor)
+	}
+	if open.pulls.cursor == opened(m).pulls.cursor {
+		t.Error("the arrows did not drive the section's own rows")
+	}
+	// And esc puts the cursor back exactly where it was.
+	if back := pressing(open, special(tea.KeyEsc)); back.cursor != 3 {
+		t.Errorf("esc left the tree cursor at %d, want 3", back.cursor)
+	}
+}
+
+func TestTheSectionCursorNeverLandsOnAHeading(t *testing.T) {
+	m := Model{width: 40, height: 45, focused: true}
+	m.pulls.set = pulls.Set{
+		pull(pulls.Authored, "teamleadercrm/core", 48032),
+		pull(pulls.Requested, "teamleadercrm/api-internal", 1564),
+	}
+	m.pulls.body = pullsRowsBody
+
+	open := pressing(m, typed('p'))
+	for range len(open.pullsEntries()) + 2 {
+		if e := open.pullsEntries()[open.pulls.cursor]; !e.isPull {
+			t.Fatalf("the cursor landed on the heading %q", e.heading)
+		}
+		open = pressing(open, special(tea.KeyDown))
+	}
+}
+
+func TestOOpensThePullAndEnterJumpsToItsSession(t *testing.T) {
+	tickets, jumper := &opening{}, &jumping{}
+	m := Model{width: 40, height: 45, focused: true}
+	m.harness = Harness{Tickets: tickets, Jumper: jumper}
+	s := session.Session{PID: 4242, ID: "s", Name: "s", Dir: "/repo", State: session.Idle}
+	m.rows = []row{{root: "/repo", session: &s, checkout: "/repo", holdsRoot: true}}
+	m.origins = map[string]string{"/repo": "teamleadercrm/core"}
+	m.branches = map[string]string{"/repo": "PHX-4335-decode"}
+
+	p := pull(pulls.Authored, "teamleadercrm/core", 48032)
+	p.Head = "PHX-4335-decode"
+	m.pulls.set, m.pulls.body = pulls.Set{p}, pullsRowsBody
+
+	open := pressing(m, typed('p'))
+	pressing(open, typed('o'))
+	if tickets.url != p.URL {
+		t.Errorf("o opened %q, want %q", tickets.url, p.URL)
+	}
+	pressing(open, special(tea.KeyEnter))
+	if jumper.pid != 4242 {
+		t.Errorf("enter jumped to %d, want 4242", jumper.pid)
+	}
+}
+
+func TestEnterOnAPullWithNoSessionNamesO(t *testing.T) {
+	// Measured at 3 of 15. It mirrors open()'s own "no ticket — press t to set
+	// one": the key that would have worked is named rather than nothing
+	// happening.
+	m := Model{width: 40, height: 45, focused: true}
+	m.pulls.set, m.pulls.body = manyPulls(2), pullsRowsBody
+
+	after := pressing(m, typed('p'), special(tea.KeyEnter))
+	if after.notice == "" {
+		t.Fatal("enter on an unmatched Pull said nothing at all")
+	}
+	if !strings.Contains(after.notice, "o") {
+		t.Errorf("the notice does not name o: %q", after.notice)
+	}
+}
+
+func TestRIsANoOpWhileACycleIsInFlight(t *testing.T) {
+	asks := &refuser{allow: 1}
+	m := Model{width: 40, height: 45, focused: true}
+	m.harness = Harness{Pulls: asks}
+	m.pulls.set, m.pulls.body = manyPulls(2), pullsRowsBody
+
+	open := pressing(m, typed('p'), typed('r'), typed('r'), typed('r'))
+	if asks.asked != 3 {
+		t.Errorf("r asked %d times, want 3", asks.asked)
+	}
+	// Holding it cannot stack cycles: the Refresher refuses, and the Dashboard
+	// says nothing about a key that is deliberately quiet.
+	if open.notice != "" {
+		t.Errorf("a refused refresh set a notice: %q", open.notice)
+	}
+}
+
+func TestRFiresOnlyInsidePulls(t *testing.T) {
+	asks := &refuser{allow: 10}
+	m := Model{width: 40, height: 45, focused: true}
+	m.harness = Harness{Pulls: asks}
+	m.rows = treeOfSessions(t, 3)
+
+	pressing(m, typed('r'))
+	if asks.asked != 0 {
+		t.Error("r fired with Pulls closed, where the legend never offers it")
+	}
+}
+
+func TestCWAndTStayLiveWhilePullsIsOpen(t *testing.T) {
+	// Each opens a flow that names its subject before anything happens, so you
+	// never act blind — you act on a row whose highlight never moved.
+	m := Model{width: 40, height: 45, focused: true}
+	m.harness = Harness{Tickets: &opening{}}
+	s := session.Session{PID: 7, ID: "s", Name: "s", Dir: "/repo", State: session.Idle}
+	m.rows = []row{{root: "/repo", session: &s, checkout: "/repo", holdsRoot: true}}
+	m.pulls.set, m.pulls.body = manyPulls(2), pullsRowsBody
+
+	after := pressing(m, typed('p'), typed('t'))
+	if after.setting == nil {
+		t.Fatal("t did not open the ticket input while Pulls was open")
+	}
+	if !after.pulls.open {
+		t.Error("opening an input closed Pulls, which should only be displaced")
+	}
+}
+
+func TestACycleReportRepaintsTheSectionOnce(t *testing.T) {
+	m := Model{width: 40, height: 45, focused: true}
+	m.pulls.open = true
+
+	landed := pulls.Report{Set: manyPulls(3), At: time.Date(2026, 9, 22, 14, 31, 0, 0, time.Local)}
+	next, _ := m.Update(PullsReport(landed))
+	after := next.(Model)
+	if after.pulls.body != pullsRowsBody || len(after.pulls.set) != 3 {
+		t.Errorf("the report did not land: body=%q rows=%d", after.pulls.body, len(after.pulls.set))
+	}
+	if !after.pulls.fetched.Equal(landed.At) {
+		t.Error("the chrome line's time did not move")
+	}
+
+	// A network failure keeps the rows and their timestamp.
+	broken := pulls.Report{Err: &pulls.Error{Trouble: pulls.Unreachable}, At: time.Now()}
+	next, _ = after.Update(PullsReport(broken))
+	kept := next.(Model)
+	if kept.pulls.body != pullsNetwork || len(kept.pulls.set) != 3 {
+		t.Errorf("a network failure dropped the last good rows: %d", len(kept.pulls.set))
+	}
+	if !kept.pulls.fetched.Equal(landed.At) {
+		t.Error("a failed cycle moved the timestamp on rows it did not refresh")
 	}
 }

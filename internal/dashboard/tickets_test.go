@@ -23,6 +23,9 @@ type known struct {
 	set map[string]ticket.Key
 	// opened is every ticket the Dashboard asked to have shown.
 	opened []ticket.Key
+	// urls is every address it asked to have shown that was not a ticket's,
+	// which is what o over a Pull row hands across.
+	urls []string
 	// err is what setting or opening runs into.
 	err error
 }
@@ -45,6 +48,11 @@ func (k *known) Set(dir, root string, key ticket.Key) error {
 
 func (k *known) Open(key ticket.Key) error {
 	k.opened = append(k.opened, key)
+	return k.err
+}
+
+func (k *known) OpenURL(url string) error {
+	k.urls = append(k.urls, url)
 	return k.err
 }
 
