@@ -597,7 +597,7 @@ func dockLegend(t *testing.T) string {
 func TestTheDockStatusLineCarriesTheKeyLegend(t *testing.T) {
 	line := dockLegend(t)
 
-	for _, want := range []string{"↑↓ select", "⏎ jump", "w spawn", "t ticket", "o open ticket", "g repo picker"} {
+	for _, want := range []string{"↑↓ select", "⏎ jump", "w spawn", "t ticket", "o open", "g repo picker"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the Dock's legend reads %q, want %q offered in it", line, want)
 		}
@@ -656,7 +656,7 @@ func TestTheDockLegendLeadsWithTheKeysWorthMost(t *testing.T) {
 		{"↑↓ select", "⏎ jump"},
 		{"⏎ jump", macChord(tmuxconf.FocusKey)},
 		{macChord(tmuxconf.FocusKey), "w spawn"},
-		{"w spawn", "o open ticket"},
+		{"w spawn", "o open"},
 	} {
 		before, after := strings.Index(line, pair[0]), strings.Index(line, pair[1])
 		if before < 0 || after < 0 || before > after {

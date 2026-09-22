@@ -377,10 +377,25 @@ var legendKeys = []string{
 	// PopupToggleFallbackKey stays bound for an emulator that cannot carry it,
 	// and stays off the legend: one key per gesture is what a legend is for.
 	macChord(PopupToggleKey) + " popup shell",
+	// Pulls, which is a section of the Dashboard rather than a chord — but it
+	// belongs here for the same reason the two above it do: no row is ever
+	// standing on it, so the SELECTED box will never offer it. At an
+	// 80-column Dock it lands at column 56 and displaces nothing, which makes
+	// this a strict gain of one visible key.
+	//
+	// The section's own keys — ⏎ jump · o open · r refresh · esc close — stay
+	// off, and ride on its last line instead. r fires only inside Pulls, and
+	// offering a key that would silently do nothing is worse than not
+	// offering it.
+	"p pulls",
 	"w spawn",
 	"c claim/release/takeover",
 	"t ticket",
-	"o open ticket",
+	// o open rather than o open ticket: the key now has two subjects — a
+	// ticket on a tree row, a pull request on a Pull — and the legend says
+	// every label or the plainest one rather than the first of them. The seven
+	// columns it hands back are most of what p costs.
+	"o open",
 	"g repo picker",
 }
 
