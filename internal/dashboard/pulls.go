@@ -602,3 +602,39 @@ func (m Model) pullsReported(report PullsReport) Model {
 	}
 	return m
 }
+
+// moveMark says the work in this checkout has a Pull waiting on you.
+//
+// One column, at the far right end of the tail after the age — spread()
+// right-aligns the tail, so it lands in the same column on every Session row
+// however wide the ticket and the age are. That is the harness's own stated
+// reason for where a repo header's root mark sits.
+//
+// Your move rather than existence, because existence is measurably empty of
+// information: of the 3 Pulls with a checkout on their head branch, all three
+// were Sent. Two costs are accepted with it — the mark is dark on every row in
+// a healthy working set, so it will not be seen working until a Pull goes
+// Behind; and "no Pull" and "Sent Pull" read identically, which is correct for
+// a tree whose ordering rule is what is asking something of you, and a real
+// loss.
+const moveMark = "◆"
+
+// moveStyle is how the mark reads.
+//
+// Its own style with its own literal hex, for yourMoveStyle's reason and one
+// more: this is the one thing the design left open. It is Ready's green today
+// — the rail's existing "there is something here for you", which is what the
+// mark means — against the objection that CONTEXT.md keeps Attention for
+// Sessions and Your move for Pulls, and a shared colour blurs two categories
+// the glossary separates. Amber was the alternative and collides with the
+// caution line directly above it on header rows. Changing it is this line.
+var moveStyle = yourMoveStyle
+
+// moveOf is the mark, or nothing at all — a row carrying none costs the layout
+// nothing, the way joined() already promises.
+func moveOf(r row) string {
+	if r.session != nil && r.yourMove {
+		return moveMark
+	}
+	return ""
+}

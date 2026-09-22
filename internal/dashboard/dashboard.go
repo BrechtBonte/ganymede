@@ -689,6 +689,9 @@ func (m Model) rebuilt() Model {
 		popup:    m.popupOf,
 		frozen:   m.frozenOf,
 		claimed:  func(root string) (string, bool) { note, ok := claimed[root]; return note, ok },
+		yourMove: func(root, checkout string) bool {
+			return m.pulls.set.YourMove(m.originOf(root), m.branchOf(checkout))
+		},
 	})
 	m.waiting = session.AttentionIn(m.set)
 	m.cursor = 0
@@ -1739,7 +1742,7 @@ func (m Model) line(i int) string {
 	age := ageOf(*r.session)
 	mark := marks(r)
 	key := abbreviated(r.ticket)
-	tail := joined(key, age)
+	tail := joined(key, age, moveOf(r))
 	// Elided rather than cut: a worktree name that runs off the end of its
 	// column would leave you unable to tell how much of it you are reading.
 	label := elide(r.holding(), m.width-lipgloss.Width(indent+glyph+" "+mark)-lipgloss.Width(tail)-1)
@@ -1750,7 +1753,7 @@ func (m Model) line(i int) string {
 		return blurredSelectedStyle.Width(m.width).Render(spread(indent+glyph+" "+mark+label, tail, m.width))
 	default:
 		return spread(indent+styleOf(r.session.State).Render(glyph)+" "+mark+label,
-			joined(rendered(ticketColour, key), rendered(quietStyle, age)), m.width)
+			joined(rendered(ticketColour, key), rendered(quietStyle, age), rendered(moveStyle, moveOf(r))), m.width)
 	}
 }
 

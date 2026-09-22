@@ -64,6 +64,16 @@ type row struct {
 	// grouped under the repo, a Worktree session included. It is what a
 	// Takeover reads to find the root's sole occupant (claim.go).
 	holdsRoot bool
+	// yourMove says the checkout this Session has its hands on has a Pull
+	// waiting on you — Rework, Conflicted, Behind or Landable in AUTHORED, or
+	// Yours in REQUESTED. It is never set on a repo's header row: a repo with
+	// nothing running in it has no work in flight, and the header's far-right
+	// column already carries the Main root's state.
+	//
+	// It is what the world has done to the row rather than what you have done
+	// to it, which is why it is not one of marks() — whose docstring promises
+	// the opposite.
+	yourMove bool
 	// checkout is the checkout a Session row's Session has its hands on, which
 	// is what the row is labelled after. It is the checkout rather than the
 	// Session's own directory: a Session standing in a subdirectory of a
@@ -97,6 +107,9 @@ type answers struct {
 	// claimed is the note a Main root was claimed with, and whether it is
 	// claimed at all.
 	claimed func(root string) (string, bool)
+	// yourMove is whether the checkout a Session has its hands on has a Pull
+	// waiting on you.
+	yourMove func(root, checkout string) bool
 }
 
 // repoName is the repository the row belongs to: what a repo's header row is
@@ -247,6 +260,7 @@ func rowsOf(sessions []session.Session, working []string, ask answers) []row {
 			rows = append(rows, row{
 				root: root, session: running, ticket: ask.ticket(running.Dir, root), popup: ask.popup(running.Dir),
 				checkout: checkout, holdsRoot: checkout == root, frozen: ask.frozen(running.ID),
+				yourMove: ask.yourMove(root, checkout),
 			})
 		}
 	}

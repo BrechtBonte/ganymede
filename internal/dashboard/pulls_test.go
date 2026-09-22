@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BrechtBonte/ganymede/internal/popup"
 	"github.com/BrechtBonte/ganymede/internal/pulls"
 	"github.com/BrechtBonte/ganymede/internal/release"
 	"github.com/BrechtBonte/ganymede/internal/repo"
@@ -782,5 +783,145 @@ func TestACycleReportRepaintsTheSectionOnce(t *testing.T) {
 	}
 	if !kept.pulls.fetched.Equal(landed.At) {
 		t.Error("a failed cycle moved the timestamp on rows it did not refresh")
+	}
+}
+
+func TestASessionRowIsMarkedOnlyWhenItsPullIsYourMove(t *testing.T) {
+	const origin, branch = "teamleadercrm/core", "PHX-4335-decode"
+	for _, c := range []struct {
+		says  string
+		state string
+		list  pulls.List
+		want  bool
+	}{
+		{"a rebase waiting in that working directory", "BEHIND", pulls.Authored, true},
+		{"a review you owe in a main root on a colleague's branch", "BLOCKED", pulls.Requested, true},
+		{"a Sent Pull asks nothing of you there", "BLOCKED", pulls.Authored, false},
+	} {
+		p := pull(c.list, origin, 48032)
+		p.MergeState, p.Head = c.state, branch
+
+		m := Model{width: 40, height: 45, focused: true}
+		m.pulls.set = pulls.Set{p}
+		m.origins = map[string]string{"/repo": origin}
+		m.branches = map[string]string{"/repo": branch}
+		s := session.Session{PID: 7, ID: "s", Name: "s", Dir: "/repo", State: session.Idle}
+		m.rows = []row{{root: "/repo", session: &s, checkout: "/repo", holdsRoot: true,
+			yourMove: m.pulls.set.YourMove(origin, branch)}}
+		m.cursor = -1
+
+		line := ansi.Strip(m.line(0))
+		if got := strings.Contains(line, moveMark); got != c.want {
+			t.Errorf("%s: mark = %v, want %v: %q", c.says, got, c.want, line)
+		}
+	}
+}
+
+func TestTheMarkSitsAtTheFarRightOnEverySessionRow(t *testing.T) {
+	// spread() right-aligns the tail, so the mark lands in the same column on
+	// every Session row however wide the ticket and the age are — the harness's
+	// own stated reason for where a repo header's root mark sits.
+	m := Model{width: 40, height: 45, focused: true}
+	m.cursor = -1
+	short := session.Session{PID: 1, ID: "a", Name: "a", Dir: "/repo", State: session.Idle}
+	long := session.Session{PID: 2, ID: "b", Name: "b", Dir: "/repo", State: session.Blocked,
+		Since: time.Now().Add(-73 * time.Hour)}
+	m.rows = []row{
+		{root: "/repo", session: &short, checkout: "/repo", holdsRoot: true, yourMove: true},
+		{root: "/repo", session: &long, checkout: "/repo/wt", ticket: "FIRE-28419", yourMove: true},
+	}
+
+	for i := range m.rows {
+		line := ansi.Strip(m.line(i))
+		if !strings.HasSuffix(line, moveMark) {
+			t.Errorf("row %d does not end on the mark: %q", i, line)
+		}
+		if w := ansi.StringWidth(line); w != 40 {
+			t.Errorf("row %d is %d columns: %q", i, w, line)
+		}
+	}
+}
+
+func TestAHeaderRowNeverCarriesTheMark(t *testing.T) {
+	// A repo can sit on the rail with no live Session, and its header is the
+	// Main root: the mark's claim is that the work in this checkout has
+	// something waiting on you. The far-right column there is also spoken for
+	// — it carries the Main root's own state.
+	m := Model{width: 40, height: 45, focused: true}
+	m.cursor = -1
+	m.rows = []row{{root: "/repo", state: repo.Free, yourMove: true}}
+	if strings.Contains(ansi.Strip(m.line(0)), moveMark) {
+		t.Error("a repo header carried the Your-move mark")
+	}
+}
+
+func TestAYourMovePullNeverReordersTheTree(t *testing.T) {
+	// moreUrgent and louder rank by Session state, and Attention is Sessions
+	// only. Promoting a row would put a repo at the top of the rail for a
+	// reason the tree's ordering rule cannot express.
+	idle := session.Session{PID: 1, ID: "a", Name: "a", Dir: "/quiet", State: session.Idle}
+	blocked := session.Session{PID: 2, ID: "b", Name: "b", Dir: "/loud", State: session.Blocked}
+	ask := answers{
+		root:     func(dir string) string { return dir },
+		checkout: func(dir string) string { return dir },
+		ticket:   func(string, string) ticket.Key { return "" },
+		caution:  func(string) (repo.Caution, bool) { return repo.Caution{}, false },
+		popup:    func(string) popup.Status { return popup.Status{} },
+		frozen:   func(string) bool { return false },
+		claimed:  func(string) (string, bool) { return "", false },
+		// Only the quiet repo has a Pull waiting on you.
+		yourMove: func(root, checkout string) bool { return root == "/quiet" },
+	}
+
+	rows := rowsOf([]session.Session{idle, blocked}, []string{"/quiet", "/loud"}, ask)
+	if rows[0].root != "/loud" {
+		t.Errorf("a Your-move Pull promoted %q above the Blocked Session", rows[0].root)
+	}
+	// And the mark is still on the row it belongs to.
+	for _, r := range rows {
+		if r.session != nil && r.root == "/quiet" && !r.yourMove {
+			t.Error("the quiet repo's Session row lost its mark")
+		}
+	}
+}
+
+func TestBothSessionsInOneCheckoutAreMarked(t *testing.T) {
+	// The rule is about the checkout, not the process: two Sessions sharing
+	// one checkout are both on that branch, and the mark is a claim about the
+	// working directory.
+	const origin, branch = "teamleadercrm/core", "PHX-4335-decode"
+	p := pull(pulls.Authored, origin, 48032)
+	p.MergeState, p.Head = "BEHIND", branch
+
+	m := Model{width: 40, height: 45, focused: true}
+	m.cursor = -1
+	m.pulls.set = pulls.Set{p}
+	first := session.Session{PID: 1, ID: "a", Name: "a", Dir: "/repo", State: session.Idle}
+	second := session.Session{PID: 2, ID: "b", Name: "b", Dir: "/repo", State: session.Idle}
+	mark := m.pulls.set.YourMove(origin, branch)
+	m.rows = []row{
+		{root: "/repo", session: &first, checkout: "/repo", holdsRoot: true, yourMove: mark},
+		{root: "/repo", session: &second, checkout: "/repo", holdsRoot: true, yourMove: mark},
+	}
+	for i := range m.rows {
+		if !strings.Contains(ansi.Strip(m.line(i)), moveMark) {
+			t.Errorf("row %d is not marked", i)
+		}
+	}
+}
+
+func TestTheOriginAndTheBranchAreAskedOncePerRoot(t *testing.T) {
+	asked := map[string]int{}
+	m := Model{width: 40, height: 45}
+	m.harness = Harness{Origins: &pulls.Origins{Read: func(root string) string {
+		asked[root]++
+		return "git@github.com:teamleadercrm/core.git"
+	}}}
+
+	for range 3 {
+		m.originOf("/repo")
+	}
+	if asked["/repo"] != 1 {
+		t.Errorf("the origin was read %d times, want 1", asked["/repo"])
 	}
 }
