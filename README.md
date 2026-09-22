@@ -90,6 +90,7 @@ The bottom row of the dock is this table, so the whole vocabulary is on screen w
 | [Claude Code](https://code.claude.com) | Ganymede is a harness *for* Claude Code sessions | https://code.claude.com |
 | [Ghostty](https://ghostty.org) | The terminal emulator Ganymede docks its dashboard into | https://ghostty.org |
 | tmux (3.3+) | The multiplexer Ganymede's dashboard and sessions run on | `brew install tmux` |
+| [GitHub CLI](https://cli.github.com) (`gh`) | Reads the Pulls section at the foot of the dashboard — your open pull requests and the reviews you owe. Ganymede holds no GitHub credential of its own; it uses the login you have already granted `gh` | `brew install gh` then `gh auth login` |
 | Go toolchain | To build the `ganymede` binary | https://go.dev/dl/ |
 | Xcode Command Line Tools | `make launcher` compiles the Dock tile app with `swiftc` | `xcode-select --install` |
 | [terminal-notifier](https://github.com/julienXX/terminal-notifier) | Ganymede's own OS notification channel — without it, Blocked/Ready alerts don't fire beyond the dashboard | `brew install terminal-notifier` |
