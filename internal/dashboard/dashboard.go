@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/popup"
+	"github.com/BrechtBonte/ganymede/internal/pulls"
 	"github.com/BrechtBonte/ganymede/internal/release"
 	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
@@ -249,6 +250,10 @@ type Harness struct {
 	// Claimer is where a Main root Claim is kept: claim it, release it, and
 	// read which roots are claimed now (§4.2, §7.3's free key).
 	Claimer Claimer
+	// Origins is what each Main root pushes to on GitHub, which with the
+	// branch is the whole of the rule matching a Pull to a Session. Nil is a
+	// Dashboard that matches nothing, and draws every row unmarked.
+	Origins *pulls.Origins
 	// Docked is whether this Dashboard is the harness's own — the one the
 	// dock's sidepanel is attached to — rather than one being run by hand in
 	// a terminal of your own. It is the whole difference ctrl+c makes: the
@@ -291,6 +296,20 @@ type Model struct {
 	// question is asked of git once rather than once a redraw. It is let go of
 	// on the tick, which is what a branch switched in a Main root waits for.
 	tickets map[string]ticket.Key
+	// origins is what each Main root pushes to, in GitHub's own
+	// nameWithOwner. Read once per root and kept for the process, the way
+	// pulls.Origins documents: a repository whose remote is re-pointed while
+	// the Dashboard is up stays stale until restart.
+	origins map[string]string
+	// branches is the branch each checkout is on, which with the origin is
+	// the whole of the rule matching a Pull to a Session. It is let go of on
+	// the tick alongside the tickets, for the same reason: a branch switched
+	// in a Main root waits for that tick and no longer.
+	branches map[string]string
+	// pulls is the Pulls section at the foot: the last cycle that landed,
+	// whether the section has the foot and the cursor, and where inside it.
+	// Nothing here survives a restart, deliberately — see internal/pulls.
+	pulls pullsSection
 	// cautions is what git last said each Main root is carrying. It is never
 	// cleared, only laid over by the next answer: a marker that blinked out
 	// while git was being asked again would be a marker you cannot read.
@@ -623,6 +642,12 @@ func (m Model) rebuilt() Model {
 	if m.tickets == nil {
 		m.tickets = map[string]ticket.Key{}
 	}
+	if m.origins == nil {
+		m.origins = map[string]string{}
+	}
+	if m.branches == nil {
+		m.branches = map[string]string{}
+	}
 	// Read once and closed over rather than asked per row: Claim and Release
 	// are synchronous state-file writes, and there is no async round trip
 	// here worth caching the way cautions and popups are — but every row
@@ -676,8 +701,10 @@ func (m Model) workingSet(claimed map[string]string) []string {
 // asking lets go of the answers that go stale on their own, and draws the
 // working set it already has around fresh ones.
 //
-// The ticket is one of those, and which checkout a Session is working in is the
-// other. Everything else on a row is reported to the Dashboard the moment it
+// The ticket is one of those, the branch each checkout is on is another — it is
+// what the ticket is read off, and now also half of what matches a Pull to a
+// Session — and which checkout a Session is working in is the third. Everything
+// else on a row is reported to the Dashboard the moment it
 // changes — that is what the watch, the hooks and the cross-check are — while
 // the branch a Session is on is switched by you, in a shell, and the worktree it
 // is in can be removed from under it the same way. Half a minute is a long time
@@ -687,6 +714,7 @@ func (m Model) workingSet(claimed map[string]string) []string {
 // an agent in it, and that is the one wrong answer this must not give.
 func (m Model) asking() Model {
 	clear(m.tickets)
+	clear(m.branches)
 	clear(m.checkouts)
 	return m.showing(m.set)
 }
