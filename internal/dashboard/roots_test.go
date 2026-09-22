@@ -233,7 +233,7 @@ func TestALongRepoNameNoLongerCostsItsCautionAnything(t *testing.T) {
 // A dirty tree and nothing else gets the line a branch gets. Said inline where
 // there was room and given a line where there was not, the tree would reflow as
 // git changed underneath it — a row appearing and disappearing under the cursor
-// while you are reading the panel.
+// while you are reading the Dashboard.
 func TestADirtyTreeAloneStillGetsALineOfItsOwn(t *testing.T) {
 	root := mainRoot(t, "teamleadercrm-monolith-invoicing")
 	git(t, root, "branch", "-M", "main")

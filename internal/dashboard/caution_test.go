@@ -92,7 +92,7 @@ func TestARepoHeadersCautionGoesOnALineOfItsOwn(t *testing.T) {
 // The header's own line is the name's and the Main-root mark's, whatever the
 // checkout under it is carrying: a repo whose name gave up its suffix to make
 // room for a caution is a repo you cannot tell from the one beside it, on the
-// panel you are reading to find out which.
+// Dashboard you are reading to find out which.
 func TestACautionCostsTheHeaderNothing(t *testing.T) {
 	root := "/repos/focus-service-ai-credit-usage"
 	set := []session.Session{live("credit-usage-a1", root, session.Idle)}
@@ -179,9 +179,9 @@ func TestTheCautionLineComesDownItsLadderAsTheRoomShrinks(t *testing.T) {
 
 // cautionAmber is the loud amber a caution reads in, as the validated mock has
 // it. It is spelled out here rather than reached for across the package boundary,
-// the way this file's own reverseOnly is: the colour is part of what the panel
-// promises, so a retuned palette is meant to be read here and moved deliberately
-// rather than to slip through green.
+// the way this file's own reverseOnly is: the colour is part of what the
+// Dashboard promises, so a retuned palette is meant to be read here and moved
+// deliberately rather than to slip through green.
 var cautionAmber = lipgloss.NewStyle().Foreground(lipgloss.Color("#e3b341"))
 
 // The inversion marks the row the cursor is on, and the row here is the header:
@@ -195,7 +195,7 @@ func TestTheInversionOnASelectedHeaderStopsAtItsCautionLine(t *testing.T) {
 		dashboard.Cautions{root: repo.Caution{Branch: "FIRE-2910-followup-sorting", Dirty: true}},
 		live("focus-frontend-a1", root, session.Idle))
 
-	stripped, raw := panelLines(model)
+	stripped, raw := sidepanelLines(model)
 	for i, line := range stripped {
 		if !strings.Contains(line, "focus-frontend") {
 			continue
@@ -261,8 +261,8 @@ func TestTheCursorStepsOverCautionLines(t *testing.T) {
 	}
 }
 
-// A tree whose repo headers each draw two lines is longer than the panel sooner
-// than one whose rows draw one, and the window around the cursor is a budget in
+// A tree whose repo headers each draw two lines fills the sidepanel sooner than
+// one whose rows draw one, and the window around the cursor is a budget in
 // lines: the selection has to stay drawn all the way down a working set where
 // every repo is carrying something — which is what a real working set looks
 // like.
@@ -306,9 +306,10 @@ func TestTheCursorStaysInViewOnAWorkingSetFullOfCautions(t *testing.T) {
 }
 
 // A caution line wider than the sidepanel wraps, and a wrapped line puts every
-// row under it out of step with the selection — which is the one thing the panel
-// can never do, at any width it is dragged to. A caution the panel simply stopped
-// drawing would satisfy that and nothing else, so the sweep asks for both: the
+// row under it out of step with the selection — which is the one thing the
+// Dashboard can never do, at any width it is dragged to. A caution it simply
+// stopped drawing would satisfy that and nothing else, so the sweep asks for
+// both: the
 // line is always there, and it always fits.
 func TestTheCautionLineFitsEveryWidthTheSidepanelIsDraggedTo(t *testing.T) {
 	root := "/repos/plans"
@@ -320,7 +321,7 @@ func TestTheCautionLineFitsEveryWidthTheSidepanelIsDraggedTo(t *testing.T) {
 			dashboard.Cautions{root: repo.Caution{Branch: "FIRE-2923/account-allowances", Dirty: true}},
 			live("plans-bf", root, session.Idle))
 
-		// The caution's own line, rather than every line of the panel: a
+		// The caution's own line, rather than every line of the sidepanel: a
 		// sidepanel dragged down to a column or two has other rows of its own
 		// that predate this one.
 		said, drew := lineWith(tree(model), caution)
@@ -346,8 +347,8 @@ func TestARepoNamedPastTheSidepanelKeepsItsCautionWhole(t *testing.T) {
 	carrying := railWith(dashboard.Cautions{root: repo.Caution{Branch: branch, Dirty: true}}, set...)
 	clean := railWith(dashboard.Cautions{root: repo.Caution{}}, set...)
 
-	// The name overruns the panel, so the header is found by the part of it that
-	// survived rather than by the whole.
+	// The name overruns the sidepanel, so the header is found by the part of it
+	// that survived rather than by the whole.
 	header, ok := lineWith(tree(carrying), "teamleadercrm-monolith")
 	if !ok {
 		t.Fatalf("no header row for the repo:\n%s", tree(carrying))

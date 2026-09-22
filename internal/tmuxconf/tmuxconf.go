@@ -447,9 +447,9 @@ func legend() string {
 	return format
 }
 
-// hinted draws one key: the character in the panel's own foreground and the
-// label quiet behind it. A label carrying a comma would end tmux's conditional
-// early, which is why they are written with slashes.
+// hinted draws one key: the character in the Dashboard's own foreground and
+// the label quiet behind it. A label carrying a comma would end tmux's
+// conditional early, which is why they are written with slashes.
 func hinted(key string) string {
 	char, label, ok := strings.Cut(key, " ")
 	if !ok {

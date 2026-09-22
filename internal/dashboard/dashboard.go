@@ -1442,7 +1442,7 @@ var (
 	ruleStyle  = lipgloss.NewStyle().Faint(true)
 	quietStyle = lipgloss.NewStyle().Faint(true)
 	repoStyle  = lipgloss.NewStyle().Bold(true)
-	// The panel's own name, in the validated mock's blue: the harness's mark
+	// The Dashboard's own name, in the validated mock's blue: the harness's mark
 	// rather than another bold row.
 	//
 	// Its own style with its own literal hex, and deliberately not
@@ -1613,7 +1613,7 @@ func (m Model) counts() string {
 // window counted in rows would run off the foot of the block by one line per
 // cautioned repo in it. The window is measured in lines throughout while the
 // cursor goes on counting rows: the selection steps row to row, and what has to
-// stay on the panel is the lines those rows draw.
+// stay on the sidepanel is the lines those rows draw.
 func (m Model) tree(space int) []string {
 	if len(m.rows) == 0 {
 		return fill(clip(m.nothingRunning(), space), space)
@@ -1842,8 +1842,8 @@ const cautionIndent = " "
 // A caution swallowed by that inversion would be one you have to move the cursor
 // off to read.
 //
-// The room it is fitted to is the panel less the indent, so the line lands inside
-// the sidepanel at every width there is room for the mark in — and at the one
+// The room it is fitted to is the sidepanel less the indent, so the line lands
+// inside it at every width there is room for the mark in — and at the one
 // width there is not, it draws the mark anyway and overruns by a column, exactly
 // as the header row above it already does. carrying's last rung is a promise
 // about a root that is detached with work in it never reading like a clean one,
@@ -2200,8 +2200,9 @@ func offering(r row, width int) string {
 //
 // The fit is measured on the plain phrases and the styling goes on what fitted:
 // a line measured with its escape codes in it would be measured several columns
-// wider than anything the panel ever draws, and would drop keys there was room
-// for.
+// wider than anything the Dashboard ever draws, and would drop keys there was
+// room
+// for it.
 func fitKeys(keys []string, width int) string {
 	var line string
 	hints := make([]string, 0, len(keys))
@@ -2219,7 +2220,7 @@ func fitKeys(keys []string, width int) string {
 	return strings.Join(hints, quietStyle.Render(" · "))
 }
 
-// hinted draws one key the box is offering: the key character in the panel's
+// hinted draws one key the box is offering: the key character in the Dashboard's
 // normal foreground, the label saying what it does quiet behind it. The key is
 // what you are looking for, and the phrase around it is what you would
 // otherwise have to read to find it.

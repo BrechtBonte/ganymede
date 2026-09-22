@@ -287,7 +287,7 @@ func TestASpawnedSessionThatDiesOnStartupSaysSo(t *testing.T) {
 
 // A Worktree session that started is not worth a word: it turning up on the
 // rail is the whole report, and a notice for every good spawn would be noise
-// on the one panel that must stay worth reading.
+// on the one surface that must stay worth reading.
 func TestASpawnedSessionThatStartsSaysNothing(t *testing.T) {
 	spawner := &spawns{window: "@7"}
 	model := onARepo(t, dashboard.Harness{Spawner: spawner}, "/repos/service-billing")

@@ -106,9 +106,9 @@ func TestAWorktreeNamedOnlyForItsTicketKeepsIt(t *testing.T) {
 	}
 }
 
-// A label with no room left is cut at the end and says it was cut, the way
-// every other name on the panel is: the head is where a worktree says what it
-// is about.
+// A label with no room left is cut at the end and says it was cut, the way every
+// other name on the Dashboard is: the head is where a worktree says what it is
+// about.
 func TestALabelTooLongForItsColumnIsElidedKeepingItsHead(t *testing.T) {
 	root := mainRoot(t, "service-billing")
 	at := worktree(t, root, "account-allowances-for-the-credit-usage-service")
