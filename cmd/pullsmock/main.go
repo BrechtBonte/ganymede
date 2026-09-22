@@ -234,11 +234,12 @@ func (p pull) wordStyle() lipgloss.Style {
 	return quietStyle
 }
 
-// markSet is the two readings of #70's mark table this mock puts side by side.
-// "quiet" spends no column on a passing check — the resting state of two rows in
-// three — and keeps the single tick for the approval a person gave. "literal"
-// draws #70's table as written, which lands two ticks on one row.
-var markSet = "quiet"
+// markSet is the three readings of #70's mark table this mock puts side by side.
+// "literal" draws the table as written, which lands two ticks on one row.
+// "quiet" spends no column on a passing check. "failures" draws only what is
+// exceptional: 6 of today's 11 rows are PENDING and 3 of the full 17 are
+// SUCCESS, so both resting states are marks the eye stops seeing.
+var markSet = "failures"
 
 func (p pull) marks() string {
 	var said []string
@@ -246,7 +247,9 @@ func (p pull) marks() string {
 	case "FAILURE", "ERROR":
 		said = append(said, checksFailed)
 	case "PENDING", "EXPECTED":
-		said = append(said, checksRunning)
+		if markSet != "failures" {
+			said = append(said, checksRunning)
+		}
 	case "SUCCESS":
 		if markSet == "literal" {
 			said = append(said, checksPassed)
@@ -850,7 +853,7 @@ func cases() []mockCase {
 func main() {
 	variant := flag.String("variant", "", "A, B or C; empty draws all three")
 	only := flag.String("case", "", "one case by name; empty draws all")
-	marks := flag.String("marks", "quiet", "quiet or literal — the two readings of #70's mark table")
+	marks := flag.String("marks", "failures", "failures, quiet or literal — three readings of #70's mark table")
 	stack := flag.String("stack", "bare", "bare or number — how much the stack mark says")
 	check := flag.Bool("check", false, "report any line wider than the sidepanel instead of drawing")
 	flag.Parse()
