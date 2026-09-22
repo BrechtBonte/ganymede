@@ -63,6 +63,10 @@ type pullsSection struct {
 	set pulls.Set
 	// fetched is when set landed, drawn at the far end of the PULLS label.
 	fetched time.Time
+	// body is what the section shows instead of its rows, and the zero value
+	// is the first cycle of a session — which is the state every Dashboard
+	// starts in, since nothing about Pulls survives a restart.
+	body pullsBody
 }
 
 // originOf is what the Main root at root pushes to. The harness has no
@@ -357,4 +361,92 @@ func (m Model) pullsLabel(above, below int) string {
 		fetched = m.pulls.fetched.Format("15:04")
 	}
 	return spread(quietStyle.Render("PULLS"), rendered(quietStyle, joined(scroll, fetched)), m.width)
+}
+
+// pullsBody is what the section shows instead of its rows.
+//
+// Four, and they have to be visibly different from one another. The update
+// check gets to say nothing when it cannot check, because silence there reads
+// as "you are up to date" and that is true on nearly every day. An empty Pulls
+// reads as "you have none", which is a claim — and on the measuring day a false
+// one seventeen times over.
+type pullsBody string
+
+const (
+	// pullsFetching is the first cycle of a session, roughly twelve seconds.
+	// It is the zero value because it is the state a Dashboard starts in:
+	// nothing is remembered across restarts, so there is always a cycle in
+	// flight before there are rows.
+	pullsFetching pullsBody = ""
+	// pullsRowsBody is the lists themselves.
+	pullsRowsBody pullsBody = "rows"
+	// pullsEmpty is a fetch that worked and found nothing — with the time on
+	// the chrome line proving it fresh.
+	pullsEmpty pullsBody = "empty"
+	// pullsAuth is a login never made or no longer good.
+	pullsAuth pullsBody = "auth"
+	// pullsNetwork is GitHub unreachable, which is the one body that keeps its
+	// rows.
+	pullsNetwork pullsBody = "network"
+)
+
+// bodyOf is which body a cycle's answer produces.
+//
+// The two auth troubles land on one body on purpose: `gh auth login` is the
+// errand either way, and a section that distinguished "never logged in" from
+// "logged in and expired" would be spending a line on a difference you cannot
+// act on differently.
+func bodyOf(report pulls.Report) pullsBody {
+	if report.Err != nil {
+		if trouble, ok := pulls.TroubleOf(report.Err); ok && trouble == pulls.Unreachable {
+			return pullsNetwork
+		}
+		return pullsAuth
+	}
+	if len(report.Set) == 0 {
+		return pullsEmpty
+	}
+	return pullsRowsBody
+}
+
+// pullsPanel is the whole section inside space lines: its body, and how many
+// Pulls are out of sight above and below.
+func (m Model) pullsPanel(space int) (lines []string, above, below int) {
+	switch m.pulls.body {
+	case pullsNetwork:
+		// The rows stay. They are the last good answer and the chrome line's
+		// own timestamp says how old it is; what the section adds is why it is
+		// not newer, and when it will try again.
+		lines, above, below = m.pullsRows(space - 1)
+		reason := cautionStyle.Render(truncate(caution+" Unreachable — retrying 5m", m.width))
+		return append([]string{reason}, lines...), above, below
+	case pullsRowsBody:
+		return m.pullsRows(space)
+	default:
+		return m.pullsSays(space), 0, 0
+	}
+}
+
+// pullsSays is the three bodies that replace the lists: a sentence or two in
+// the sidepanel's quiet, and the section's own keys still on the last line —
+// because r is the way back from an expired login, and a body that dropped it
+// would be the one screen where the recovery key is hidden.
+func (m Model) pullsSays(space int) []string {
+	var said []string
+	switch m.pulls.body {
+	case pullsFetching:
+		said = []string{quietStyle.Render(truncate("Fetching…", m.width))}
+	case pullsEmpty:
+		said = []string{
+			quietStyle.Render(truncate("Nothing of yours is open, and", m.width)),
+			quietStyle.Render(truncate("nobody has asked for a review.", m.width)),
+		}
+	case pullsAuth:
+		said = []string{
+			cautionStyle.Render(truncate(caution+" Not logged in to GitHub.", m.width)),
+			quietStyle.Render(truncate("Run gh auth login; r retries.", m.width)),
+		}
+	}
+	room := max(0, space-1)
+	return append(fill(clip(said, room), room), pullsLegend(m.width))
 }

@@ -348,3 +348,93 @@ func TestTheSectionTakesOnlyWhatItNeeds(t *testing.T) {
 		t.Errorf("got %d lines for three Pulls, want 6", len(lines))
 	}
 }
+
+func TestTheFourBodiesAreDistinguishable(t *testing.T) {
+	// The update check's silence reads as "you are up to date", true on nearly
+	// every day. An empty Pulls reads as "you have none", which on the
+	// measuring day is false seventeen times over — so silence is ruled out
+	// and each of these says something different.
+	seen := map[string]string{}
+	for _, c := range []struct {
+		says string
+		body pullsBody
+		want []string
+	}{
+		{"nothing fetched yet", pullsFetching, []string{"Fetching"}},
+		{"genuinely no Pulls", pullsEmpty, []string{"Nothing of yours is open"}},
+		{"cannot fetch: the login", pullsAuth, []string{"gh auth login"}},
+	} {
+		m := Model{width: 40}
+		m.pulls.open, m.pulls.body = true, c.body
+		lines, _, _ := m.pullsPanel(20)
+		drawn := ansi.Strip(strings.Join(lines, "\n"))
+		for _, want := range c.want {
+			if !strings.Contains(drawn, want) {
+				t.Errorf("%s: missing %q\n%s", c.says, want, drawn)
+			}
+		}
+		if before, ok := seen[drawn]; ok {
+			t.Errorf("%s reads identically to %s", c.says, before)
+		}
+		seen[drawn] = c.says
+		if len(lines) != 20 {
+			t.Errorf("%s: got %d lines, want the 20 it was given", c.says, len(lines))
+		}
+		// Every body keeps the section's own keys, because r is the way out of
+		// an expired login.
+		if !strings.Contains(drawn, "r refresh") {
+			t.Errorf("%s: lost the key line", c.says)
+		}
+	}
+}
+
+func TestANetworkFailureKeepsTheLastGoodRows(t *testing.T) {
+	// The first three bodies replace the lists. This one does not: the rows
+	// are the last good answer and their own timestamp says how old.
+	m := Model{width: 40}
+	m.pulls.open, m.pulls.body = true, pullsNetwork
+	m.pulls.set = pulls.Set{pull(pulls.Authored, "teamleadercrm/focus-service-bookkeeping", 1010)}
+	m.pulls.fetched = time.Date(2026, 9, 22, 14, 31, 0, 0, time.Local)
+
+	lines, _, _ := m.pullsPanel(20)
+	drawn := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(drawn, "Unreachable") || !strings.Contains(drawn, "5m") {
+		t.Errorf("the network body does not say why or when it will try again:\n%s", drawn)
+	}
+	if !strings.Contains(drawn, "bookkeeping#1010") {
+		t.Errorf("the last good rows were dropped:\n%s", drawn)
+	}
+	if !strings.Contains(ansi.Strip(m.pullsLabel(0, 0)), "14:31") {
+		t.Error("the rows lost the timestamp that says how old they are")
+	}
+}
+
+func TestWhichBodyAReportProduces(t *testing.T) {
+	landed := pulls.Report{Set: pulls.Set{pull(pulls.Authored, "teamleadercrm/core", 1)}, At: time.Now()}
+	for _, c := range []struct {
+		says   string
+		report pulls.Report
+		want   pullsBody
+	}{
+		{"rows", landed, pullsRowsBody},
+		{"a fetch that worked and found nothing", pulls.Report{At: time.Now()}, pullsEmpty},
+		{"never logged in", pulls.Report{Err: &pulls.Error{Trouble: pulls.NotLoggedIn}}, pullsAuth},
+		{"a token expired or revoked", pulls.Report{Err: &pulls.Error{Trouble: pulls.Unauthorized}}, pullsAuth},
+		{"the network", pulls.Report{Err: &pulls.Error{Trouble: pulls.Unreachable}}, pullsNetwork},
+	} {
+		if got := bodyOf(c.report); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.says, got, c.want)
+		}
+	}
+}
+
+func TestBeforeTheFirstCycleTheSectionSaysItIsFetching(t *testing.T) {
+	// Nothing is remembered across restarts, so every Dashboard start has an
+	// unfilled state for roughly twelve seconds — and it is never blank.
+	m := Model{width: 40}
+	m.pulls.open = true
+	lines, _, _ := m.pullsPanel(20)
+	if !strings.Contains(ansi.Strip(strings.Join(lines, "\n")), "Fetching") {
+		t.Error("a Dashboard that has not fetched yet drew something other than Fetching")
+	}
+}
