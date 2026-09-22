@@ -22,8 +22,8 @@ func workingSet(n int) []session.Session {
 	return many
 }
 
-// fromFoot is how many lines up from the panel's last line want was drawn, and
-// -1 when it was not drawn at all.
+// fromFoot is how many lines up from the sidepanel's last line want was drawn,
+// and -1 when it was not drawn at all.
 func fromFoot(view, want string) int {
 	lines := strings.Split(view, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -34,16 +34,16 @@ func fromFoot(view, want string) int {
 	return -1
 }
 
-// The SELECTED box is the one place on the panel your eye should have to learn,
-// so it sits on the last lines whatever the working set is doing — rather than
-// ending wherever the tree happens to end and walking up and down the panel as
-// Sessions start and end.
+// The SELECTED box is the one place on the Dashboard your eye should have to
+// learn, so it sits on the last lines whatever the working set is doing — rather
+// than ending wherever the tree happens to end and walking up and down the
+// sidepanel as Sessions start and end.
 func TestTheSelectedBoxLandsOnTheSidepanelsLastLines(t *testing.T) {
 	for _, set := range []struct {
 		what  string
 		repos int
 		// box is how many lines the SELECTED label has under it — the box
-		// itself, which is what has to end the panel.
+		// itself, which is what has to end the sidepanel.
 		box int
 	}{
 		{"nothing running", 0, 1},
@@ -57,9 +57,9 @@ func TestTheSelectedBoxLandsOnTheSidepanelsLastLines(t *testing.T) {
 			t.Errorf("with %s the Dashboard drew %d lines into a 45-line sidepanel:\n%s", set.what, len(lines), view)
 		}
 		// The box's own last line — the keys the selected row offers — is the
-		// panel's last line: nothing dead is left under the box.
+		// sidepanel's last line: nothing dead is left under the box.
 		if last := lines[len(lines)-1]; strings.TrimSpace(last) == "" {
-			t.Errorf("with %s the panel's last line is blank, so the box is not at its foot:\n%s", set.what, view)
+			t.Errorf("with %s the sidepanel's last line is blank, so the box is not at its foot:\n%s", set.what, view)
 		}
 		// A tree of two rows and a tree of forty put the label in the same
 		// place, which is what says the box no longer walks up and down.
@@ -86,20 +86,20 @@ func TestTheTreeAbsorbsTheSlackAboveTheSelectedBox(t *testing.T) {
 		t.Fatalf("a one-repo working set left no slack on a 45-line sidepanel:\n%s", view)
 	}
 	// Every blank line is inside the tree: above the rule that closes it, and
-	// none of them under the box, whose own four lines end the panel.
+	// none of them under the box, whose own four lines end the sidepanel.
 	for i, line := range lines {
 		if strings.TrimSpace(line) != "" {
 			continue
 		}
 		if up := len(lines) - 1 - i; up < 5 {
-			t.Errorf("line %d of the panel is blank, %d off the foot — the slack belongs in the tree:\n%s", i, up, view)
+			t.Errorf("line %d of the sidepanel is blank, %d off the foot — the slack belongs in the tree:\n%s", i, up, view)
 		}
 	}
 }
 
 // The sidepanel can be dragged to any height at all, including one with no
 // room for the tree and the box both. Filling the tree's block must not be
-// what makes such a panel overflow.
+// what makes such a sidepanel overflow.
 func TestAShortSidepanelStillFitsWhatItCanDraw(t *testing.T) {
 	for _, height := range []int{1, 3, 5, 8, 12} {
 		var model tea.Model = dashboard.New(nil, dashboard.Harness{Jumper: &jumps{}})
@@ -119,7 +119,7 @@ func TestAShortSidepanelStillFitsWhatItCanDraw(t *testing.T) {
 func TestTheTreeKeepsTheSelectionInViewAsTheCursorWalksPastTheFoot(t *testing.T) {
 	many := workingSet(10)
 
-	// A panel tall enough for the whole tree says how many rows there are to
+	// A sidepanel tall enough for the whole tree says how many rows there are to
 	// walk: a header and a Session each.
 	var rows int
 	for _, line := range strings.Split(tree(sidepanel(&jumps{}, many...)), "\n") {
@@ -153,11 +153,11 @@ func TestTheTreeKeepsTheSelectionInViewAsTheCursorWalksPastTheFoot(t *testing.T)
 	}
 }
 
-// selectedRow is the drawn row the cursor is on: the one the panel inverts,
+// selectedRow is the drawn row the cursor is on: the one the Dashboard inverts,
 // which is how a test finds the selection now that rows carry no token of
 // their own.
 func selectedRow(model tea.Model) (string, bool) {
-	stripped, raw := panelLines(model)
+	stripped, raw := sidepanelLines(model)
 	for i, line := range raw {
 		if strings.HasPrefix(line, styleCodeOf(reverseOnly)) {
 			return stripped[i], true

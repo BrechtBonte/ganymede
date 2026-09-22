@@ -11,19 +11,19 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// headerOfPanel is the panel's first line — the Dashboard's own header — as the
-// eye reads it and as the terminal is given it.
+// headerOfSidepanel is the sidepanel's first line — the Dashboard's own header —
+// as the eye reads it and as the terminal is given it.
 //
-// One render answers both, unlike panelLines: a panel drawn a second time could
-// be drawn on the far side of a minute's turn, and the two headers would then be
-// reading different faces.
-func headerOfPanel(model tea.Model) (stripped, raw string) {
+// One render answers both, unlike sidepanelLines: a Dashboard drawn a second
+// time could be drawn on the far side of a minute's turn, and the two headers
+// would then be reading different faces.
+func headerOfSidepanel(model tea.Model) (stripped, raw string) {
 	raw, _, _ = strings.Cut(model.View(), "\n")
 	return ansi.Strip(raw), raw
 }
 
 // faces is what the header's clock may honestly be reading: the minute the
-// panel was drawn in, and the minute it may have turned into between the draw
+// Dashboard was drawn in, and the minute it may have turned into between the draw
 // and the assertion. A test that insisted on one of them would fail once a
 // minute, at the moment nobody is watching.
 func faces(drawnAt time.Time) []string {
@@ -46,7 +46,7 @@ func endsWithAFace(header string, faces []string) (string, bool) {
 // counts, which keep the place they had.
 func TestTheHeaderCarriesTheTimeAfterTheAttentionCounts(t *testing.T) {
 	drawnAt := time.Now()
-	header, _ := headerOfPanel(sidepanel(&jumps{},
+	header, _ := headerOfSidepanel(sidepanel(&jumps{},
 		live("aaa-blocked", "/repos/service-billing", session.Blocked)))
 
 	face, ok := endsWithAFace(header, faces(drawnAt))
@@ -61,19 +61,19 @@ func TestTheHeaderCarriesTheTimeAfterTheAttentionCounts(t *testing.T) {
 }
 
 // The time is a thing to glance at rather than a thing waiting on you, so it
-// reads in the panel's own quiet — beside counts that are drawn in the colours
+// reads in the Dashboard's own quiet — beside counts that are drawn in the colours
 // of the tiers they are counting.
 func TestTheHeadersClockIsDrawnQuietly(t *testing.T) {
 	drawnAt := time.Now()
 	model := sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", session.Working))
 
-	header, raw := headerOfPanel(model)
+	header, raw := headerOfSidepanel(model)
 	face, ok := endsWithAFace(header, faces(drawnAt))
 	if !ok {
 		t.Fatalf("header = %q, want the time at its far end", header)
 	}
 	if !strings.Contains(raw, styleCodeOf(quiet)+face) {
-		t.Errorf("header = %q, want the clock drawn in the panel's own quiet", raw)
+		t.Errorf("header = %q, want the clock drawn in the Dashboard's own quiet", raw)
 	}
 }
 
@@ -106,7 +106,7 @@ func TestTheAbsentCountsLeaveNoDoubleSpaceBeforeTheClock(t *testing.T) {
 	// width the gap between them swallows it.
 	drawnAt := time.Now()
 	model := railSized(14, 45, nil, live("ganymede-78", "/repos/ganymede", session.Working))
-	header, _ := headerOfPanel(model)
+	header, _ := headerOfSidepanel(model)
 
 	face, ok := endsWithAFace(header, faces(drawnAt))
 	if !ok {

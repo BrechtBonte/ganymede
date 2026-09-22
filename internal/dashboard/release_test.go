@@ -10,7 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// told is the panel with a check reported to it.
+// told is the Dashboard with a check reported to it.
 func told(model tea.Model, update release.Update) tea.Model {
 	model, _ = model.Update(dashboard.Release(update))
 	return model
@@ -21,14 +21,14 @@ var behind = release.Update{Installed: "2.1.237", Latest: "2.1.240", Channel: "l
 
 // The notice goes directly under the header's rule, above the tree: it is
 // about the harness rather than about a repo, and the header is where the
-// panel says those things.
+// Dashboard says those things.
 func TestTheUpdateNoticeSitsUnderTheHeadersRule(t *testing.T) {
 	model := told(sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", session.Working)), behind)
 
-	lines, _ := panelLines(model)
+	lines, _ := sidepanelLines(model)
 
 	if len(lines) < 3 {
-		t.Fatalf("the panel drew %d lines:\n%s", len(lines), drawn(model))
+		t.Fatalf("the sidepanel drew %d lines:\n%s", len(lines), drawn(model))
 	}
 	if !strings.Contains(lines[2], "2.1.240") {
 		t.Errorf("the line under the rule is %q, want the update notice", lines[2])
@@ -53,15 +53,15 @@ func TestThereIsNoUpdateNoticeWhileTheInstallIsCurrent(t *testing.T) {
 		model := told(sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", session.Working)), c.update)
 
 		if view := drawn(model); strings.Contains(view, "Claude Code") {
-			t.Errorf("with %s the panel drew a notice:\n%s", c.what, view)
+			t.Errorf("with %s the Dashboard drew a notice:\n%s", c.what, view)
 		}
 	}
 }
 
 // The line the notice costs comes out of the tree, not off the foot. The
-// SELECTED box is the one thing on the panel that is always in the same place,
-// and a notice that shunted it down a line would take that away on exactly the
-// days there was something else to read.
+// SELECTED box is the one thing on the Dashboard that is always in the same
+// place, and a notice that shunted it down a line would take that away on
+// exactly the days there was something else to read.
 func TestTheUpdateNoticeCostsTheTreeALineRatherThanTheSelectedBox(t *testing.T) {
 	sessions := []session.Session{
 		live("ganymede-78", "/repos/ganymede", session.Working),
@@ -70,11 +70,11 @@ func TestTheUpdateNoticeCostsTheTreeALineRatherThanTheSelectedBox(t *testing.T) 
 	quiet := sidepanel(&jumps{}, sessions...)
 	noticed := told(sidepanel(&jumps{}, sessions...), behind)
 
-	before, _ := panelLines(quiet)
-	after, _ := panelLines(noticed)
+	before, _ := sidepanelLines(quiet)
+	after, _ := sidepanelLines(noticed)
 
 	if len(before) != len(after) {
-		t.Fatalf("the panel drew %d lines with a notice and %d without", len(after), len(before))
+		t.Fatalf("the sidepanel drew %d lines with a notice and %d without", len(after), len(before))
 	}
 	if selectedFromFoot(t, before) != selectedFromFoot(t, after) {
 		t.Errorf("SELECTED sits %d lines off the foot with a notice and %d without",
@@ -82,7 +82,7 @@ func TestTheUpdateNoticeCostsTheTreeALineRatherThanTheSelectedBox(t *testing.T) 
 	}
 }
 
-// selectedFromFoot is how many lines up from the panel's last line the
+// selectedFromFoot is how many lines up from the sidepanel's last line the
 // SELECTED label sits.
 func selectedFromFoot(t *testing.T, lines []string) int {
 	t.Helper()
@@ -91,7 +91,7 @@ func selectedFromFoot(t *testing.T, lines []string) int {
 			return len(lines) - 1 - i
 		}
 	}
-	t.Fatalf("no SELECTED label on the panel:\n%s", strings.Join(lines, "\n"))
+	t.Fatalf("no SELECTED label on the Dashboard:\n%s", strings.Join(lines, "\n"))
 	return 0
 }
 
@@ -101,7 +101,7 @@ func selectedFromFoot(t *testing.T, lines []string) int {
 func TestTheUpdateNoticeIsTruncatedRatherThanWrapped(t *testing.T) {
 	model := told(railSized(18, 45, nil, live("ganymede-78", "/repos/ganymede", session.Working)), behind)
 
-	lines, _ := panelLines(model)
+	lines, _ := sidepanelLines(model)
 
 	for _, line := range lines {
 		if len([]rune(line)) > 18 {
@@ -113,16 +113,16 @@ func TestTheUpdateNoticeIsTruncatedRatherThanWrapped(t *testing.T) {
 	}
 }
 
-// available is the mark the notice is read by, as the panel draws it.
+// available is the mark the notice is read by, as the Dashboard draws it.
 const available = "⇡"
 
 // The mark and the version being published are what the notice is for, so they
 // carry the harness's caution colour; what you are on is context, and reads in
-// the panel's own quiet.
+// the Dashboard's own quiet.
 func TestTheUpdateNoticeIsDrawnInCautionOverQuiet(t *testing.T) {
 	model := told(sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", session.Working)), behind)
 
-	_, raw := panelLines(model)
+	_, raw := sidepanelLines(model)
 
 	if !strings.HasPrefix(raw[2], styleCodeOf(cautionAmber)) {
 		t.Errorf("the notice is %q, want it opening in the harness's caution colour", raw[2])

@@ -11,27 +11,27 @@ import (
 
 // brandBlue is the mock's blue, and bold with it: the harness's own mark. It is
 // spelled out here rather than reached for across the package boundary, the way
-// caution_test.go's cautionAmber is — the colour is part of what the panel
+// caution_test.go's cautionAmber is — the colour is part of what the Dashboard
 // promises, so a retuned palette is meant to be read here and moved deliberately
 // rather than to slip through green.
 //
 // It is the same triplet as Working's today and is nobody's state colour all the
 // same: the brand has to be free to move without dragging a Session state with
-// it, which is why the panel declares it apart.
+// it, which is why the Dashboard declares it apart.
 var brandBlue = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#58a6ff"))
 
-// quiet is the panel's own quiet — what it keeps for everything that is not
+// quiet is the Dashboard's own quiet — what it keeps for everything that is not
 // asking anything of you.
 var quiet = lipgloss.NewStyle().Faint(true)
 
-// The panel's name is the harness's mark rather than another bold row: drawn
+// The Dashboard's name is the harness's mark rather than another bold row: drawn
 // like the section label under it, neither reads as what it is.
 func TestTheDashboardsNameReadsAsTheHarnesssOwnMark(t *testing.T) {
 	model := sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", session.Idle))
 
 	line, ok := rawLineFor(model, "GANYMEDE")
 	if !ok {
-		t.Fatalf("the panel does not name itself:\n%s", drawn(model))
+		t.Fatalf("the Dashboard does not name itself:\n%s", drawn(model))
 	}
 	if !strings.HasPrefix(line, styleCodeOf(brandBlue)) {
 		t.Errorf("the name = %q, want it bold in the mock's own blue", line)
@@ -39,23 +39,23 @@ func TestTheDashboardsNameReadsAsTheHarnesssOwnMark(t *testing.T) {
 }
 
 // SELECTED is a label for the box under it rather than content of its own, so
-// it drops to the panel's quiet: a section label carrying the same weight as
+// it drops to the Dashboard's quiet: a section label carrying the same weight as
 // what it labels is one more bold row to read past.
 func TestTheSelectedLabelIsDrawnAsQuietlyAsItReads(t *testing.T) {
 	model := sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", session.Idle))
 
 	line, ok := rawLineFor(model, "SELECTED")
 	if !ok {
-		t.Fatalf("the panel has no SELECTED label:\n%s", drawn(model))
+		t.Fatalf("the Dashboard has no SELECTED label:\n%s", drawn(model))
 	}
 	if !strings.HasPrefix(line, styleCodeOf(quiet)) {
-		t.Errorf("the section label = %q, want the panel's own quiet", line)
+		t.Errorf("the section label = %q, want the Dashboard's own quiet", line)
 	}
 }
 
 // The keys the box offers are found by their key character, not read as a
-// sentence: the character stands in the panel's normal foreground and the label
-// saying what it does stays quiet behind it.
+// sentence: the character stands in the Dashboard's normal foreground and the
+// label saying what it does stays quiet behind it.
 func TestASessionRowsOfferingStandsItsKeysOutFromTheirLabels(t *testing.T) {
 	model := sidepanel(&jumps{}, live("ganymede-78", "/repos/ganymede", session.Idle))
 	model = press(model, tea.KeyDown) // onto the Session's own row
@@ -65,7 +65,7 @@ func TestASessionRowsOfferingStandsItsKeysOutFromTheirLabels(t *testing.T) {
 		t.Fatalf("the box offers the selected Session nothing:\n%s", drawn(model))
 	}
 	if !strings.HasPrefix(line, "⏎") {
-		t.Errorf("offering = %q, want the key character in the panel's normal foreground", line)
+		t.Errorf("offering = %q, want the key character in the Dashboard's normal foreground", line)
 	}
 	if !strings.Contains(line, styleCodeOf(quiet)+"jump") {
 		t.Errorf("offering = %q, want the key's label left quiet behind it", line)
@@ -89,7 +89,7 @@ func TestARepoHeadersOfferingStandsItsKeysOutFromTheirLabels(t *testing.T) {
 		t.Fatalf("the box offers the selected repo nothing:\n%s", drawn(model))
 	}
 	if !strings.HasPrefix(line, "⏎") {
-		t.Errorf("offering = %q, want the key character in the panel's normal foreground", line)
+		t.Errorf("offering = %q, want the key character in the Dashboard's normal foreground", line)
 	}
 	if !strings.Contains(line, styleCodeOf(quiet)+"go to repo") {
 		t.Errorf("offering = %q, want the header's own label kept as it was, and left quiet", line)

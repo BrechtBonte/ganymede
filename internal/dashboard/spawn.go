@@ -246,7 +246,7 @@ func (m Model) launch() (Model, tea.Cmd) {
 //
 // A spawn that stays up reports nothing at all: the Session turning up on the
 // rail is the whole account of it, and a notice for every good spawn would be
-// noise on the one panel that has to stay worth reading.
+// noise on the one surface that has to stay worth reading.
 func (m Model) watchingSpawn(window, name string) tea.Cmd {
 	spawner := m.harness.Spawner
 	if window == "" {

@@ -25,18 +25,18 @@ func styleCodeOf(s lipgloss.Style) string {
 	return rendered[:strings.Index(rendered, "x")]
 }
 
-// panelLines is what the panel drew, twice over: as the eye reads it and as
-// the terminal is given it. Stripping never adds or removes a line, only the
-// escape codes inside one, so the two are the same length and a line found in
-// one is the same line in the other.
-func panelLines(model tea.Model) (stripped, raw []string) {
+// sidepanelLines is what the Dashboard drew, twice over: as the eye reads it
+// and as the terminal is given it. Stripping never adds or removes a line, only
+// the escape codes inside one, so the two are the same length and a line found
+// in one is the same line in the other.
+func sidepanelLines(model tea.Model) (stripped, raw []string) {
 	return strings.Split(drawn(model), "\n"), strings.Split(model.View(), "\n")
 }
 
 // rawLineFor is the unstripped line drawing want, found by its stripped
 // position.
 func rawLineFor(model tea.Model, want string) (string, bool) {
-	stripped, raw := panelLines(model)
+	stripped, raw := sidepanelLines(model)
 	for i, line := range stripped {
 		if strings.Contains(line, want) {
 			return raw[i], true
@@ -49,7 +49,7 @@ func rawLineFor(model tea.Model, want string) (string, bool) {
 // checkout its Session is working in, since that is what the row carries.
 func rawSessionRowFor(t *testing.T, model tea.Model, want string) string {
 	t.Helper()
-	stripped, raw := panelLines(model)
+	stripped, raw := sidepanelLines(model)
 	for i, line := range stripped {
 		if isSessionRow(line) && strings.Contains(line, want) {
 			return raw[i]
@@ -62,7 +62,7 @@ func rawSessionRowFor(t *testing.T, model tea.Model, want string) string {
 // rawSessionRow is the unstripped line drawing the tree's one Session row.
 func rawSessionRow(t *testing.T, model tea.Model) string {
 	t.Helper()
-	stripped, raw := panelLines(model)
+	stripped, raw := sidepanelLines(model)
 	var rows []string
 	for i, line := range stripped {
 		if isSessionRow(line) {

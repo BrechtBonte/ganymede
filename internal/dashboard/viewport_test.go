@@ -7,10 +7,11 @@ import (
 
 // The tree's window is a budget in lines while the cursor counts rows: a repo
 // header carrying a git caution draws two lines, and every other row draws one.
-// This is the seam where the arithmetic can be shown row shapes the drawn panel
-// cannot be talked into producing — a row of four lines, a block with no room at
-// all — and asked whether the selection stayed on the panel. What the panel does
-// draw is asserted through View(), in caution_test.go and foot_test.go.
+// This is the seam where the arithmetic can be shown row shapes the drawn
+// Dashboard cannot be talked into producing — a row of four lines, a block with
+// no room at all — and asked whether the selection stayed on the sidepanel. What
+// the Dashboard does draw is asserted through View(), in caution_test.go and
+// foot_test.go.
 func TestTheWindowHoldsTheSelectedRowWhateverItsRowsDraw(t *testing.T) {
 	for _, c := range []struct {
 		what string
@@ -33,7 +34,7 @@ func TestTheWindowHoldsTheSelectedRowWhateverItsRowsDraw(t *testing.T) {
 		first, last := shown(drawn, c.cursor, c.space)
 
 		if first > c.cursor || c.cursor >= last {
-			t.Errorf("%s: the window holds rows [%d,%d), leaving the selected row %d off the panel", c.what, first, last, c.cursor)
+			t.Errorf("%s: the window holds rows [%d,%d), leaving the selected row %d off the sidepanel", c.what, first, last, c.cursor)
 			continue
 		}
 		// A window may overrun the block only by drawing the selection's own

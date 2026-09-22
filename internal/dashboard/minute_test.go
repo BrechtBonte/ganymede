@@ -14,8 +14,8 @@ func at(zone *time.Location, hour, minute, second int, frac time.Duration) time.
 // half minute it would fire thirty seconds after that tick last fired, and read
 // up to half a minute late — so its own delay is whatever is left of the minute
 // it is scheduled in, rather than an interval of its own. This is the seam where
-// that arithmetic can be shown times of day the panel cannot be talked into
-// being drawn at; what the panel draws is asserted through View() in
+// that arithmetic can be shown times of day the Dashboard cannot be talked into
+// being drawn at; what it draws is asserted through View() in
 // clock_test.go.
 func TestTheClocksNextRedrawIsWhateverIsLeftOfTheMinute(t *testing.T) {
 	// A zone offset by three quarters of an hour, to show the turn is read off

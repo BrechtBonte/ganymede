@@ -40,11 +40,17 @@ func (t *Tickets) Open(key Key) error {
 	if key == "" {
 		return errNoTicket
 	}
+	return t.OpenURL(key.URL())
+}
+
+// OpenURL shows url in the browser. Open builds a ticket's address and calls
+// this; a Pull already has one.
+func (t *Tickets) OpenURL(url string) error {
 	show := t.Browser
 	if show == nil {
 		show = browser.Browser{}
 	}
-	return show.Open(key.URL())
+	return show.Open(url)
 }
 
 // Of is the ticket the Session working in dir under Main root root is about,

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/popup"
+	"github.com/BrechtBonte/ganymede/internal/pulls"
 	"github.com/BrechtBonte/ganymede/internal/release"
 	"github.com/BrechtBonte/ganymede/internal/repo"
 	"github.com/BrechtBonte/ganymede/internal/session"
@@ -181,7 +182,26 @@ type Tickets interface {
 	Set(dir, root string, key ticket.Key) error
 	// Open shows the ticket in the browser.
 	Open(key ticket.Key) error
+	// OpenURL shows any address in the browser. A Pull carries its own, where
+	// a ticket's is built from its key — the two reach the same browser.
+	OpenURL(url string) error
 }
+
+// Pulls is the fetch of your open pull requests, which r asks to run now.
+//
+// It is the only thing the harness knows that nothing can push to it: the
+// registry watch is a file watcher, the hooks are sub-second edges, and the
+// reconciler cross-checks something local — each learns of a change because
+// the change announces itself. GitHub does not.
+type Pulls interface {
+	// Refresh asks for a whole cycle, and says whether this ask is the one
+	// that will be answered. A cycle already in flight answers false, which is
+	// what makes holding r a no-op rather than a way to stack cycles.
+	Refresh() bool
+}
+
+// PullsReport is one cycle's answer, arriving the way Release does.
+type PullsReport pulls.Report
 
 // Popups is everything the Dashboard needs from the Popup shell (§8): which
 // owners are busy, for the marker on their row, and where its own cursor is
@@ -249,6 +269,13 @@ type Harness struct {
 	// Claimer is where a Main root Claim is kept: claim it, release it, and
 	// read which roots are claimed now (§4.2, §7.3's free key).
 	Claimer Claimer
+	// Origins is what each Main root pushes to on GitHub, which with the
+	// branch is the whole of the rule matching a Pull to a Session. Nil is a
+	// Dashboard that matches nothing, and draws every row unmarked.
+	Origins *pulls.Origins
+	// Pulls is the census r asks to run now. Nil is a Dashboard whose section
+	// only ever refreshes on its own clock.
+	Pulls Pulls
 	// Docked is whether this Dashboard is the harness's own — the one the
 	// dock's sidepanel is attached to — rather than one being run by hand in
 	// a terminal of your own. It is the whole difference ctrl+c makes: the
@@ -291,6 +318,20 @@ type Model struct {
 	// question is asked of git once rather than once a redraw. It is let go of
 	// on the tick, which is what a branch switched in a Main root waits for.
 	tickets map[string]ticket.Key
+	// origins is what each Main root pushes to, in GitHub's own
+	// nameWithOwner. Read once per root and kept for the process, the way
+	// pulls.Origins documents: a repository whose remote is re-pointed while
+	// the Dashboard is up stays stale until restart.
+	origins map[string]string
+	// branches is the branch each checkout is on, which with the origin is
+	// the whole of the rule matching a Pull to a Session. It is let go of on
+	// the tick alongside the tickets, for the same reason: a branch switched
+	// in a Main root waits for that tick and no longer.
+	branches map[string]string
+	// pulls is the Pulls section at the foot: the last cycle that landed,
+	// whether the section has the foot and the cursor, and where inside it.
+	// Nothing here survives a restart, deliberately — see internal/pulls.
+	pulls pullsSection
 	// cautions is what git last said each Main root is carrying. It is never
 	// cleared, only laid over by the next answer: a marker that blinked out
 	// while git was being asked again would be a marker you cannot read.
@@ -541,6 +582,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case Release:
 		m.release = release.Update(msg)
 		return m, nil
+	case PullsReport:
+		return m.pullsReported(msg), nil
 	case Froze:
 		return m.freezing(string(msg), true), nil
 	case Thawed:
@@ -623,6 +666,12 @@ func (m Model) rebuilt() Model {
 	if m.tickets == nil {
 		m.tickets = map[string]ticket.Key{}
 	}
+	if m.origins == nil {
+		m.origins = map[string]string{}
+	}
+	if m.branches == nil {
+		m.branches = map[string]string{}
+	}
 	// Read once and closed over rather than asked per row: Claim and Release
 	// are synchronous state-file writes, and there is no async round trip
 	// here worth caching the way cautions and popups are — but every row
@@ -640,6 +689,9 @@ func (m Model) rebuilt() Model {
 		popup:    m.popupOf,
 		frozen:   m.frozenOf,
 		claimed:  func(root string) (string, bool) { note, ok := claimed[root]; return note, ok },
+		yourMove: func(root, checkout string) bool {
+			return m.pulls.set.YourMove(m.originOf(root), m.branchOf(checkout))
+		},
 	})
 	m.waiting = session.AttentionIn(m.set)
 	m.cursor = 0
@@ -676,8 +728,10 @@ func (m Model) workingSet(claimed map[string]string) []string {
 // asking lets go of the answers that go stale on their own, and draws the
 // working set it already has around fresh ones.
 //
-// The ticket is one of those, and which checkout a Session is working in is the
-// other. Everything else on a row is reported to the Dashboard the moment it
+// The ticket is one of those, the branch each checkout is on is another — it is
+// what the ticket is read off, and now also half of what matches a Pull to a
+// Session — and which checkout a Session is working in is the third. Everything
+// else on a row is reported to the Dashboard the moment it
 // changes — that is what the watch, the hooks and the cross-check are — while
 // the branch a Session is on is switched by you, in a shell, and the worktree it
 // is in can be removed from under it the same way. Half a minute is a long time
@@ -687,6 +741,7 @@ func (m Model) workingSet(claimed map[string]string) []string {
 // an agent in it, and that is the one wrong answer this must not give.
 func (m Model) asking() Model {
 	clear(m.tickets)
+	clear(m.branches)
 	clear(m.checkouts)
 	return m.showing(m.set)
 }
@@ -1038,6 +1093,29 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.picking(msg)
 	}
 
+	// Pulls has the cursor while it is open, so the arrows, enter, o, esc, p
+	// and r are its own. Everything else falls through: c, w and t stay live on
+	// the frozen tree row, because each opens a flow that names its subject
+	// before anything happens.
+	if m.pulls.open {
+		switch {
+		case msg.Type == tea.KeyEsc:
+			return m.closePulls().noting(), nil
+		case msg.Type == tea.KeyUp:
+			return m.pullsUp().noting(), nil
+		case msg.Type == tea.KeyDown:
+			return m.pullsDown().noting(), nil
+		case msg.Type == tea.KeyEnter:
+			return m.jumpToPull().noting(), nil
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "o":
+			return m.openPull().noting(), nil
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "r":
+			return m.refreshPulls().noting(), nil
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "p":
+			return m.closePulls().noting(), nil
+		}
+	}
+
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		// The Dashboard is meant to stay up for as long as the harness does,
@@ -1087,6 +1165,8 @@ func (m Model) pressed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.spawn()
 		case "c":
 			return m.claim()
+		case "p":
+			m = m.togglePulls()
 		}
 	}
 	return m.noting(), nil
@@ -1362,7 +1442,7 @@ var (
 	ruleStyle  = lipgloss.NewStyle().Faint(true)
 	quietStyle = lipgloss.NewStyle().Faint(true)
 	repoStyle  = lipgloss.NewStyle().Bold(true)
-	// The panel's own name, in the validated mock's blue: the harness's mark
+	// The Dashboard's own name, in the validated mock's blue: the harness's mark
 	// rather than another bold row.
 	//
 	// Its own style with its own literal hex, and deliberately not
@@ -1417,22 +1497,28 @@ func (m Model) View() string {
 	}
 
 	rule := ruleStyle.Render(strings.Repeat("─", m.width))
-	detail := m.detail()
 	update := m.updateLine()
 
-	// The frame the tree lives in: the title and its rule above, the detail
-	// box's rule and heading below. The tree is given the whole of what is
-	// left and fills it, so the box lands on the sidepanel's last lines
-	// whatever the working set is doing — one place your eye can learn.
+	// The frame the tree lives in: the title and its rule above, the foot's
+	// rule and label below. The tree is given the whole of what is left and
+	// fills it, so the box lands on the sidepanel's last lines whatever the
+	// working set is doing — one place your eye can learn.
 	//
 	// The update notice is part of that frame on the days it is drawn at all,
-	// and the line it costs comes out of the tree rather than off the foot:
-	// the box is the one thing on the panel that is always in the same place.
+	// and the line it costs comes out of the tree rather than off the foot: the
+	// box is the one thing on the sidepanel that is always in the same place.
 	chrome := 4
 	if update != "" {
 		chrome++
 	}
-	space := m.height - chrome - len(detail)
+	usable := max(0, m.height-chrome)
+	// Pulls takes what it needs, capped at half the usable height, and scrolls
+	// inside its budget when the cap bites. Count-agnostic, so it survives
+	// however many Pulls there turn out to be — and the scrolling is not new
+	// machinery, since shown() already solves "keep the cursor visible inside a
+	// line budget" for any budget down to a single line.
+	detail, label := m.detail(usable / 2)
+	space := usable - len(detail)
 	if space < 0 {
 		// A sidepanel with no room for both gives up detail before it gives up
 		// the tree.
@@ -1445,10 +1531,10 @@ func (m Model) View() string {
 		lines = append(lines, update)
 	}
 	lines = append(lines, m.tree(space)...)
-	// The label is drawn in the panel's quiet: it says what the lines under it
-	// are about, and a section label weighted like its own content is one more
-	// bold row for the eye to read past.
-	lines = append(lines, rule, quietStyle.Render(truncate("SELECTED", m.width)))
+	// The label is drawn in the sidepanel's quiet: it says what the lines under
+	// it are about, and a section label weighted like its own content is one
+	// more bold row for the eye to read past.
+	lines = append(lines, rule, label)
 	lines = append(lines, detail...)
 	if len(lines) > m.height {
 		lines = lines[:m.height]
@@ -1527,7 +1613,7 @@ func (m Model) counts() string {
 // window counted in rows would run off the foot of the block by one line per
 // cautioned repo in it. The window is measured in lines throughout while the
 // cursor goes on counting rows: the selection steps row to row, and what has to
-// stay on the panel is the lines those rows draw.
+// stay on the sidepanel is the lines those rows draw.
 func (m Model) tree(space int) []string {
 	if len(m.rows) == 0 {
 		return fill(clip(m.nothingRunning(), space), space)
@@ -1656,7 +1742,7 @@ func (m Model) line(i int) string {
 	age := ageOf(*r.session)
 	mark := marks(r)
 	key := abbreviated(r.ticket)
-	tail := joined(key, age)
+	tail := joined(key, age, moveOf(r))
 	// Elided rather than cut: a worktree name that runs off the end of its
 	// column would leave you unable to tell how much of it you are reading.
 	label := elide(r.holding(), m.width-lipgloss.Width(indent+glyph+" "+mark)-lipgloss.Width(tail)-1)
@@ -1667,7 +1753,7 @@ func (m Model) line(i int) string {
 		return blurredSelectedStyle.Width(m.width).Render(spread(indent+glyph+" "+mark+label, tail, m.width))
 	default:
 		return spread(indent+styleOf(r.session.State).Render(glyph)+" "+mark+label,
-			joined(rendered(ticketColour, key), rendered(quietStyle, age)), m.width)
+			joined(rendered(ticketColour, key), rendered(quietStyle, age), rendered(moveStyle, moveOf(r))), m.width)
 	}
 }
 
@@ -1756,8 +1842,8 @@ const cautionIndent = " "
 // A caution swallowed by that inversion would be one you have to move the cursor
 // off to read.
 //
-// The room it is fitted to is the panel less the indent, so the line lands inside
-// the sidepanel at every width there is room for the mark in — and at the one
+// The room it is fitted to is the sidepanel less the indent, so the line lands
+// inside it at every width there is room for the mark in — and at the one
 // width there is not, it draws the mark anyway and overruns by a column, exactly
 // as the header row above it already does. carrying's last rung is a promise
 // about a root that is detached with work in it never reading like a clean one,
@@ -1891,9 +1977,12 @@ func ticketStyle(key ticket.Key) lipgloss.Style {
 	return ticketColour
 }
 
-// detail is the SELECTED box: what the highlighted row has no room to say.
-func (m Model) detail() []string {
-	lines := m.selected()
+// detail is the box at the sidepanel's foot and the label above it: whatever
+// the foot's dispatch put there, with the notice under it.
+//
+// space is the most lines Pulls may take, and no other case reads it.
+func (m Model) detail(space int) ([]string, string) {
+	lines, label := m.foot(space)
 	if m.notice != "" {
 		// The notice is the one thing in the box that is worth more than one
 		// line. Everything else here repeats what the rail already showed, and
@@ -1904,36 +1993,91 @@ func (m Model) detail() []string {
 			lines = append(lines, styleOf(session.Blocked).Render(line))
 		}
 	}
-	return lines
+	return lines, label
 }
 
-func (m Model) selected() []string {
-	if m.spawning != nil {
-		return m.spawningView()
+// footLabel is what the box at the sidepanel's foot is called for every case
+// but Pulls.
+//
+// Four of the five cases are lying when they draw it — a Claim dialog is not
+// the selected row either — and that is left exactly as it was. The lie
+// predates this work, fixing all four was offered and declined, and making the
+// label dispatch-dependent for one case of five is the odd shape that was
+// chosen over the alternative of touching four flows this section has no
+// business in.
+const footLabel = "SELECTED"
+
+// foot is the box at the sidepanel's foot: the lines it holds and the label
+// above them.
+//
+// The chain is a priority order, and the row detail is only its last case: the
+// foot is not a detail display that happens to host inputs, it is a modal
+// surface whose default state is the detail. Pulls is the fifth case, below the
+// four input flows and above the row detail — so c, w and t take the foot while
+// Pulls is open exactly as they do today, and Pulls returns when they close.
+//
+// space is the most lines Pulls may take, and no other case reads it. The four
+// inputs and the row detail are as long as they are, and the tree absorbs the
+// difference the way it always has.
+func (m Model) foot(space int) (lines []string, label string) {
+	quiet := quietStyle.Render(truncate(footLabel, m.width))
+	switch {
+	case m.spawning != nil:
+		return m.spawningView(), quiet
+	case m.claiming != nil:
+		return m.claimingView(), quiet
+	case m.takingOver != nil:
+		return m.takingOverView(), quiet
+	case m.setting != nil:
+		return m.settingView(), quiet
+	case m.pulls.open:
+		// The cost, accepted: while Pulls is open you cannot see the detail of
+		// the row you are standing on. Pulls displaces precisely what the
+		// cursor is for.
+		rows, above, below := m.pullsPanel(min(m.pullsWanted(), space))
+		return rows, m.pullsLabel(above, below)
+	default:
+		return m.rowDetail(), quiet
 	}
-	if m.claiming != nil {
-		return m.claimingView()
+}
+
+// pullsWanted is how many lines the section would take if nothing capped it:
+// both headings, every row, and the key line.
+//
+// Taking what it needs rather than always taking the cap is what keeps a quiet
+// day's three Pulls from costing the tree seventeen rows.
+func (m Model) pullsWanted() int {
+	switch m.pulls.body {
+	case pullsRowsBody:
+		return len(m.pullsEntries()) + 1
+	case pullsNetwork:
+		return len(m.pullsEntries()) + 2
+	default:
+		// Two lines of prose at most, and the key line.
+		return 3
 	}
-	if m.takingOver != nil {
-		return m.takingOverView()
+}
+
+// settingView is the box while a ticket is being typed into it. It says what is
+// being corrected rather than what is selected, because the two come apart: the
+// working set is rebuilt under the input every time any Session anywhere moves,
+// and the row you opened it over can end and take the selection with it. The
+// correction is about the checkout, which is still there.
+func (m Model) settingView() []string {
+	return []string{
+		elide(m.setting.name, m.width),
+		// The cursor is drawn rather than placed: the Dashboard shares a
+		// terminal with the working client, and the one real cursor belongs
+		// over there.
+		ticketColour.Render(tail("ticket › "+m.setting.typed+"▌", m.width)),
+		quietStyle.Render(shorten(m.setting.dir, m.width)),
+		quietStyle.Render(truncate("⏎ set · esc cancel", m.width)),
 	}
-	if m.setting != nil {
-		// The box is the input for as long as one is open. It says what is
-		// being corrected rather than what is selected, because the two come
-		// apart: the working set is rebuilt under the input every time any
-		// Session anywhere moves, and the row you opened it over can end and
-		// take the selection with it. The correction is about the checkout,
-		// which is still there.
-		return []string{
-			elide(m.setting.name, m.width),
-			// The cursor is drawn rather than placed: the Dashboard shares a
-			// terminal with the working client, and the one real cursor
-			// belongs over there.
-			ticketColour.Render(tail("ticket › "+m.setting.typed+"▌", m.width)),
-			quietStyle.Render(shorten(m.setting.dir, m.width)),
-			quietStyle.Render(truncate("⏎ set · esc cancel", m.width)),
-		}
-	}
+}
+
+// rowDetail is the foot's default case: what the highlighted row has no room to
+// say.
+func (m Model) rowDetail() []string {
 	if m.cursor >= len(m.rows) {
 		return []string{quietStyle.Render("—")}
 	}
@@ -2056,8 +2200,9 @@ func offering(r row, width int) string {
 //
 // The fit is measured on the plain phrases and the styling goes on what fitted:
 // a line measured with its escape codes in it would be measured several columns
-// wider than anything the panel ever draws, and would drop keys there was room
-// for.
+// wider than anything the Dashboard ever draws, and would drop keys there was
+// room
+// for it.
 func fitKeys(keys []string, width int) string {
 	var line string
 	hints := make([]string, 0, len(keys))
@@ -2075,7 +2220,7 @@ func fitKeys(keys []string, width int) string {
 	return strings.Join(hints, quietStyle.Render(" · "))
 }
 
-// hinted draws one key the box is offering: the key character in the panel's
+// hinted draws one key the box is offering: the key character in the Dashboard's
 // normal foreground, the label saying what it does quiet behind it. The key is
 // what you are looking for, and the phrase around it is what you would
 // otherwise have to read to find it.

@@ -19,6 +19,7 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/inventory"
 	"github.com/BrechtBonte/ganymede/internal/notifier"
 	"github.com/BrechtBonte/ganymede/internal/popup"
+	"github.com/BrechtBonte/ganymede/internal/pulls"
 	"github.com/BrechtBonte/ganymede/internal/reconciler"
 	"github.com/BrechtBonte/ganymede/internal/registry"
 	"github.com/BrechtBonte/ganymede/internal/release"
@@ -231,6 +232,18 @@ func runDashboard() error {
 		// running cannot change under it.
 		Docked: harness.Docked(),
 	}
+	// Your open pull requests, on their own thirty-minute clock. The refresher
+	// is the hand r pulls; the watch below is what answers it, and both end
+	// with the Dashboard the way every other watch here does.
+	//
+	// gh is a hard runtime dependency of the Dashboard from here on, on the
+	// footing tmux and claude are on. Nothing is said about it at startup: a
+	// gh that will not run reaches you as the section's own body naming
+	// `gh auth login`, which is where a stderr line would have sent you anyway.
+	refresh := pulls.NewRefresher()
+	hands.Pulls = refresh
+	hands.Origins = &pulls.Origins{}
+
 	// Root Claims, like the tickets set by hand: a state file that cannot be
 	// read costs the Claims in it and nothing else, and the Dashboard is not
 	// held up over a sidecar file.
@@ -272,6 +285,14 @@ func runDashboard() error {
 	go func() {
 		for update := range lastChecked().Watch(ctx) {
 			program.Send(dashboard.Release(update))
+		}
+	}()
+	// One cycle's answer at a time, arriving the way the update check's does:
+	// New takes the one stream the Dashboard is built around, and this is two
+	// lines rather than a parameter threaded through every caller.
+	go func() {
+		for report := range (pulls.Watcher{Read: pulls.Fetcher{}}).Watch(ctx, refresh.Asked()) {
+			program.Send(dashboard.PullsReport(report))
 		}
 	}()
 	go func() {

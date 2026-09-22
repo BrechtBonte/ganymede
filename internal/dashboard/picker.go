@@ -185,7 +185,7 @@ func (m Model) pickerView() string {
 		rule,
 	}
 	// A sidepanel with no room for the matches gives up the matches, not the
-	// whole Dashboard: the panel can be dragged to any height at all, and a
+	// whole Dashboard: the sidepanel can be dragged to any height at all, and a
 	// negative amount of room is not something to hand to a slice.
 	lines = append(lines, m.picker.offered(m.width, max(0, m.height-len(lines)))...)
 	if len(lines) > m.height {
@@ -206,7 +206,7 @@ func (p picker) offered(width, space int) []string {
 	case p.failed != "":
 		// The picker is the only way to the repos the Dashboard is not
 		// showing, so an inventory that could not be read is worth the whole
-		// panel rather than one truncated line: an empty picker looks exactly
+		// sidepanel rather than one truncated line: an empty picker looks exactly
 		// like a machine with no repos on it.
 		return clip(wrap(p.failed, width), space)
 	case !p.scanned:
@@ -232,11 +232,11 @@ func (p picker) offered(width, space int) []string {
 // two repos of the same name apart, which is the only reason it is there.
 func (p picker) row(i, width int) string {
 	name, filed := labelOf(p.matches[i])
-	// The name gets the panel first. It is what you typed at and what tells
+	// The name gets the width first. It is what you typed at and what tells
 	// the rows apart; the directory is there to break a tie, and a long one
 	// must not be allowed to take every column and elide the name to nothing.
 	filed = truncate(filed, width/3)
-	// A name too long for the panel says so: the repos with the longest names
+	// A name too long for the sidepanel says so: the repos with the longest names
 	// are the ones whose names differ only at the end.
 	name = elide(name, width-lipgloss.Width(filed)-1)
 	if i == p.cursor {
@@ -383,7 +383,7 @@ func wrap(s string, width int) []string {
 	return lines
 }
 
-// split breaks one word too wide for the panel across lines.
+// split breaks one word too wide for the sidepanel across lines.
 func split(word string, width int) []string {
 	var lines []string
 	line := ""
