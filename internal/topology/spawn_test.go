@@ -328,3 +328,25 @@ func TestSpawnLeavesTheMainRootsWindowInFront(t *testing.T) {
 		t.Errorf("the active window is %s, want the Main root's window 0 left in front", active)
 	}
 }
+
+// A command tmux cannot find dies in the pane before it can say anything, so
+// the watch afterwards has nothing to read and the rail says only that the
+// spawn died. The Dashboard runs with whatever PATH launched it, and from
+// Finder that is not your shell's — so a missing command is caught here, where
+// it can still be named.
+func TestSpawnRefusesACommandThatIsNotOnPath(t *testing.T) {
+	h, calls, repo := spawnable(t)
+	calls.command = []string{"ganymede-test-no-such-command", "--worktree", "FIRE-2841-paging"}
+
+	_, err := h.Spawn(repo, "FIRE-2841-paging", "")
+	if err == nil {
+		t.Fatalf("Spawn started a command that is not on PATH, want it refused")
+	}
+	if !strings.Contains(err.Error(), "ganymede-test-no-such-command") {
+		t.Errorf("Spawn said %q, want it to name the command it could not find", err)
+	}
+	session, _ := topology.WorkingSessionName(repo)
+	if windows := windowNames(t, h.Socket, session); slices.Contains(windows, "FIRE-2841-paging") {
+		t.Errorf("windows = %v, want no window opened for a command that cannot run", windows)
+	}
+}
