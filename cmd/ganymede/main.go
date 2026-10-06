@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"github.com/BrechtBonte/ganymede/internal/claim"
 	"github.com/BrechtBonte/ganymede/internal/config"
@@ -24,6 +25,7 @@ import (
 	"github.com/BrechtBonte/ganymede/internal/registry"
 	"github.com/BrechtBonte/ganymede/internal/release"
 	"github.com/BrechtBonte/ganymede/internal/session"
+	"github.com/BrechtBonte/ganymede/internal/shellpath"
 	"github.com/BrechtBonte/ganymede/internal/state"
 	"github.com/BrechtBonte/ganymede/internal/ticket"
 	"github.com/BrechtBonte/ganymede/internal/tile"
@@ -103,6 +105,10 @@ func run(args []string) error {
 	}
 }
 
+// loginShellTimeout bounds how long up waits on your shell's startup files
+// for a PATH. A heavy .zshrc takes about a second.
+const loginShellTimeout = 5 * time.Second
+
 // up brings the whole harness into view with one command.
 func up(args []string) error {
 	if len(args) > 1 {
@@ -114,6 +120,16 @@ func up(args []string) error {
 	}
 	if len(args) == 1 {
 		dir = args[0]
+	}
+
+	// Everything up starts — the tmux server, and through it the Dashboard and
+	// every Session — inherits this PATH. Launched from Finder it is launchd's,
+	// which has no claude on it. A shell that will not answer leaves the PATH
+	// up was given, which is still enough to open the window.
+	if path, err := shellpath.Login(os.Getenv("SHELL"), loginShellTimeout); err != nil {
+		fmt.Fprintf(os.Stderr, "ganymede: your shell's PATH could not be read, so Sessions may not find claude: %v\n", err)
+	} else {
+		os.Setenv("PATH", path)
 	}
 
 	if err := installTmux(); err != nil {
