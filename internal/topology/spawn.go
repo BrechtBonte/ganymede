@@ -2,6 +2,7 @@ package topology
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -43,6 +44,14 @@ func (h Harness) Spawn(dir, name, prompt string) (string, error) {
 	if build == nil {
 		build = WorktreeCommand
 	}
+	command := build(name, prompt)
+	// tmux looks the command up on this process's PATH, and one it cannot find
+	// dies in the pane without a word — leaving the watch nothing to report but
+	// the death. Looked up here first, it can at least be named.
+	if _, err := exec.LookPath(command[0]); err != nil {
+		return "", fmt.Errorf("spawn worktree session %s: %s is not on PATH", name, command[0])
+	}
+
 	// The window is opened empty, told to hold its pane open, and only then
 	// given the command to run. Opening it on the command directly loses the
 	// race in exactly the case worth reporting: a session that dies on startup
@@ -60,7 +69,7 @@ func (h Harness) Spawn(dir, name, prompt string) (string, error) {
 	// a session dying in it simply reads as the window SpawnDied finds gone.
 	_ = h.sessions().run("set-option", "-w", "-t", window, "remain-on-exit", "on")
 
-	respawn := append([]string{"respawn-pane", "-k", "-t", window, "-c", dir}, build(name, prompt)...)
+	respawn := append([]string{"respawn-pane", "-k", "-t", window, "-c", dir}, command...)
 	if err := h.sessions().run(respawn...); err != nil {
 		// The window is sitting on the bare shell it was opened with, which would
 		// read as a Worktree session that started and be counted as one.
